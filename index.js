@@ -6,7 +6,7 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 
-const app = express();
+const app = express();   
 const port = process.env.PORT || 5000;
 
 app.use(cors());
