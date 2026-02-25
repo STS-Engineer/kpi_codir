@@ -3173,7 +3173,7 @@ cron.schedule(
 let reportCronRunning = false;
 
 cron.schedule(
-  "16 15 * * *",
+  "42 15 * * *",
   async () => {
     const lockId = "weekly_report_job";
 
