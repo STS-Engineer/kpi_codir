@@ -9,34 +9,41 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     permissions:
       id-token: write
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      # Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up Node.js version
+      # Setup Node
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "22.x"
+          node-version: '22.x'
 
-      - name: npm install, build, and test
+      # Install and build
+      - name: Install, build, and test
         run: |
-          npm ci
+          npm install
           npm run build --if-present
           npm run test --if-present
 
+      # Azure Login (OIDC)
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_297023446D7441DCA1920EEAE6EB277E }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_DAE0694C09F74B7896C56BA39073926D }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_F2A4D37BAFF1439290177ACB7EF610F4 }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # Deploy
       - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+        uses: azure/webapps-deploy@v2
         with:
-          app-name: "kpi-form"
-          slot-name: "Production"
+          app-name: kpi-codir
+          slot-name: Production
           package: .
