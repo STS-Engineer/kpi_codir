@@ -3111,7 +3111,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "34 15 * * *",
+  "36 15 * * *",
   async () => {
     const lockId = "kpi_weekly_email_job";
 
