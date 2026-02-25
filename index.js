@@ -2185,8 +2185,8 @@ const generateVerticalBarChart = (chartData) => {
 
   const targetSegment = getSegmentForValue(cleantarget);
   let maxSegment = cleanMax !== null ? getSegmentForValue(cleanMax) : -1;
-  const upperToleranceSegment = getSegmentForValue(upper_tolerance_limit);
-  const lowerToleranceSegment = -1; // Lower Tolerance line hidden
+  const upperToleranceSegment = -1; // Upper Tolerance line hidden
+
 
   // ✅ FIX: Min=0 should render at segment 1 (just above X-axis)
   let minSegment = -1;
@@ -2256,7 +2256,7 @@ const generateVerticalBarChart = (chartData) => {
       const hastarget = seg === targetSegment;
       const hasMax = cleanMax !== null && seg === maxSegment && cleanMax !== cleantarget;
       const hasMin = seg === minSegment;
-      const hasUpperTolerance = seg === upperToleranceSegment;
+      const hasUpperTolerance = false; // hidden
       const hasLowerTolerance = false;
       const hasLine = hastarget || hasMax || hasMin || hasUpperTolerance || hasLowerTolerance;
 
@@ -2269,11 +2269,6 @@ const generateVerticalBarChart = (chartData) => {
         lineColor = '#28a745';
         lineLabelColor = '#28a745';
         lineLabel = 'target';
-      } else if (hasUpperTolerance) {
-        lineColor = '#ff9800';
-        lineLabelColor = '#ff9800';
-        lineStyle = '2px solid';
-        lineLabel = 'Upper Tolerance';
       } else if (hasMax) {
         lineColor = '#ff9800';
         lineLabelColor = '#ff9800';
@@ -3111,7 +3106,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "49 12 * * *", // Every MOnday at 9:00 AM
+  "04 13 * * *", // Every MOnday at 9:00 AM
   async () => {
     if (reportCronRunning) {
       console.log("⏭️ Weekly report cron already running, skipping...");
@@ -4660,7 +4655,7 @@ function generateTrendsDashboardHTML(responsible, kpiData) {
 // Generate individual KPI chart HTML
 function generateKPIChartHTML(kpi, index) {
   const weekLabels = kpi.weeks.map(w =>
-    w.includes('Week') ? `W${w.split('-Week')[1] || w.replace('Week', '')}` : w
+    w.includes('Week') ? `Week${w.split('-Week')[1] || w.replace('Week', '')}` : w
   );
 
   const chartId = `chart-${index}`;
@@ -4798,15 +4793,17 @@ function initializeChartJS(kpi, index) {
     gradient${index}.addColorStop(0, '${kpi.colors[0] || '#667eea'}80');
     gradient${index}.addColorStop(1, '${kpi.colors[0] || '#667eea'}20');
     
-    new Chart(ctx${index}, {
-      type: 'line',
+   new Chart(ctx${index}, {
+      type: ${kpi.values.length === 1 ? "'bar'" : "'line'"},
       data: {
         labels: ${JSON.stringify(weekLabels)},
         datasets: [{
           label: '${kpi.subject}',
           data: ${JSON.stringify(kpi.values)},
           borderColor: '${kpi.colors[0] || '#667eea'}',
-          backgroundColor: gradient${index},
+          backgroundColor: ${kpi.values.length === 1 
+            ? `'${kpi.colors[0] || '#667eea'}'` 
+            : `gradient${index}`},
           borderWidth: 3,
           fill: true,
           tension: 0.4,
@@ -4816,36 +4813,10 @@ function initializeChartJS(kpi, index) {
           },
           pointBorderColor: '#ffffff',
           pointBorderWidth: 2,
-          pointRadius: 6,
-          pointHoverRadius: 8
-        }${kpi.target !== null ? `,
-        {
-          label: 'target',
-          data: Array(${kpi.values.length}).fill(${kpi.target}),
-          borderColor: '#10b981',
-          borderWidth: 2,
-          borderDash: [5, 5],
-          fill: false,
-          pointRadius: 0
-        }` : ''}${kpi.min !== null ? `,
-        {
-          label: 'Minimum',
-          data: Array(${kpi.values.length}).fill(${kpi.min}),
-          borderColor: '#ef4444',
-          borderWidth: 1,
-          borderDash: [3, 3],
-          fill: false,
-          pointRadius: 0
-        }` : ''}${kpi.max !== null ? `,
-        {
-          label: 'Maximum',
-          data: Array(${kpi.values.length}).fill(${kpi.max}),
-          borderColor: '#f59e0b',
-          borderWidth: 1,
-          borderDash: [3, 3],
-          fill: false,
-          pointRadius: 0
-        }` : ''}]
+          pointRadius: ${kpi.values.length === 1 ? 0 : 6},
+          pointHoverRadius: ${kpi.values.length === 1 ? 0 : 8},
+          borderRadius: ${kpi.values.length === 1 ? 6 : 0}
+        }]
       },
       options: {
         responsive: true,
