@@ -1,49 +1,43 @@
 name: Build and deploy Node.js app to Azure Web App - kpi-form
- 
+
 on:
   push:
     branches:
       - main
   workflow_dispatch:
- 
+
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write  # Required for requesting the JWT
-      contents: read  
- 
+      id-token: write  
+      contents: read   
     steps:
       - uses: actions/checkout@v4
- 
+
       - name: Set up Node.js version
         uses: actions/setup-node@v3
         with:
           node-version: '22.x'
- 
-      - name: npm install, build, and test
+
+       - name: npm install, build, and test
         run: |
           npm install
           npm run build --if-present
-          npm run test --if-present
- 
+          npm run test --if-present          
       
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_D7798247BF12474DA5F99C937C37B6B6 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_0DDB878F1F6B4F18BC623E4C56AA8EAA }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_DB81AC16-6566-4A76-96D7-0C5762742DB1 }}
- 
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_297023446D7441DCA1920EEAE6EB277E }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_DAE0694C09F74B7896C56BA39073926D }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_F2A4D37BAFF1439290177ACB7EF610F4 }}
+
+
       - name: 'Deploy to Azure Web App'
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'kpi-codir'
+          app-name: 'kpi-form'
           slot-name: 'Production'
           package: .
- 
-          
-
-
-
