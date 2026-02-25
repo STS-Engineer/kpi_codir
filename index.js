@@ -13,7 +13,7 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// ---------- Postgres ---------- 
+// ---------- Postgres ----------
 const pool = new Pool({
   user: "administrationSTS",
   host: "avo-adb-002.postgres.database.azure.com",
@@ -83,30 +83,62 @@ const generateEmailHtml = ({ responsible, week }) => {
   <!DOCTYPE html>
   <html>
   <head><meta charset="utf-8"><title>KPI Form</title></head>
-  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
-    <div style="max-width:600px;margin:0 auto;background:#fff;padding:25px;
-                border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
-      
-      <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0" 
-           alt="AVOCarbon Logo" style="width:80px;height:80px;object-fit:contain;margin-bottom:20px;">
-      
-      <h2 style="color:#0078D7;font-size:22px;margin-bottom:20px;">KPI Submission - ${week}</h2>
+<body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
+  <div style="max-width:600px;margin:0 auto;background:#fff;padding:25px;
+              border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
     
-      <h3 style="color:#0078D7;font-size:16px;margin-bottom:20px;">
-           ${responsible.plant_name}
-      </h3>
-          
-      <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${week}"
-         style="display:inline-block;padding:12px 20px;background:#0078D7;color:white;
-                border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;">
-        Fill KPI Form
-      </a>
+    <!-- Logo -->
+    <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0" 
+         alt="AVOCarbon Logo" style="width:80px;height:80px;object-fit:contain;margin-bottom:10px;">
 
-      <p style="margin-top:20px;font-size:12px;color:#888;">
-        Click the button above to fill your KPIs for week ${week}.
-      </p>
+    <!-- KPI CODIR badge (table-based for email compatibility) -->
+    <div style="margin-bottom:24px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" 
+             style="margin:0 auto;border-collapse:collapse;">
+        <tr>
+      <td style="background:#ffffff;border-radius:30px;padding:8px 24px;
+           border:2px solid #0078D7;
+           box-shadow:0 4px 12px rgba(0,120,215,0.2);">
+  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+    <tr>
+      <td style="padding-right:8px;vertical-align:middle;">
+        <div style="width:7px;height:7px;background:#0078D7;border-radius:50%;"></div>
+      </td>
+      <td style="vertical-align:middle;">
+        <span style="color:#0078D7;font-size:13px;font-weight:700;
+                     letter-spacing:3px;text-transform:uppercase;
+                     font-family:'Segoe UI',Arial,sans-serif;">
+          KPI&nbsp;CODIR
+        </span>
+      </td>
+      <td style="padding-left:8px;vertical-align:middle;">
+        <div style="width:7px;height:7px;background:#0078D7;border-radius:50%;"></div>
+      </td>
+        </tr>
+       </table>
+        </td>
+        </tr>
+      </table>
     </div>
-  </body>
+
+    <h2 style="color:#0078D7;font-size:22px;margin-bottom:20px;">KPI Submission - ${week}</h2>
+  
+    <h3 style="color:#0078D7;font-size:16px;margin-bottom:20px;">
+      ${responsible.plant_name}
+    </h3>
+        
+    <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
+       style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
+              border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
+              box-shadow:0 4px 12px rgba(0,120,215,0.4);">
+      Fill KPI Form
+    </a>
+
+    <p style="margin-top:20px;font-size:12px;color:#888;">
+      Click the button above to fill your KPIs for week ${week}.
+    </p>
+  </div>
+</body>
   </html>
   `;
 };
@@ -492,12 +524,12 @@ app.get("/corrective-action-form", async (req, res) => {
               </div>
               <div class="perf-item">
                 <div class="perf-label">target_value</div>
-                <div class="perf-value target_value">${kpi.target|| 'N/A'}${kpi.unit || ''}</div>
+                <div class="perf-value target_value">${kpi.target || 'N/A'}${kpi.unit || ''}</div>
               </div>
               <div class="perf-item">
                 <div class="perf-label">Gap</div>
                 <div class="perf-value gap">
-                  ${kpi.target? (parseFloat(kpi.target_value) - parseFloat(kpi.value || 0)).toFixed(2) : 'N/A'}${kpi.unit || ''}
+                  ${kpi.target ? (parseFloat(kpi.target_value) - parseFloat(kpi.value || 0)).toFixed(2) : 'N/A'}${kpi.unit || ''}
                 </div>
               </div>
             </div>
@@ -896,7 +928,7 @@ const generateConsolidatedCorrectiveActionEmail = ({ responsible, week, kpisWith
       
       <!-- CTA Button -->
 <div style="text-align:center;margin:30px 0;">
-  <a href="http://localhost:5000/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
+  <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
      style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
             border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
             box-shadow:0 4px 10px rgba(211,47,47,0.3);">
@@ -2404,14 +2436,10 @@ const generateVerticalBarChart = (chartData) => {
                 <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.current)}
               <div style="font-size: 10px; color: #999;">${currentWeek.replace('2026-Week', 'Week ')}</div>
             </td>
-            <td width="20%" align="center" style="padding: 10px; background: ${achievementColor}; border-radius: 12px;">
-              <div style="font-size: 11px; color: rgba(255,255,255,0.85); text-transform: uppercase; margin-bottom: 5px; font-weight: 600;">target</div>
-              <div style="font-size: 20px; font-weight: 700; color: #ffffff;">${targetAchievement}</div>
-              <div style="font-size: 10px; color: rgba(255,255,255,0.7);">Achievement</div>
-            </td>
+           
             <td width="20%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
               <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
-              <div style="font-size: 20px; font-weight: 700; color: #ffffff;">${formatNumber(stats.average)}</div>
+              <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.average)}</div>
               <div style="font-size: 10px; color: #999;">${stats.dataPoints || data.length} periods</div>
             </td>
             <td width="20%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
@@ -2788,7 +2816,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Start filling your KPI forms to track your performance over time.
             </p>
-            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #28a745; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2804,7 +2832,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Fill your KPI form for week ${reportWeek} to generate performance charts.
             </p>
-            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #0078D7; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2861,7 +2889,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         <td>
           <!-- View History Button Container -->
          <div style="text-align: center; margin-top: 20px;">
-  <a href="http://localhost:5000/kpi-trends?responsible_id=${responsible.responsible_id}"
+  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
      class="view-history-btn"
      style="
        display: inline-block;
@@ -3003,12 +3031,12 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "20 08 * * *",
+  "02 09 * * *",
   async () => {
     if (cronRunning) return console.log("⏭️ Cron already running, skip...");
     cronRunning = true;
 
-    const forcedWeek = "2026-Week7"; // or dynamically compute current week
+    const forcedWeek = "2026-Week8"; // or dynamically compute current week
     try {
       // Send only to responsibles who actually have KPI records for that week
       const resps = await pool.query(`
@@ -3035,7 +3063,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "52 09 * * *", // Every MOnday at 9:00 AM
+  "42 08 * * *", // Every MOnday at 9:00 AM
   async () => {
     if (reportCronRunning) {
       console.log("⏭️ Weekly report cron already running, skipping...");
