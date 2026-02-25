@@ -23,6 +23,43 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// ---------- Job Lock Helper ----------
+// Remove the old acquireJobLock and releaseJobLock functions
+// ---------- IMPROVED Job Lock Helper with PostgreSQL Advisory Locks ----------
+const acquireJobLock = async (lockId, ttlMinutes = 9) => {
+  const instanceId = process.env.WEBSITE_INSTANCE_ID || `instance_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  try {
+    // Convert lockId string to a consistent integer hash
+    const lockHash = Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0));
+
+    // Try to acquire PostgreSQL advisory lock (non-blocking)
+    const result = await pool.query('SELECT pg_try_advisory_lock($1) as acquired', [lockHash]);
+
+    if (result.rows[0].acquired) {
+      console.log(`🔒 Instance ${instanceId} acquired lock ${lockId} (hash: ${lockHash})`);
+      return { acquired: true, instanceId, lockHash };
+    } else {
+      console.log(`⏭️ Instance ${instanceId} failed to acquire lock ${lockId} - another instance is running this job`);
+      return { acquired: false, instanceId, lockHash };
+    }
+  } catch (error) {
+    console.error(`❌ Error acquiring lock ${lockId}:`, error.message);
+    return { acquired: false, instanceId, error: error.message };
+  }
+};
+
+const releaseJobLock = async (lockId, instanceId, lockHash) => {
+  try {
+    if (lockHash) {
+      await pool.query('SELECT pg_advisory_unlock($1)', [lockHash]);
+      console.log(`🔓 Instance ${instanceId} released lock ${lockId}`);
+    }
+  } catch (error) {
+    console.error(`⚠️ Could not release lock ${lockId}:`, error.message);
+  }
+};
+
 // ---------- Nodemailer ----------
 const createTransporter = () =>
   nodemailer.createTransport({
@@ -3105,94 +3142,86 @@ cron.schedule(
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
+
 cron.schedule(
-  "00 15 * * *", // Every MOnday at 9:00 AM
+  "16 15 * * *",
   async () => {
-    if (reportCronRunning) {
-      console.log("⏭️ Weekly report cron already running, skipping...");
+    const lockId = "weekly_report_job";
+
+    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
+
+    if (!acquired) {
+      console.log(`⏭️ Instance ${instanceId} skipped cron job (lock not acquired)`);
       return;
     }
 
-    reportCronRunning = true;
-
     try {
-      // Calculate current week
+      if (reportCronRunning) {
+        console.log("⏭️ Weekly report cron already running in this instance...");
+        return;
+      }
+
+      reportCronRunning = true;
+
+      console.log("🚀 Weekly report cron started");
+
+      // Calculate week
       const now = new Date();
       const year = now.getFullYear();
 
-      // Get week number function
       const getWeekNumber = (date) => {
         const d = new Date(date);
         d.setHours(0, 0, 0, 0);
         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
         const yearStart = new Date(d.getFullYear(), 0, 1);
-        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-        return weekNo;
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
       };
 
       const weekNumber = getWeekNumber(now);
-      const currentWeek = `${year}-Week${weekNumber}`;
       const previousWeek = `${year}-Week${weekNumber - 1}`;
 
-      console.log(`Current week: ${currentWeek}, Previous week: ${previousWeek}`);
-
-      // Get all responsibles who have ANY KPI history data
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id, r.email, r.name
         FROM public."Responsible" r
-        JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
+        JOIN public.kpi_values_hist26 h 
+          ON r.responsible_id = h.responsible_id
         WHERE r.email IS NOT NULL
-          AND r.email != ''
-        GROUP BY r.responsible_id, r.email, r.name
-        HAVING COUNT(h.hist_id) > 0
+        AND r.email != ''
         ORDER BY r.responsible_id
       `);
 
-      console.log(`📊 Sending weekly reports for week ${previousWeek} to ${resps.rows.length} responsibles...`);
+      console.log(`📊 Sending weekly reports for ${previousWeek}`);
 
-      const results = [];
       for (const [index, resp] of resps.rows.entries()) {
         try {
-          await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
-          console.log(`  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`);
-          results.push({
-            responsible_id: resp.responsible_id,
-            name: resp.name,
-            status: 'success'
-          });
+          await generateWeeklyReportEmail(
+            resp.responsible_id,
+            previousWeek
+          );
 
-          // Add delay to avoid rate limiting
+          console.log(
+            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name}`
+          );
+
+          // Rate limit protection
           await new Promise(resolve => setTimeout(resolve, 1500));
+
         } catch (err) {
-          console.error(`  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`, err.message);
-          results.push({
-            responsible_id: resp.responsible_id,
-            name: resp.name,
-            status: 'error',
-            message: err.message
-          });
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
+            err.message
+          );
         }
       }
 
-      const succeeded = results.filter(r => r.status === 'success').length;
-      console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
-
-      // Log summary
-      console.log('\n=== REPORT SUMMARY ===');
-      console.log(`Total responsibles: ${results.length}`);
-      console.log(`Successfully sent: ${succeeded}`);
-      console.log(`Failed: ${results.length - succeeded}`);
-
-      if (results.length - succeeded > 0) {
-        const failed = results.filter(r => r.status === 'error');
-        console.log('Failed responsibles:');
-        failed.forEach(f => console.log(`  - ${f.name}: ${f.message}`));
-      }
+      console.log("✅ Weekly report cron finished");
 
     } catch (error) {
-      console.error("❌ Error in weekly report cron job:", error.message);
+      console.error("❌ Cron job error:", error.message);
+
     } finally {
       reportCronRunning = false;
+      await releaseJobLock(lockId, instanceId, lockHash);
     }
   },
   {
