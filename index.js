@@ -3111,33 +3111,62 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "21 15 * * *",
+  "34 15 * * *",
   async () => {
-    if (cronRunning) return console.log("⏭️ Cron already running, skip...");
-    cronRunning = true;
+    const lockId = "kpi_weekly_email_job";
 
-    const forcedWeek = "2026-Week8"; // or dynamically compute current week
+    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
+
+    if (!acquired) {
+      console.log(`⏭️ Instance skipped KPI cron (lock not acquired)`);
+      return;
+    }
+
     try {
-      // Send only to responsibles who actually have KPI records for that week
+      console.log("🚀 KPI email cron started");
+
+      const forcedWeek = "2026-Week8"; // Or compute dynamically
+
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id
         FROM public."Responsible" r
-        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
+        JOIN public.kpi_values kv 
+          ON kv.responsible_id = r.responsible_id
         WHERE kv.week = $1
       `, [forcedWeek]);
 
-      for (let r of resps.rows) {
-        await sendKPIEmail(r.responsible_id, forcedWeek);
+      console.log(`📊 Sending KPI emails to ${resps.rows.length} responsibles`);
+
+      for (const [index, row] of resps.rows.entries()) {
+        try {
+          await sendKPIEmail(row.responsible_id, forcedWeek);
+
+          console.log(`  [${index + 1}/${resps.rows.length}] Email sent`);
+
+          // Optional rate limit safety
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+        } catch (err) {
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed:`,
+            err.message
+          );
+        }
       }
 
-      console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
+      console.log("✅ KPI cron job completed");
+
     } catch (err) {
-      console.error("❌ Error sending scheduled emails:", err.message);
+      console.error("❌ Cron job error:", err.message);
+
     } finally {
-      cronRunning = false;
+      await releaseJobLock(lockId, instanceId, lockHash);
     }
   },
-  { scheduled: true, timezone: "Africa/Tunis" }
+  {
+    scheduled: true,
+    timezone: "Africa/Tunis"
+  }
 );
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
