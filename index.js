@@ -3074,7 +3074,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "19 12 * * *",
+  "33 14 * * *",
   async () => {
     if (cronRunning) return console.log("⏭️ Cron already running, skip...");
     cronRunning = true;
