@@ -3106,7 +3106,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "04 13 * * *", // Every MOnday at 9:00 AM
+  "45 14 * * *", // Every MOnday at 9:00 AM
   async () => {
     if (reportCronRunning) {
       console.log("⏭️ Weekly report cron already running, skipping...");
