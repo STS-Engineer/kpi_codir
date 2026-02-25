@@ -6,11 +6,11 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 
-const app = express();   
+const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors());    
-app.use(bodyParser.json());   
+app.use(cors());
+app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // ---------- Postgres ----------
@@ -789,7 +789,7 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
            SET root_cause = $1, 
                implemented_solution = $2, 
                evidence = $3,
-               status = 'Completed',
+               status = 'Waiting for validation',
                updated_date = NOW()
            WHERE corrective_action_id = $4`,
           [rootCause, solution, evidence, caId]
@@ -834,184 +834,184 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
   }
 });
 // Generate consolidated corrective action email with ALL KPIs below target
-const generateConsolidatedCorrectiveActionEmail = ({ responsible, week, kpisWithActions }) => {
-  return `
-  <!DOCTYPE html>
-  <html>
-  <head><meta charset="utf-8"><title>Corrective Actions Required</title></head>
-  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
-    <div style="max-width:700px;margin:0 auto;background:#fff;padding:25px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);">
-      
-      <!-- Header -->
-      <div style="text-align:center;margin-bottom:30px;">
-        <div style="width:90px;height:90px;margin:0 auto 15px;background:#ff9800;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-          <span style="font-size:45px;">⚠️</span>
-        </div>
-        <h2 style="color:#d32f2f;font-size:24px;margin:0;">Corrective Actions Required</h2>
-        <p style="color:#666;font-size:14px;margin:10px 0 0 0;">Week ${week} - Multiple KPIs Below Target</p>
-      </div>
-      
-      <!-- Responsible Info -->
-      <div style="background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #d32f2f;">
-        <div style="margin-bottom:12px;">
-          <span style="font-weight:600;color:#333;font-size:13px;">Responsible: </span>
-          <span style="color:#666;font-size:13px;">${responsible.name}</span>
-        </div>
-        <div style="margin-bottom:12px;">
-          <span style="font-weight:600;color:#333;font-size:13px;">Plant: </span>
-          <span style="color:#666;font-size:13px;">${responsible.plant_name}</span>
-        </div>
-        <div>
-          <span style="font-weight:600;color:#333;font-size:13px;">Department: </span>
-          <span style="color:#666;font-size:13px;">${responsible.department_name}</span>
-        </div>
-      </div>
-      
-      <!-- Summary Badge -->
-      <div style="background:#fff3e0;padding:15px;border-radius:6px;margin-bottom:25px;text-align:center;border:2px solid #ff9800;">
-        <span style="font-size:32px;font-weight:700;color:#d32f2f;">${kpisWithActions.length}</span>
-        <span style="font-size:14px;color:#666;display:block;margin-top:5px;">KPIs Requiring Corrective Action</span>
-      </div>
-      
-      <!-- KPIs List -->
-      <div style="margin-bottom:25px;">
-        <h3 style="color:#333;font-size:16px;margin-bottom:15px;border-bottom:2px solid #e0e0e0;padding-bottom:8px;">
-          📊 Performance Summary
-        </h3>
-        
-        ${kpisWithActions.map((kpi, index) => `
-        <div style="background:#fafafa;border:1px solid #e0e0e0;border-radius:6px;padding:15px;margin-bottom:12px;">
-          <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px;">
-            <div style="flex:1;">
-              <div style="font-weight:600;color:#333;font-size:14px;margin-bottom:5px;">
-                ${index + 1}. ${kpi.indicator_title}
-              </div>
-              ${kpi.indicator_sub_title ? `
-              <div style="color:#666;font-size:12px;margin-bottom:8px;">
-                ${kpi.indicator_sub_title}
-              </div>
-              ` : ''}
-            </div>
-          </div>
-          
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;background:white;padding:12px;border-radius:4px;">
-            <div style="text-align:center;">
-              <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Current</div>
-              <div style="font-size:18px;font-weight:700;color:#d32f2f;">${kpi.value} ${kpi.unit || ''}</div>
-            </div>
-            <div style="text-align:center;">
-              <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Target</div>
-              <div style="font-size:18px;font-weight:700;color:#4caf50;">${kpi.target} ${kpi.unit || ''}</div>
-            </div>
-            <div style="text-align:center;">
-              <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Gap</div>
-              <div style="font-size:18px;font-weight:700;color:#ff9800;">
-                ${(parseFloat(kpi.target) - parseFloat(kpi.value)).toFixed(2)} ${kpi.unit || ''}
-              </div>
-            </div>
-          </div>
-        </div>
-        `).join('')}
-      </div>
-      
-      <!-- Action Required Section -->
-      <div style="background:#e3f2fd;padding:20px;border-radius:6px;margin-bottom:25px;">
-        <h3 style="color:#1976d2;font-size:15px;margin:0 0 12px 0;">📝 What You Need To Do</h3>
-        <ul style="margin:0;padding-left:20px;color:#555;font-size:13px;line-height:1.8;">
-          <li>Click the button below to access the corrective action form</li>
-          <li>Document the root cause for each underperforming KPI</li>
-          <li>Describe the implemented solutions</li>
-          <li>Provide evidence of improvement actions</li>
-          <li><strong>Complete within 24 hours</strong></li>
-        </ul>
-      </div>
-      
-      <!-- CTA Button -->
-<div style="text-align:center;margin:30px 0;">
-  <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
-     style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
-            border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
-            box-shadow:0 4px 10px rgba(211,47,47,0.3);">
-    📝 Complete Corrective Actions (${kpisWithActions.length})
-  </a>
-</div>
-      
-      <!-- Footer -->
-      <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e0e0e0;text-align:center;">
-        <p style="font-size:11px;color:#999;margin:0;line-height:1.6;">
-          This is an automated alert from AVOCarbon KPI System<br>
-          <strong>Week ${week}</strong> • Generated on ${new Date().toLocaleDateString()}<br>
-          For assistance, contact: <a href="mailto:administration.STS@avocarbon.com" style="color:#0078D7;">administration.STS@avocarbon.com</a>
-        </p>
-      </div>
-    </div>
-  </body>
-  </html>
-  `;
-};
+// const generateConsolidatedCorrectiveActionEmail = ({ responsible, week, kpisWithActions }) => {
+//   return `
+//   <!DOCTYPE html>
+//   <html>
+//   <head><meta charset="utf-8"><title>Corrective Actions Required</title></head>
+//   <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
+//     <div style="max-width:700px;margin:0 auto;background:#fff;padding:25px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);">
+
+//       <!-- Header -->
+//       <div style="text-align:center;margin-bottom:30px;">
+//         <div style="width:90px;height:90px;margin:0 auto 15px;background:#ff9800;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+//           <span style="font-size:45px;">⚠️</span>
+//         </div>
+//         <h2 style="color:#d32f2f;font-size:24px;margin:0;">Corrective Actions Required</h2>
+//         <p style="color:#666;font-size:14px;margin:10px 0 0 0;">Week ${week} - Multiple KPIs Below Target</p>
+//       </div>
+
+//       <!-- Responsible Info -->
+//       <div style="background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #d32f2f;">
+//         <div style="margin-bottom:12px;">
+//           <span style="font-weight:600;color:#333;font-size:13px;">Responsible: </span>
+//           <span style="color:#666;font-size:13px;">${responsible.name}</span>
+//         </div>
+//         <div style="margin-bottom:12px;">
+//           <span style="font-weight:600;color:#333;font-size:13px;">Plant: </span>
+//           <span style="color:#666;font-size:13px;">${responsible.plant_name}</span>
+//         </div>
+//         <div>
+//           <span style="font-weight:600;color:#333;font-size:13px;">Department: </span>
+//           <span style="color:#666;font-size:13px;">${responsible.department_name}</span>
+//         </div>
+//       </div>
+
+//       <!-- Summary Badge -->
+//       <div style="background:#fff3e0;padding:15px;border-radius:6px;margin-bottom:25px;text-align:center;border:2px solid #ff9800;">
+//         <span style="font-size:32px;font-weight:700;color:#d32f2f;">${kpisWithActions.length}</span>
+//         <span style="font-size:14px;color:#666;display:block;margin-top:5px;">KPIs Requiring Corrective Action</span>
+//       </div>
+
+//       <!-- KPIs List -->
+//       <div style="margin-bottom:25px;">
+//         <h3 style="color:#333;font-size:16px;margin-bottom:15px;border-bottom:2px solid #e0e0e0;padding-bottom:8px;">
+//           📊 Performance Summary
+//         </h3>
+
+//         ${kpisWithActions.map((kpi, index) => `
+//         <div style="background:#fafafa;border:1px solid #e0e0e0;border-radius:6px;padding:15px;margin-bottom:12px;">
+//           <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px;">
+//             <div style="flex:1;">
+//               <div style="font-weight:600;color:#333;font-size:14px;margin-bottom:5px;">
+//                 ${index + 1}. ${kpi.indicator_title}
+//               </div>
+//               ${kpi.indicator_sub_title ? `
+//               <div style="color:#666;font-size:12px;margin-bottom:8px;">
+//                 ${kpi.indicator_sub_title}
+//               </div>
+//               ` : ''}
+//             </div>
+//           </div>
+
+//           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;background:white;padding:12px;border-radius:4px;">
+//             <div style="text-align:center;">
+//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Current</div>
+//               <div style="font-size:18px;font-weight:700;color:#d32f2f;">${kpi.value} ${kpi.unit || ''}</div>
+//             </div>
+//             <div style="text-align:center;">
+//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Target</div>
+//               <div style="font-size:18px;font-weight:700;color:#4caf50;">${kpi.target} ${kpi.unit || ''}</div>
+//             </div>
+//             <div style="text-align:center;">
+//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Gap</div>
+//               <div style="font-size:18px;font-weight:700;color:#ff9800;">
+//                 ${(parseFloat(kpi.target) - parseFloat(kpi.value)).toFixed(2)} ${kpi.unit || ''}
+//               </div>
+//             </div>
+//           </div>
+//         </div>
+//         `).join('')}
+//       </div>
+
+//       <!-- Action Required Section -->
+//       <div style="background:#e3f2fd;padding:20px;border-radius:6px;margin-bottom:25px;">
+//         <h3 style="color:#1976d2;font-size:15px;margin:0 0 12px 0;">📝 What You Need To Do</h3>
+//         <ul style="margin:0;padding-left:20px;color:#555;font-size:13px;line-height:1.8;">
+//           <li>Click the button below to access the corrective action form</li>
+//           <li>Document the root cause for each underperforming KPI</li>
+//           <li>Describe the implemented solutions</li>
+//           <li>Provide evidence of improvement actions</li>
+//           <li><strong>Complete within 24 hours</strong></li>
+//         </ul>
+//       </div>
+
+//       <!-- CTA Button -->
+// <div style="text-align:center;margin:30px 0;">
+//   <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
+//      style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
+//             border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
+//             box-shadow:0 4px 10px rgba(211,47,47,0.3);">
+//     📝 Complete Corrective Actions (${kpisWithActions.length})
+//   </a>
+// </div>
+
+//       <!-- Footer -->
+//       <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e0e0e0;text-align:center;">
+//         <p style="font-size:11px;color:#999;margin:0;line-height:1.6;">
+//           This is an automated alert from AVOCarbon KPI System<br>
+//           <strong>Week ${week}</strong> • Generated on ${new Date().toLocaleDateString()}<br>
+//           For assistance, contact: <a href="mailto:administration.STS@avocarbon.com" style="color:#0078D7;">administration.STS@avocarbon.com</a>
+//         </p>
+//       </div>
+//     </div>
+//   </body>
+//   </html>
+//   `;
+// };
 
 // Send consolidated corrective action email
-const sendConsolidatedCorrectiveActionEmail = async (responsibleId, week) => {
-  try {
-    // Get responsible info
-    const resResp = await pool.query(
-      `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1`,
-      [responsibleId]
-    );
+// const sendConsolidatedCorrectiveActionEmail = async (responsibleId, week) => {
+//   try {
+//     // Get responsible info
+//     const resResp = await pool.query(
+//       `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
+//              p.name AS plant_name, d.name AS department_name
+//       FROM public."Responsible" r
+//       JOIN public."Plant" p ON r.plant_id = p.plant_id
+//       JOIN public."Department" d ON r.department_id = d.department_id
+//       WHERE r.responsible_id = $1`,
+//       [responsibleId]
+//     );
 
-    const responsible = resResp.rows[0];
-    if (!responsible) throw new Error("Responsible not found");
+//     const responsible = resResp.rows[0];
+//     if (!responsible) throw new Error("Responsible not found");
 
-    // Get all open corrective actions with KPI details
-    const actionsRes = await pool.query(
-      `SELECT ca.corrective_action_id, ca.kpi_id, ca.week,
-              k.indicator_title, k.indicator_sub_title, k.unit, k.target,
-              kv.value
-       FROM public.corrective_actions ca
-       JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
-       LEFT JOIN public.kpi_values kv ON ca.kpi_id = kv.kpi_id 
-         AND kv.responsible_id = ca.responsible_id 
-         AND kv.week = ca.week
-       WHERE ca.responsible_id = $1 
-         AND ca.week = $2 
-         AND ca.status = 'Open'
-       ORDER BY k.indicator_title`,
-      [responsibleId, week]
-    );
+//     // Get all open corrective actions with KPI details
+//     const actionsRes = await pool.query(
+//       `SELECT ca.corrective_action_id, ca.kpi_id, ca.week,
+//               k.indicator_title, k.indicator_sub_title, k.unit, k.target,
+//               kv.value
+//        FROM public.corrective_actions ca
+//        JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
+//        LEFT JOIN public.kpi_values kv ON ca.kpi_id = kv.kpi_id 
+//          AND kv.responsible_id = ca.responsible_id 
+//          AND kv.week = ca.week
+//        WHERE ca.responsible_id = $1 
+//          AND ca.week = $2 
+//          AND ca.status = 'Open'
+//        ORDER BY k.indicator_title`,
+//       [responsibleId, week]
+//     );
 
-    if (actionsRes.rows.length === 0) {
-      console.log(`No open corrective actions for responsible ${responsibleId}, week ${week}`);
-      return null;
-    }
+//     if (actionsRes.rows.length === 0) {
+//       console.log(`No open corrective actions for responsible ${responsibleId}, week ${week}`);
+//       return null;
+//     }
 
-    const kpisWithActions = actionsRes.rows;
+//     const kpisWithActions = actionsRes.rows;
 
-    const html = generateConsolidatedCorrectiveActionEmail({
-      responsible,
-      week,
-      kpisWithActions
-    });
+//     const html = generateConsolidatedCorrectiveActionEmail({
+//       responsible,
+//       week,
+//       kpisWithActions
+//     });
 
-    const transporter = createTransporter();
-    const info = await transporter.sendMail({
-      from: '"AVOCarbon Quality System" <administration.STS@avocarbon.com>',
-      to: responsible.email,
-      subject: `⚠️ ${kpisWithActions.length} Corrective Action${kpisWithActions.length > 1 ? 's' : ''} Required - Week ${week}`,
-      html,
-    });
+//     const transporter = createTransporter();
+//     const info = await transporter.sendMail({
+//       from: '"AVOCarbon Quality System" <administration.STS@avocarbon.com>',
+//       to: responsible.email,
+//       subject: `⚠️ ${kpisWithActions.length} Corrective Action${kpisWithActions.length > 1 ? 's' : ''} Required - Week ${week}`,
+//       html,
+//     });
 
-    console.log(`✅ Consolidated corrective action email sent to ${responsible.email} (${kpisWithActions.length} KPIs)`);
-    return info;
-  } catch (err) {
-    console.error(`❌ Failed to send consolidated corrective action email:`, err.message);
-    throw err;
-  }
-};
+//     console.log(`✅ Consolidated corrective action email sent to ${responsible.email} (${kpisWithActions.length} KPIs)`);
+//     return info;
+//   } catch (err) {
+//     console.error(`❌ Failed to send consolidated corrective action email:`, err.message);
+//     throw err;
+//   }
+// };
 
 // ---------- Redirect handler with auto-adjusting target ----------
 // ---------- Redirect handler with auto-adjusting target (TEXT version) ----------
@@ -1072,29 +1072,21 @@ app.get("/redirect", async (req, res) => {
           }
 
           // Check if corrective action was created
-          if (!result.targetUpdated) {
-            const caCheck = await pool.query(
-              `SELECT corrective_action_id FROM public.corrective_actions
-               WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3 AND status = 'Open'`,
-              [responsible_id, kpi_id, week]
-            );
-            if (caCheck.rows.length > 0) {
-              hasCorrectiveActions = true;
-            }
-          }
+          // if (!result.targetUpdated) {
+          //   const caCheck = await pool.query(
+          //     `SELECT corrective_action_id FROM public.corrective_actions
+          //      WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3 AND status = 'Open'`,
+          //     [responsible_id, kpi_id, week]
+          //   );
+          //   if (caCheck.rows.length > 0) {
+          //     hasCorrectiveActions = true;
+          //   }
+          // }
         }
       }
     }
 
-    // ===== SEND ONE CONSOLIDATED EMAIL FOR TARGET UPDATES =====
-    if (targetUpdates.length > 0) {
-      await sendConsolidatedTargetUpdateEmail(responsible_id, week, targetUpdates);
-    }
 
-    // ===== SEND ONE CONSOLIDATED EMAIL FOR CORRECTIVE ACTIONS =====
-    if (hasCorrectiveActions) {
-      await sendConsolidatedCorrectiveActionEmail(responsible_id, week);
-    }
 
     // Determine success message based on what happened
     let successMessage = `<h1>✅ KPI Submitted Successfully!</h1>`;
@@ -1104,9 +1096,7 @@ app.get("/redirect", async (req, res) => {
       notifications.push(`🎯 <strong>${targetUpdates.length} KPI target${targetUpdates.length > 1 ? 's' : ''} updated</strong> - You will receive a consolidated email`);
     }
 
-    if (hasCorrectiveActions) {
-      notifications.push(`⚠️ <strong>Corrective actions required</strong> - You will receive a consolidated email`);
-    }
+
 
     if (notifications.length === 0) {
       notifications.push(`📊 All KPIs are within targets`);
@@ -1416,36 +1406,86 @@ app.get("/form", async (req, res) => {
               </div>
             </div>
 
-            <div class="kpi-section">
-              <h3>KPI Values</h3>
-              <form action="/redirect" method="GET" id="kpiForm">
-                <input type="hidden" name="responsible_id" value="${responsible_id}" />
-                <input type="hidden" name="week" value="${week}" />
-                ${kpis.map(kpi => `
-                  <div class="kpi-card">
-                    <div class="kpi-title">${kpi.subject}</div>
-                    ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
-                    <input 
-                      type="text" 
-                      name="value_${kpi.kpi_values_id}" 
-                      value="${kpi.value || ''}" 
-                      placeholder="Enter value" 
-                      class="kpi-input"
-                    />
-                    ${kpi.unit ? `<div class="unit-label">Unit: ${kpi.unit}</div>` : ''}
-                  </div>
-                `).join('')}
-                <button type="submit" class="submit-btn">Submit KPI Values</button>
-              </form>
+      <div class="kpi-section">
+       <h3>KPI Values</h3>
+       <form action="/redirect" method="GET" id="kpiForm" novalidate>
+      <input type="hidden" name="responsible_id" value="${responsible_id}" />
+       <input type="hidden" name="week" value="${week}" />
+         ${kpis.map(kpi => `
+       <div class="kpi-card">
+      <div class="kpi-title">${kpi.subject}</div>
+      ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
+      <input 
+        type="text" 
+        name="value_${kpi.kpi_values_id}" 
+        value="${kpi.value || ''}" 
+        placeholder="Enter value" 
+        class="kpi-input"
+        required
+        oninput="clearError(this)"
+        />
+         <div class="field-error" style="display:none; color:#dc3545; font-size:12px; margin-top:4px;">
+           ⚠️ This field is required
+         </div>
+          ${kpi.unit ? `<div class="unit-label">Unit: ${kpi.unit}</div>` : ''}
+          </div>
+         `).join('')}
+          <button type="submit" class="submit-btn">Submit KPI Values</button>
+          </form>
             </div>
           </div>
         </div>
 
-        <script>
-          document.getElementById('kpiForm').addEventListener('submit', function () {
-            document.getElementById('loadingOverlay').classList.add('active');
-          });
-        </script>
+   <script>
+    function clearError(input) {
+     const errorDiv = input.nextElementSibling;
+     if (errorDiv && errorDiv.classList.contains('field-error')) {
+      errorDiv.style.display = 'none';
+      input.style.borderColor = '#ddd';
+    }
+    }
+
+    document.getElementById('kpiForm').addEventListener('submit', function (e) {
+    const inputs = this.querySelectorAll('input.kpi-input[required]');
+    let hasError = false;
+
+    inputs.forEach(input => {
+      const errorDiv = input.nextElementSibling;
+      if (!input.value.trim()) {
+        e.preventDefault();
+        hasError = true;
+        input.style.borderColor = '#dc3545';
+        input.style.boxShadow = '0 0 0 2px rgba(220,53,69,0.2)';
+        if (errorDiv && errorDiv.classList.contains('field-error')) {
+          errorDiv.style.display = 'block';
+        }
+      } else if (isNaN(input.value.trim())) {
+        // Optional: block non-numeric values
+        e.preventDefault();
+        hasError = true;
+        input.style.borderColor = '#dc3545';
+        input.style.boxShadow = '0 0 0 2px rgba(220,53,69,0.2)';
+        if (errorDiv && errorDiv.classList.contains('field-error')) {
+          errorDiv.textContent = '⚠️ Please enter a valid number';
+          errorDiv.style.display = 'block';
+        }
+      }
+    });
+
+    if (hasError) {
+      // Scroll to first error
+      const firstError = this.querySelector('input.kpi-input[required][style*="dc3545"]');
+      if (firstError) {
+        firstError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        firstError.focus();
+      }
+      return;
+    }
+
+    // Show loading overlay only if no errors
+    document.getElementById('loadingOverlay').classList.add('active');
+      });
+    </script>
 
       </body>
       </html>
@@ -1982,15 +2022,17 @@ const generateVerticalBarChart = (chartData) => {
 
   // ✅ HELPER: Format large numbers for display
   const formatLargeNumber = (num) => {
+    const isWhole = Math.abs(num - Math.round(num)) < 0.0001;
     if (num >= 1000000) {
       return (num / 1000000).toFixed(num % 1000000 === 0 ? 0 : 1) + 'M';
     }
     if (num >= 1000) {
       return (num / 1000).toFixed(num % 1000 === 0 ? 0 : 1) + 'k';
     }
+    if (isWhole) return Math.round(num).toString();  // ← key fix
     if (num < 1) return num.toFixed(2);
     if (num < 10) return num.toFixed(1);
-    return num.toFixed(num % 1 === 0 ? 0 : 1);
+    return num.toFixed(1);
   };
 
   // ✅ UPDATED: Calculate Y-axis scaling - IMPORTANT FIX
@@ -2137,15 +2179,38 @@ const generateVerticalBarChart = (chartData) => {
   // ✅ IMPROVED: Calculate segment positions with minimum bar height
   const getSegmentForValue = (value) => {
     if (!value || value <= 0) return -1;
-    return Math.round((parseFloat(value) / maxValue) * numSteps);
+    const seg = Math.round((parseFloat(value) / maxValue) * numSteps);
+    return Math.max(1, seg); // ← clamps to at least 1 row above X-axis
   };
 
   const targetSegment = getSegmentForValue(cleantarget);
-  const maxSegment = cleanMax !== null ? getSegmentForValue(cleanMax) : -1;
-  const minSegment = getSegmentForValue(cleanMin);
+  let maxSegment = cleanMax !== null ? getSegmentForValue(cleanMax) : -1;
   const upperToleranceSegment = getSegmentForValue(upper_tolerance_limit);
-  const lowerToleranceSegment = getSegmentForValue(lower_tolerance_limit);
+  const lowerToleranceSegment = -1; // Lower Tolerance line hidden
 
+  // ✅ FIX: Min=0 should render at segment 1 (just above X-axis)
+  let minSegment = -1;
+  if (cleanMin !== null) {
+    minSegment = cleanMin <= 0 ? 1 : getSegmentForValue(cleanMin);
+  }
+
+  // ✅ FIX: If Max collides with target, push Max one row up
+  if (maxSegment !== -1 && maxSegment === targetSegment && cleanMax !== cleantarget) {
+    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
+  }
+
+  // ✅ FIX: If Min collides with target or max, push Min one row down
+  if (minSegment !== -1 && minSegment === targetSegment) {
+    minSegment = Math.max(1, minSegment - 1);
+  }
+  if (minSegment !== -1 && minSegment === maxSegment) {
+    minSegment = Math.max(1, minSegment - 1);
+  }
+
+  // ✅ FIX: If Max line collides with target line, push it one row up
+  if (maxSegment !== -1 && maxSegment === targetSegment && cleanMax !== cleantarget) {
+    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
+  }
   // ✅ CRITICAL FIX: Calculate bar heights with MINIMUM VISIBLE HEIGHT
   const barSegmentHeights = data.map(value => {
     if (value <= 0) return 0;
@@ -2192,7 +2257,7 @@ const generateVerticalBarChart = (chartData) => {
       const hasMax = cleanMax !== null && seg === maxSegment && cleanMax !== cleantarget;
       const hasMin = seg === minSegment;
       const hasUpperTolerance = seg === upperToleranceSegment;
-      const hasLowerTolerance = seg === lowerToleranceSegment;
+      const hasLowerTolerance = false;
       const hasLine = hastarget || hasMax || hasMin || hasUpperTolerance || hasLowerTolerance;
 
       let lineColor = '';
@@ -2209,11 +2274,6 @@ const generateVerticalBarChart = (chartData) => {
         lineLabelColor = '#ff9800';
         lineStyle = '2px solid';
         lineLabel = 'Upper Tolerance';
-      } else if (hasLowerTolerance) {
-        lineColor = '#ff9800';
-        lineLabelColor = '#ff9800';
-        lineStyle = '2px solid';
-        lineLabel = 'Lower Tolerance';
       } else if (hasMax) {
         lineColor = '#ff9800';
         lineLabelColor = '#ff9800';
@@ -2377,10 +2437,7 @@ const generateVerticalBarChart = (chartData) => {
           ${low_tolerance ? `<td>Lower: ${formatTolerance(low_tolerance)}</td>` : ''}
         </tr>
         ${upper_tolerance_limit || lower_tolerance_limit ? `
-        <tr>
-          ${upper_tolerance_limit ? `<td>Upper Limit: ${formatLargeNumber(upper_tolerance_limit)}</td>` : ''}
-          ${lower_tolerance_limit ? `<td>Lower Limit: ${formatLargeNumber(lower_tolerance_limit)}</td>` : ''}
-        </tr>
+   
         ` : ''}
       </table>
     </div>
@@ -2463,18 +2520,7 @@ const generateVerticalBarChart = (chartData) => {
                     <td style="font-size: 11px; color: #666;">target</td>
                   </tr></table></td>
                 ` : ''}
-                ${upper_tolerance_limit ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="20" height="12" style="border-top: 2px solid #ff9800;"></td>
-                    <td style="font-size: 11px; color: #666;">Upper Tolerance</td>
-                  </tr></table></td>
-                ` : ''}
-                ${lower_tolerance_limit ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="20" height="12" style="border-top: 2px solid #ff9800;"></td>
-                    <td style="font-size: 11px; color: #666;">Lower Tolerance</td>
-                  </tr></table></td>
-                ` : ''}
+               
                 ${cleanMax !== null ? `
                   <td><table border="0" cellpadding="0" cellspacing="5"><tr>
                     <td width="20" height="12" style="border-top: 2px dashed #ff9800;"></td>
@@ -3033,7 +3079,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "12 09 * * *",
+  "19 12 * * *",
   async () => {
     if (cronRunning) return console.log("⏭️ Cron already running, skip...");
     cronRunning = true;
@@ -3065,7 +3111,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "13 09 * * *", // Every MOnday at 9:00 AM
+  "49 12 * * *", // Every MOnday at 9:00 AM
   async () => {
     if (reportCronRunning) {
       console.log("⏭️ Weekly report cron already running, skipping...");
@@ -3245,7 +3291,8 @@ const createIndividualKPIChart = (kpi) => {
   /* ===================== CALCULATE SEGMENT POSITIONS - SKIP NULL MAX ===================== */
   const getSegmentForValue = (value) => {
     if (!value || value <= 0) return -1;
-    return Math.round((parseFloat(value) / maxValue) * numSegments);
+    const seg = Math.round((parseFloat(value) / maxValue) * numSteps);
+    return Math.max(1, seg); // Always at least 1 segment above X-axis
   };
 
   const targetSegment = getSegmentForValue(target);
