@@ -1757,9 +1757,8 @@ app.get("/dashboard", async (req, res) => {
                 ${kpi.target ? `<div><strong>target:</strong> <span>${kpi.target}</span></div>` : ''}
                 ${kpi.min ? `<div><strong>Minimum:</strong> <span>${kpi.min}</span></div>` : ''}
                 ${kpi.max ? `<div><strong>Maximum:</strong> <span>${kpi.max}</span></div>` : ''}
-                ${kpi.tolerance_type ? `<div><strong>Tolerance Type:</strong> <span>${kpi.tolerance_type}</span></div>` : ''}
-                ${kpi.up_tolerance ? `<div><strong>Upper Tolerance:</strong> <span>${kpi.up_tolerance}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
-                ${kpi.low_tolerance ? `<div><strong>Lower Tolerance:</strong> <span>${kpi.low_tolerance}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
+                ${kpi.up_tolerance ? `<div><strong>Upper Tolerance:</strong> <span>${(parseFloat(kpi.up_tolerance) * 100).toFixed(0)}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
+                ${kpi.low_tolerance ? `<div><strong>Lower Tolerance:</strong> <span>${(parseFloat(kpi.low_tolerance) * 100).toFixed(0)}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
                 ${kpi.calculation_on ? `<div><strong>Calculation Basis:</strong> <span>${kpi.calculation_on}</span></div>` : ''}
                 ${kpi.target_auto_adjustment ? `<div><strong>Auto Adjustment:</strong> <span>${kpi.target_auto_adjustment}</span></div>` : ''}
               </div>
@@ -2361,28 +2360,31 @@ const generateVerticalBarChart = (chartData) => {
     `;
   }
 
+  // Helper to format tolerance as percentage
+  const formatTolerance = (value) => value ? `${(parseFloat(value) * 100).toFixed(0)}%` : '';
+
   // Create tolerance info display
   let toleranceInfo = '';
   if (tolerance_type && (up_tolerance || low_tolerance)) {
     toleranceInfo = `
-      <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #6c757d;">
-        <div style="font-size: 12px; color: #495057; font-weight: 600; margin-bottom: 5px;">
-          Tolerance Settings: ${tolerance_type}
-        </div>
-        <table border="0" cellpadding="2" cellspacing="2" style="font-size: 11px; color: #6c757d;">
-          <tr>
-            ${up_tolerance ? `<td>Upper: ${up_tolerance}${tolerance_type === 'Relative' ? '%' : ''}</td>` : ''}
-            ${low_tolerance ? `<td>Lower: ${low_tolerance}${tolerance_type === 'Relative' ? '%' : ''}</td>` : ''}
-          </tr>
-          ${upper_tolerance_limit || lower_tolerance_limit ? `
-          <tr>
-            ${upper_tolerance_limit ? `<td>Upper Limit: ${formatLargeNumber(upper_tolerance_limit)}</td>` : ''}
-            ${lower_tolerance_limit ? `<td>Lower Limit: ${formatLargeNumber(lower_tolerance_limit)}</td>` : ''}
-          </tr>
-          ` : ''}
-        </table>
+    <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #6c757d;">
+      <div style="font-size: 12px; color: #495057; font-weight: 600; margin-bottom: 5px;">
+        Tolerance Settings: ${tolerance_type}
       </div>
-    `;
+      <table border="0" cellpadding="2" cellspacing="2" style="font-size: 11px; color: #6c757d;">
+        <tr>
+          ${up_tolerance ? `<td>Upper: ${formatTolerance(up_tolerance)}</td>` : ''}
+          ${low_tolerance ? `<td>Lower: ${formatTolerance(low_tolerance)}</td>` : ''}
+        </tr>
+        ${upper_tolerance_limit || lower_tolerance_limit ? `
+        <tr>
+          ${upper_tolerance_limit ? `<td>Upper Limit: ${formatLargeNumber(upper_tolerance_limit)}</td>` : ''}
+          ${lower_tolerance_limit ? `<td>Lower Limit: ${formatLargeNumber(lower_tolerance_limit)}</td>` : ''}
+        </tr>
+        ` : ''}
+      </table>
+    </div>
+  `;
   }
 
   // ✅ Return HTML with visible bars
@@ -3031,7 +3033,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
-  "02 09 * * *",
+  "12 09 * * *",
   async () => {
     if (cronRunning) return console.log("⏭️ Cron already running, skip...");
     cronRunning = true;
@@ -3063,7 +3065,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "42 08 * * *", // Every MOnday at 9:00 AM
+  "13 09 * * *", // Every MOnday at 9:00 AM
   async () => {
     if (reportCronRunning) {
       console.log("⏭️ Weekly report cron already running, skipping...");
