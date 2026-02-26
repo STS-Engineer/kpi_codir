@@ -3170,7 +3170,7 @@ cron.schedule(
 );
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
-let reportCronRunning = false;
+// let reportCronRunning = false;
 
 // cron.schedule(
 //   "42 15 * * *",
