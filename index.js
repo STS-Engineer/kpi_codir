@@ -1824,9 +1824,34 @@ app.get("/dashboard", async (req, res) => {
             <div class="kpi-card">
               <div class="kpi-title">${kpi.subject}</div>
               ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ""}
+
               ${achievementStatus ? `<div style="font-size: 12px; color: #6c757d; margin-bottom: 5px;">${achievementStatus}</div>` : ''}
-              <div class="kpi-value ${!hasValue ? 'no-data' : ''}">${hasValue ? kpi.value : "Not filled yet"}</div>
-              ${kpi.unit ? `<span class="kpi-unit">${kpi.unit}</span>` : ""}
+               <!-- Value Display -->
+             <div class="kpi-value ${!hasValue ? 'no-data' : ''}">
+              <!-- Target Display - NOW ABOVE the value -->
+              <!-- Target and Actual Value in same row with space between -->
+              ${kpi.target ? `
+             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+             <div style="display: flex; align-items: center; gap: 10px;">
+             <span style="font-weight: 600; color: #495057; font-size: 20px;">Target:</span>
+            <span style="font-weight: 600; color: #28a745; font-size: 18px;">
+            ${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}
+            </span>
+           </div>
+    
+           <div style="display: flex; align-items: center; gap: 10px;">
+           <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
+          <span class="kpi-value ${!hasValue ? 'no-data' : ''}">${hasValue ? kpi.value : "Not filled yet"}</span>
+         ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
+           </div>
+          </div>
+           ` : `
+           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+             <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
+             <span class="kpi-value ${!hasValue ? 'no-data' : ''}">${hasValue ? kpi.value : "Not filled yet"}</span>
+             ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
+             </div>
+             `}
               
               <!-- KPI details section -->
               <div class="kpi-details">
