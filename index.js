@@ -2037,6 +2037,8 @@ const formatNumber = (num) => {
 };
 // ---------- Generate HTML/CSS Charts ----------
 // Complete corrected generateVerticalBarChart function with proper target line positioning
+// Complete corrected generateVerticalBarChart function with proper x-axis label positioning
+// Complete corrected generateVerticalBarChart function with proper x-axis label positioning
 const generateVerticalBarChart = (chartData) => {
   const {
     title,
@@ -2109,52 +2111,33 @@ const generateVerticalBarChart = (chartData) => {
 
     const dataMax = Math.max(...allValues);
 
-    // Handle extremely small values vs large target
+    // Dual scale for extremely small values vs large target
     if (isValueExtremelySmall && cleantarget && cleantarget > 0) {
-      const valueBasedMax = Math.max(dataMax * 2, 10);
+      const valueBasedMax = Math.max(Math.max(...validData) * 4, 10);
+      const numSteps = 10;
       return {
         maxValue: valueBasedMax,
-        interval: valueBasedMax / 4,
-        numSteps: 4,
+        interval: valueBasedMax / numSteps,
+        numSteps,
         useDualScale: true,
         targetValue: cleantarget
       };
     }
 
-    // No target - simple scaling
-    if (!cleantarget || cleantarget <= 0) {
-      const numSteps = 5;
-      const interval = Math.max(1, Math.ceil(dataMax / numSteps));
-      const maxValue = interval * numSteps;
-      return { maxValue, interval, numSteps, useDualScale: false };
-    }
+    // Nice-interval scaling giving ~10 steps for accurate line placement
+    const rawInterval = dataMax / 10;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval || 1)));
+    const normalized = rawInterval / magnitude;
+    let niceInterval;
+    if (normalized <= 1) niceInterval = 1 * magnitude;
+    else if (normalized <= 2) niceInterval = 2 * magnitude;
+    else if (normalized <= 2.5) niceInterval = 2.5 * magnitude;
+    else if (normalized <= 5) niceInterval = 5 * magnitude;
+    else niceInterval = 10 * magnitude;
 
-    const targetNum = cleantarget;
-
-    if (targetNum <= 10) {
-      return {
-        maxValue: Math.max(dataMax, Math.ceil(targetNum * 1.2)),
-        interval: Math.max(1, Math.ceil(targetNum / 3)),
-        numSteps: 3,
-        useDualScale: false
-      };
-    }
-    if (targetNum <= 50) {
-      const rounded = Math.max(dataMax, Math.ceil(targetNum / 5) * 5);
-      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
-    }
-    if (targetNum <= 200) {
-      const rounded = Math.max(dataMax, Math.ceil(targetNum / 20) * 20);
-      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
-    }
-    if (targetNum <= 1000) {
-      const rounded = Math.max(dataMax, Math.ceil(targetNum / 100) * 100);
-      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
-    }
-
-    // Very large targets
-    const rounded = Math.max(dataMax, Math.ceil(targetNum / 500) * 500);
-    return { maxValue: rounded, interval: rounded / 3, numSteps: 3, useDualScale: false };
+    const maxValue = Math.ceil(dataMax / niceInterval) * niceInterval + niceInterval;
+    const numSteps = Math.round(maxValue / niceInterval);
+    return { maxValue, interval: niceInterval, numSteps, useDualScale: false };
   };
 
   // Calculate scaling
@@ -2182,10 +2165,19 @@ const generateVerticalBarChart = (chartData) => {
       if (cleanMax && Math.abs(value - cleanMax) < tolerance) indicators += ' 📈';
       if (cleanMin && Math.abs(value - cleanMin) < tolerance) indicators += ' 📉';
 
+      // Bottom row (i === 0) should align with x-axis
+      const verticalAlign = i === 0 ? 'bottom' : 'top';
+
       yAxis += `
         <tr>
-          <td height="${segmentHeight}" valign="top" align="right"
-              style="font-size: 10px; color: #666; padding-right: 8px; white-space: nowrap;">
+          <td height="${segmentHeight}" 
+              valign="${verticalAlign}" 
+              align="right"
+              style="font-size: 10px; 
+                     color: #666; 
+                     padding-right: 8px; 
+                     white-space: nowrap;
+                     ${i === 0 ? 'padding-bottom: 4px;' : ''}">
             ${displayValue}${indicators}
           </td>
         </tr>
@@ -2208,27 +2200,13 @@ const generateVerticalBarChart = (chartData) => {
 
   // ✅ Calculate segment positions
   const getSegmentForValue = (value) => {
-    if (!value || value <= 0 || isNaN(value)) return -1;
+    if (value === null || value === undefined || isNaN(value) || value < 0) return -1;
     return Math.round((parseFloat(value) / maxValue) * numSteps);
   };
 
   const targetSegment = getSegmentForValue(cleantarget);
-  let maxSegment = cleanMax !== null ? getSegmentForValue(cleanMax) : -1;
-  let minSegment = -1;
-  if (cleanMin !== null) {
-    minSegment = cleanMin <= 0 ? 1 : getSegmentForValue(cleanMin);
-  }
-
-  // Avoid line collisions
-  if (maxSegment !== -1 && maxSegment === targetSegment && cleanMax !== cleantarget) {
-    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
-  }
-  if (minSegment !== -1 && minSegment === targetSegment) {
-    minSegment = Math.max(1, minSegment - 1);
-  }
-  if (minSegment !== -1 && minSegment === maxSegment) {
-    minSegment = Math.max(1, minSegment - 1);
-  }
+  const maxSegment = cleanMax !== null && cleanMax > 0 ? getSegmentForValue(cleanMax) : -1;
+  const minSegment = cleanMin !== null && cleanMin >= 0 ? getSegmentForValue(cleanMin) : -1;
 
   // ✅ Bar heights using data array
   const barSegmentHeights = data.map(value => {
@@ -2262,7 +2240,8 @@ const generateVerticalBarChart = (chartData) => {
   const generateChart = () => {
     let chart = '';
 
-    for (let seg = numSteps + 1; seg >= 0; seg--) {
+    // Create rows from top to bottom
+    for (let seg = numSteps; seg >= 0; seg--) {
       const hasTarget = seg === targetSegment;
       const hasMax = cleanMax !== null && seg === maxSegment && cleanMax !== cleantarget;
       const hasMin = seg === minSegment;
@@ -2290,82 +2269,65 @@ const generateVerticalBarChart = (chartData) => {
 
       data.forEach((value, idx) => {
         const barHeight = barSegmentHeights[idx];
-        const isCurrent = idx === data.length - 1;
         const barColor = getBarColor(value);
         const isExtremelySmall = value > 0 && value < (maxValue * 0.01);
 
         let cellContent = '';
         let cellBorder = '';
 
+        // Add target/max/min line if this segment has one
         if (hasLine) {
           cellBorder = `border-top: 2px dashed ${lineColor};`;
         }
 
-        // Value label above bar
-        if (seg === barHeight + 1 && barHeight > 0) {
-          const displayVal = formatLargeNumber(value);
+        // Value label - show above the bar
+        if (seg === barHeight && barHeight > 0) {
+          const displayVal = value >= 1000
+            ? formatLargeNumber(value)
+            : value.toFixed(value % 1 === 0 ? 0 : 1);
+
           cellContent = `
-            <table border="0" cellpadding="2" cellspacing="0" width="100%">
-              <tr><td align="center" style="font-size: 10px; font-weight: bold; color: #333;">
-                ${displayVal}
-              </td></tr>
-            </table>
+            <div style="
+              position: relative;
+              width: 100%;
+              text-align: center;
+              margin-top: -20px;
+              font-size: 10px;
+              font-weight: bold;
+              color: #333;
+              background: rgba(255,255,255,0.8);
+              padding: 2px 0;
+              border-radius: 4px;
+            ">
+              ${displayVal}
+            </div>
           `;
         }
 
-        // Bar body
-        if (seg > 0 && seg <= barHeight) {
-          const actualBarHeight = Math.max(segmentHeight, 4);
+        // Bar segment
+        if (seg <= barHeight && barHeight > 0) {
           cellContent += `
-            <table border="0" cellpadding="0" cellspacing="0" width="60" align="center">
-              <tr>
-                <td height="${actualBarHeight}"
-                    style="background-color: ${barColor};
-                           border: none;
-                           padding: 0;
-                           margin: 0;
-                           font-size: 1px;
-                           line-height: ${actualBarHeight}px;
-                           ${isExtremelySmall ? 'border: 1px solid #ff9800;' : ''}">
-                  &nbsp;
-                </td>
-              </tr>
-            </table>
-          `;
-        }
-
-        // X-axis label
-        if (seg === 0) {
-          const w = weekLabels[idx] || `W${idx + 1}`;
-          cellContent = `
-            <table border="0" cellpadding="2" cellspacing="0" width="100%">
-              <tr><td align="center" style="font-size: 10px; color: #666; padding-top: 6px;">
-                ${w}
-              </td></tr>
-            </table>
-          `;
-        }
-
-        // Line label on last column
-        if (hasLine && idx === data.length - 1) {
-          cellContent += `
-            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-              <tr><td align="right" style="font-size: 9px; color: ${lineLabelColor}; font-weight: 600; white-space: nowrap; padding-left: 8px;">
-                ${lineLabel}
-              </td></tr>
-            </table>
+            <div style="
+              width: 40px;
+              height: ${segmentHeight}px;
+              background-color: ${barColor};
+              margin: 0 auto;
+              ${isExtremelySmall ? 'border: 1px solid #ff9800;' : ''}
+              border-radius: ${seg === barHeight ? '4px 4px 0 0' : '0'};
+            "></div>
           `;
         }
 
         chart += `
-          <td align="center" width="${100 / data.length}%"
-              style="padding: 0 4px;
-                     vertical-align: middle;
-                     ${cellBorder}
-                     height: ${seg >= 0 ? segmentHeight : 'auto'}px;
-                     line-height: 0;
-                     font-size: 0;
-                     position: relative;">
+          <td align="center" 
+              width="${100 / data.length}%"
+              style="
+                padding: 0;
+                vertical-align: bottom;
+                ${cellBorder}
+                height: ${segmentHeight}px;
+                line-height: 0;
+              ">
             ${cellContent}
           </td>
         `;
@@ -2373,6 +2335,31 @@ const generateVerticalBarChart = (chartData) => {
 
       chart += '</tr>';
     }
+
+    // Add a spacer row for x-axis line
+    chart += '<tr><td colspan="' + data.length + '" style="height: 2px; background: #ccc;"></td></tr>';
+
+    // Add x-axis labels row
+    chart += '<tr>';
+    data.forEach((value, idx) => {
+      const w = weekLabels[idx] || `W${idx + 1}`;
+      const isCurrent = idx === data.length - 1;
+
+      chart += `
+        <td align="center" 
+            width="${100 / data.length}%"
+            style="
+              padding-top: 8px;
+              font-size: 11px;
+              font-weight: ${isCurrent ? 'bold' : 'normal'};
+              color: ${isCurrent ? '#0078D7' : '#666'};
+              border-top: 1px solid #999;
+            ">
+          ${w}
+        </td>
+      `;
+    });
+    chart += '</tr>';
 
     return chart;
   };
@@ -2434,7 +2421,7 @@ const generateVerticalBarChart = (chartData) => {
     `;
   }
 
-  // ✅ Return full chart HTML
+  // ✅ Return full chart HTML with proper structure
   return `
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 20px 0; background: white; border-radius: 8px; border: 1px solid #e0e0e0; font-family: Arial, sans-serif;">
       <tr><td style="padding: 20px;">
@@ -2461,15 +2448,18 @@ const generateVerticalBarChart = (chartData) => {
           </td></tr>
         </table>
 
-        <!-- Chart -->
+        <!-- Chart Area -->
         <table border="0" cellpadding="0" cellspacing="0" width="100%">
           <tr>
-            <td width="55" valign="top" style="border-right: 2px solid #ccc; padding-right: 10px;">
+            <!-- Y-axis -->
+            <td width="60" valign="top" style="border-right: 2px solid #ccc; padding-right: 5px;">
               <table border="0" cellpadding="0" cellspacing="0" width="100%" style="height: ${chartHeight}px;">
                 ${generateYAxis()}
               </table>
             </td>
-            <td valign="top" style="padding-left: 10px; border-bottom: 2px solid #ccc;">
+            
+            <!-- Chart and X-axis -->
+            <td valign="top" style="padding-left: 5px;">
               <table border="0" cellpadding="0" cellspacing="0" width="100%">
                 ${generateChart()}
               </table>
@@ -2478,22 +2468,22 @@ const generateVerticalBarChart = (chartData) => {
         </table>
 
         <!-- Stats -->
-        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #3880c7ff; border-radius: 6px; margin-top: 20px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f8f9fa; border-radius: 6px; margin-top: 20px;">
           <tr>
             <td width="33%" align="center" style="border-right: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">CURRENT</div>
-              <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.current)}</div>
-              <div style="font-size: 10px; color: #dce8f8;">${currentWeek.replace('2026-Week', 'Week ')}</div>
+              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">CURRENT</div>
+              <div style="font-size: 20px; font-weight: 700; color: #0078D7;">${formatNumber(stats.current)}</div>
+              <div style="font-size: 10px; color: #999;">${currentWeek.replace('2026-Week', 'Week ')}</div>
             </td>
             <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
-              <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.average)}</div>
-              <div style="font-size: 10px; color: #dce8f8;">${stats.dataPoints || data.length} periods</div>
+              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
+              <div style="font-size: 20px; font-weight: 700; color: #0078D7;">${formatNumber(stats.average)}</div>
+              <div style="font-size: 10px; color: #999;">${stats.dataPoints || data.length} periods</div>
             </td>
             <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">TREND</div>
+              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">TREND</div>
               <div style="font-size: 20px; font-weight: 700; color: ${stats.trend.startsWith('-') ? '#F44336' : '#4CAF50'};">${stats.trend}</div>
-              <div style="font-size: 10px; color: #dce8f8;">Week over week</div>
+              <div style="font-size: 10px; color: #999;">Week over week</div>
             </td>
           </tr>
         </table>
@@ -2886,7 +2876,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     const toleranceDisplay = toleranceTypes.size > 0 ?
       Array.from(toleranceTypes).join(', ') : 'N/A';
 
- const emailHtml = `
+    const emailHtml = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -3036,13 +3026,13 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
                     </p>
                     <p style="margin: 0; font-size: 11px; color: #999;">
                       Generated on ${new Date().toLocaleDateString('en-GB', {
-                        weekday: 'long',
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })} • 
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })} • 
                       Contact: <a href="mailto:administration.STS@avocarbon.com" 
                                 style="color: #0078D7; text-decoration: none;">administration.STS@avocarbon.com</a>
                     </p>
@@ -3081,164 +3071,164 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 
 
 // ---------- Schedule weekly email to submit kpi----------
-let cronRunning = false;
-cron.schedule(
-  "48 13 * * *",
-  async () => {
-    const lockId = "send_kpi_weekly_email_job";
+// let cronRunning = false;
+// cron.schedule(
+//   "48 13 * * *",
+//   async () => {
+//     const lockId = "send_kpi_weekly_email_job";
 
-    // Try to acquire distributed lock
-    const lock = await acquireJobLock(lockId);
+//     // Try to acquire distributed lock
+//     const lock = await acquireJobLock(lockId);
 
-    if (!lock.acquired) {
-      return; // Another instance is running it
-    }
+//     if (!lock.acquired) {
+//       return; // Another instance is running it
+//     }
 
-    try {
-      if (cronRunning) {
-        console.log("⏭️ Cron already running locally, skip...");
-        return;
-      }
+//     try {
+//       if (cronRunning) {
+//         console.log("⏭️ Cron already running locally, skip...");
+//         return;
+//       }
 
-      cronRunning = true;
+//       cronRunning = true;
 
-      const now = new Date();
-      const startOfYear = new Date(now.getFullYear(), 0, 1);
-      const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
-      const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-      const targetWeek = currentWeek - 1;
-      const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
-      const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
+//       const now = new Date();
+//       const startOfYear = new Date(now.getFullYear(), 0, 1);
+//       const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
+//       const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
+//       const targetWeek = currentWeek - 1;
+//       const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
+//       const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
 
-      const resps = await pool.query(
-        `
-        SELECT DISTINCT r.responsible_id
-        FROM public."Responsible" r
-        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
-        WHERE kv.week = $1
-      `,
-        [forcedWeek]
-      );
+//       const resps = await pool.query(
+//         `
+//         SELECT DISTINCT r.responsible_id
+//         FROM public."Responsible" r
+//         JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
+//         WHERE kv.week = $1
+//       `,
+//         [forcedWeek]
+//       );
 
-      for (let r of resps.rows) {
-        await sendKPIEmail(r.responsible_id, forcedWeek);
-      }
+//       for (let r of resps.rows) {
+//         await sendKPIEmail(r.responsible_id, forcedWeek);
+//       }
 
-      console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
+//       console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
 
-    } catch (err) {
-      console.error("❌ Error sending scheduled emails:", err.message);
-    } finally {
-      cronRunning = false;
+//     } catch (err) {
+//       console.error("❌ Error sending scheduled emails:", err.message);
+//     } finally {
+//       cronRunning = false;
 
-      // Always release advisory lock
-      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-    }
-  },
-  { scheduled: true, timezone: "Africa/Tunis" }
-);
+//       // Always release advisory lock
+//       await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+//     }
+//   },
+//   { scheduled: true, timezone: "Africa/Tunis" }
+// );
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
-let reportCronRunning = false;
-cron.schedule(
-  "18 15 * * *", // Every Monday at 14:49 Africa/Tunis
-  async () => {
+// let reportCronRunning = false;
+// cron.schedule(
+//   "00 09 * * *", // Every Monday at 14:49 Africa/Tunis
+//   async () => {
 
-    const lockId = "weekly_kpi_report_job";
+//     const lockId = "weekly_kpi_report_job";
 
-    // 🔐 Try to acquire distributed lock
-    const lock = await acquireJobLock(lockId);
+//     // 🔐 Try to acquire distributed lock
+//     const lock = await acquireJobLock(lockId);
 
-    if (!lock.acquired) {
-      return; // Another instance is already running it
-    }
+//     if (!lock.acquired) {
+//       return; // Another instance is already running it
+//     }
 
-    try {
+//     try {
 
-      if (reportCronRunning) {
-        console.log("⏭️ Weekly report cron already running locally, skipping...");
-        return;
-      }
+//       if (reportCronRunning) {
+//         console.log("⏭️ Weekly report cron already running locally, skipping...");
+//         return;
+//       }
 
-      reportCronRunning = true;
+//       reportCronRunning = true;
 
-      // ===== WEEK CALCULATION =====
-      const now = new Date();
-      const year = now.getFullYear();
+//       // ===== WEEK CALCULATION =====
+//       const now = new Date();
+//       const year = now.getFullYear();
 
-      const getWeekNumber = (date) => {
-        const d = new Date(date);
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-        const yearStart = new Date(d.getFullYear(), 0, 1);
-        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-      };
+//       const getWeekNumber = (date) => {
+//         const d = new Date(date);
+//         d.setHours(0, 0, 0, 0);
+//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+//         const yearStart = new Date(d.getFullYear(), 0, 1);
+//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+//       };
 
-      const weekNumber = getWeekNumber(now);
-      const previousWeek = `${year}-Week${weekNumber - 1}`;
+//       const weekNumber = getWeekNumber(now);
+//       const previousWeek = `${year}-Week${weekNumber - 1}`;
 
-      console.log(`📊 Sending weekly reports for ${previousWeek}...`);
+//       console.log(`📊 Sending weekly reports for ${previousWeek}...`);
 
-      // ===== FETCH RESPONSIBLES =====
-      const resps = await pool.query(`
-        SELECT DISTINCT r.responsible_id, r.email, r.name
-        FROM public."Responsible" r
-        JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
-        WHERE r.email IS NOT NULL
-          AND r.email != ''
-        GROUP BY r.responsible_id, r.email, r.name
-        HAVING COUNT(h.hist_id) > 0
-        ORDER BY r.responsible_id
-      `);
+//       // ===== FETCH RESPONSIBLES =====
+//       const resps = await pool.query(`
+//         SELECT DISTINCT r.responsible_id, r.email, r.name
+//         FROM public."Responsible" r
+//         JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
+//         WHERE r.email IS NOT NULL
+//           AND r.email != ''
+//         GROUP BY r.responsible_id, r.email, r.name
+//         HAVING COUNT(h.hist_id) > 0
+//         ORDER BY r.responsible_id
+//       `);
 
-      const results = [];
+//       const results = [];
 
-      for (const [index, resp] of resps.rows.entries()) {
-        try {
-          await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
+//       for (const [index, resp] of resps.rows.entries()) {
+//         try {
+//           await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
 
-          console.log(
-            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
-          );
+//           console.log(
+//             `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
+//           );
 
-          results.push({ responsible_id: resp.responsible_id, status: "success" });
+//           results.push({ responsible_id: resp.responsible_id, status: "success" });
 
-          // Prevent email rate limiting
-          await new Promise(resolve => setTimeout(resolve, 1500));
+//           // Prevent email rate limiting
+//           await new Promise(resolve => setTimeout(resolve, 1500));
 
-        } catch (err) {
-          console.error(
-            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
-            err.message
-          );
+//         } catch (err) {
+//           console.error(
+//             `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
+//             err.message
+//           );
 
-          results.push({
-            responsible_id: resp.responsible_id,
-            status: "error",
-            message: err.message
-          });
-        }
-      }
+//           results.push({
+//             responsible_id: resp.responsible_id,
+//             status: "error",
+//             message: err.message
+//           });
+//         }
+//       }
 
-      const succeeded = results.filter(r => r.status === "success").length;
+//       const succeeded = results.filter(r => r.status === "success").length;
 
-      console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
+//       console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
 
-    } catch (error) {
-      console.error("❌ Error in weekly report cron job:", error.message);
-    } finally {
+//     } catch (error) {
+//       console.error("❌ Error in weekly report cron job:", error.message);
+//     } finally {
 
-      reportCronRunning = false;
+//       reportCronRunning = false;
 
-      // 🔓 Always release advisory lock
-      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-    }
-  },
-  {
-    scheduled: true,
-    timezone: "Africa/Tunis"
-  }
-);
+//       // 🔓 Always release advisory lock
+//       await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+//     }
+//   },
+//   {
+//     scheduled: true,
+//     timezone: "Africa/Tunis"
+//   }
+// );
 
 // ========== UPDATED QUERY TO GET WEEKLY DATA ==========
 
@@ -3301,40 +3291,34 @@ const createIndividualKPIChart = (kpi) => {
 
   const dataMax = Math.max(...allValues, 1);
 
+  const rawInterval = dataMax / 10;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval || 1)));
+  const normalized = rawInterval / magnitude;
   let interval;
-  if (dataMax <= 10) {
-    interval = 1;
-  } else if (dataMax <= 50) {
-    interval = 5;
-  } else if (dataMax <= 100) {
-    interval = 10;
-  } else if (dataMax <= 500) {
-    interval = 50;
-  } else if (dataMax <= 1000) {
-    interval = 100;
-  } else {
-    interval = Math.ceil(dataMax / 10 / 100) * 100;
-  }
+  if (normalized <= 1) interval = 1 * magnitude;
+  else if (normalized <= 2) interval = 2 * magnitude;
+  else if (normalized <= 2.5) interval = 2.5 * magnitude;
+  else if (normalized <= 5) interval = 5 * magnitude;
+  else interval = 10 * magnitude;
 
   const maxValue = Math.ceil(dataMax / interval) * interval + interval;
 
   const chartHeight = 180;
-  // ✅ FIX: Define numSteps properly
-  const numSteps = Math.ceil(maxValue / interval);
+  const numSteps = Math.round(maxValue / interval);
   const segmentHeight = chartHeight / numSteps;
 
   console.log(`Chart scale - MaxValue: ${maxValue}, Interval: ${interval}, NumSteps: ${numSteps}, SegmentHeight: ${segmentHeight}`);
 
   /* ===================== CALCULATE SEGMENT POSITIONS ===================== */
   const getSegmentForValue = (value) => {
-    if (value === null || value === undefined || value <= 0) return -1;
-    const seg = Math.round((parseFloat(value) / maxValue) * numSteps);
-    return Math.max(1, seg);
+    if (value === null || value === undefined || isNaN(value) || value < 0) return -1;
+    return Math.round((parseFloat(value) / maxValue) * numSteps);
   };
 
   const targetSegment = getSegmentForValue(target);
-  let maxSegment = max !== null ? getSegmentForValue(max) : -1;
-  let minSegment = min !== null ? (min <= 0 ? 1 : getSegmentForValue(min)) : -1;
+  const maxSegment = max !== null && max > 0 ? getSegmentForValue(max) : -1;
+  const minSegment = min !== null && min >= 0 ? getSegmentForValue(min) : -1;
+
 
   // ✅ FIX: Avoid line collisions
   if (maxSegment !== -1 && maxSegment === targetSegment && max !== target) {
@@ -5371,86 +5355,86 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 // ---------- Update Cron Job for Department Reports ----------
 // ---------- Schedule Department Reports ----------
 
-cron.schedule(
-  "57 14 * * *",
-  async () => {
+// cron.schedule(
+//   "57 14 * * *",
+//   async () => {
 
-    const lockId = "department_report_job";
-    const client = await pool.connect();
+//     const lockId = "department_report_job";
+//     const client = await pool.connect();
 
-    try {
-      // Create stable hash
-      const lockHash = Math.abs(
-        lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)
-      );
+//     try {
+//       // Create stable hash
+//       const lockHash = Math.abs(
+//         lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)
+//       );
 
-      // Try acquiring advisory lock
-      const result = await client.query(
-        "SELECT pg_try_advisory_lock($1) as acquired",
-        [lockHash]
-      );
+//       // Try acquiring advisory lock
+//       const result = await client.query(
+//         "SELECT pg_try_advisory_lock($1) as acquired",
+//         [lockHash]
+//       );
 
-      if (!result.rows[0].acquired) {
-        console.log("⏭️ [Department Report] Skipping - lock held by another instance");
-        return;
-      }
+//       if (!result.rows[0].acquired) {
+//         console.log("⏭️ [Department Report] Skipping - lock held by another instance");
+//         return;
+//       }
 
-      console.log("🔒 [Department Report] Lock acquired");
+//       console.log("🔒 [Department Report] Lock acquired");
 
-      // ===== YOUR EXISTING LOGIC =====
+//       // ===== YOUR EXISTING LOGIC =====
 
-      const now = new Date();
+//       const now = new Date();
 
-      const getWeekNumber = (date) => {
-        const d = new Date(date);
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-        const yearStart = new Date(d.getFullYear(), 0, 1);
-        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-      };
+//       const getWeekNumber = (date) => {
+//         const d = new Date(date);
+//         d.setHours(0, 0, 0, 0);
+//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+//         const yearStart = new Date(d.getFullYear(), 0, 1);
+//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+//       };
 
-      const weekNumber = getWeekNumber(now);
-      const currentWeek = `2026-Week${weekNumber}`;
+//       const weekNumber = getWeekNumber(now);
+//       const currentWeek = `2026-Week${weekNumber}`;
 
-      console.log(`📊 [Department Report] Starting for week ${currentWeek}...`);
+//       console.log(`📊 [Department Report] Starting for week ${currentWeek}...`);
 
-      const plantsRes = await pool.query(`
-        SELECT plant_id, name, manager_email 
-        FROM public."Plant" 
-        WHERE manager_email IS NOT NULL AND manager_email != ''
-      `);
+//       const plantsRes = await pool.query(`
+//         SELECT plant_id, name, manager_email 
+//         FROM public."Plant" 
+//         WHERE manager_email IS NOT NULL AND manager_email != ''
+//       `);
 
-      for (const plant of plantsRes.rows) {
-        try {
-          await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        } catch (err) {
-          console.error(`❌ Failed for ${plant.name}:`, err.message);
-        }
-      }
+//       for (const plant of plantsRes.rows) {
+//         try {
+//           await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+//           await new Promise(resolve => setTimeout(resolve, 1500));
+//         } catch (err) {
+//           console.error(`❌ Failed for ${plant.name}:`, err.message);
+//         }
+//       }
 
-      console.log("✅ [Department Report] Completed successfully");
+//       console.log("✅ [Department Report] Completed successfully");
 
-    } catch (error) {
-      console.error("❌ [Department Report] Error:", error.message);
-    } finally {
-      try {
-        await client.query("SELECT pg_advisory_unlock($1)", [
-          Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0))
-        ]);
-        console.log("🔓 [Department Report] Lock released");
-      } catch (e) {
-        console.error("⚠️ Failed to release lock:", e.message);
-      }
+//     } catch (error) {
+//       console.error("❌ [Department Report] Error:", error.message);
+//     } finally {
+//       try {
+//         await client.query("SELECT pg_advisory_unlock($1)", [
+//           Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0))
+//         ]);
+//         console.log("🔓 [Department Report] Lock released");
+//       } catch (e) {
+//         console.error("⚠️ Failed to release lock:", e.message);
+//       }
 
-      client.release();
-    }
-  },
-  {
-    scheduled: true,
-    timezone: "Africa/Tunis"
-  }
-);
+//       client.release();
+//     }
+//   },
+//   {
+//     scheduled: true,
+//     timezone: "Africa/Tunis"
+//   }
+// );
 
 // ---------- Start server ----------
 app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
