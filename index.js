@@ -3141,7 +3141,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "55 14 * * *", // Every Monday at 14:49 Africa/Tunis
+  "10 15 * * *", // Every Monday at 14:49 Africa/Tunis
   async () => {
 
     const lockId = "weekly_kpi_report_job";
