@@ -23,8 +23,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ---------- Job Lock Helper ----------
-// Remove the old acquireJobLock and releaseJobLock functions
+
 // ---------- IMPROVED Job Lock Helper with PostgreSQL Advisory Locks ----------
 const acquireJobLock = async (lockId, ttlMinutes = 9) => {
   const instanceId = process.env.WEBSITE_INSTANCE_ID || `instance_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -164,7 +163,7 @@ const generateEmailHtml = ({ responsible, week }) => {
       ${responsible.plant_name}
     </h3>
         
-    <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
+    <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${week}"
        style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
               border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
               box-shadow:0 4px 12px rgba(0,120,215,0.4);">
@@ -531,7 +530,7 @@ app.get("/corrective-action-form", async (req, res) => {
           <div class="header">
             <div style="font-size: 40px;margin-bottom:10px;">⚠️</div>
             <h1>Corrective Action Form</h1>
-            <div class="alert-badge">Week ${week} - Performance Below target_value</div>
+            <div class="alert-badge">Week ${week} - Performance Below target</div>
           </div>
 
           <div class="form-section">
@@ -560,13 +559,13 @@ app.get("/corrective-action-form", async (req, res) => {
                 <div class="perf-value current">${kpi.value || '0'}${kpi.unit || ''}</div>
               </div>
               <div class="perf-item">
-                <div class="perf-label">target_value</div>
-                <div class="perf-value target_value">${kpi.target || 'N/A'}${kpi.unit || ''}</div>
+                <div class="perf-label">target</div>
+                <div class="perf-value target">${kpi.target || 'N/A'}${kpi.unit || ''}</div>
               </div>
               <div class="perf-item">
                 <div class="perf-label">Gap</div>
                 <div class="perf-value gap">
-                  ${kpi.target ? (parseFloat(kpi.target_value) - parseFloat(kpi.value || 0)).toFixed(2) : 'N/A'}${kpi.unit || ''}
+                  ${kpi.target ? (parseFloat(kpi.target) - parseFloat(kpi.value || 0)).toFixed(2) : 'N/A'}${kpi.unit || ''}
                 </div>
               </div>
             </div>
@@ -965,7 +964,7 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
 
 //       <!-- CTA Button -->
 // <div style="text-align:center;margin:30px 0;">
-//   <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
+//   <a href="http://localhost:5000/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
 //      style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
 //             border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
 //             box-shadow:0 4px 10px rgba(211,47,47,0.3);">
@@ -2052,47 +2051,42 @@ const generateVerticalBarChart = (chartData) => {
     `;
   }
 
-  // ✅ IMPROVED: Check if value is extremely small compared to target
+  // ✅ FIX: Define validData here so it's available everywhere in this function
+  const validData = data.filter(v => v > 0 && !isNaN(v));
+
+  // ✅ Check if value is extremely small compared to target
   const currentValue = data[data.length - 1] || 0;
-  const valueVstargetRatio = cleantarget ? currentValue / cleantarget : 0;
-  const isValueExtremelySmall = valueVstargetRatio < 0.01; // Less than 1% of target
+  const valueVsTargetRatio = cleantarget ? currentValue / cleantarget : 0;
+  const isValueExtremelySmall = valueVsTargetRatio < 0.01;
 
   // ✅ HELPER: Format large numbers for display
   const formatLargeNumber = (num) => {
+    if (num === null || num === undefined || isNaN(num)) return '0';
     const isWhole = Math.abs(num - Math.round(num)) < 0.0001;
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(num % 1000000 === 0 ? 0 : 1) + 'M';
-    }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(num % 1000 === 0 ? 0 : 1) + 'k';
-    }
-    if (isWhole) return Math.round(num).toString();  // ← key fix
+    if (num >= 1000000) return (num / 1000000).toFixed(isWhole ? 0 : 1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(isWhole ? 0 : 1) + 'k';
+    if (isWhole) return Math.round(num).toString();
     if (num < 1) return num.toFixed(2);
     if (num < 10) return num.toFixed(1);
     return num.toFixed(1);
   };
 
-  // ✅ UPDATED: Calculate Y-axis scaling - IMPORTANT FIX
+  // ✅ Calculate Y-axis scaling - now uses validData correctly
   const calculateYAxisScaling = () => {
-    // Get all values that need to be displayed
-    const allValues = [...data.filter(val => val > 0)];
+    const allValues = [...validData];
     if (cleantarget !== null && cleantarget > 0) allValues.push(cleantarget);
     if (cleanMin !== null && cleanMin > 0) allValues.push(cleanMin);
     if (cleanMax !== null && cleanMax > 0) allValues.push(cleanMax);
-    if (upper_tolerance_limit) allValues.push(upper_tolerance_limit);
-    if (lower_tolerance_limit) allValues.push(lower_tolerance_limit);
+
+    if (allValues.length === 0) {
+      return { maxValue: 10, interval: 2, numSteps: 5, useDualScale: false };
+    }
 
     const dataMax = Math.max(...allValues);
-    const dataMin = Math.min(...allValues.filter(v => v > 0));
 
-    // ✅ CRITICAL FIX: If value is extremely small compared to target
-    // Use a different scaling approach
+    // Handle extremely small values vs large target
     if (isValueExtremelySmall && cleantarget && cleantarget > 0) {
-      // Option 1: Use value-based scaling instead of target-based
-      // Find a reasonable max value that shows both value and target
-      const valueBasedMax = Math.max(dataMax * 2, 10); // At least show some bar
-
-      // Create a dual-scale approach
+      const valueBasedMax = Math.max(dataMax * 2, 10);
       return {
         maxValue: valueBasedMax,
         interval: valueBasedMax / 4,
@@ -2102,7 +2096,7 @@ const generateVerticalBarChart = (chartData) => {
       };
     }
 
-    // Normal scaling for regular cases
+    // No target - simple scaling
     if (!cleantarget || cleantarget <= 0) {
       const numSteps = 5;
       const interval = Math.max(1, Math.ceil(dataMax / numSteps));
@@ -2112,54 +2106,30 @@ const generateVerticalBarChart = (chartData) => {
 
     const targetNum = cleantarget;
 
-    // Determine scaling based on target value
     if (targetNum <= 10) {
       return {
         maxValue: Math.max(dataMax, Math.ceil(targetNum * 1.2)),
-        interval: Math.ceil(targetNum / 3),
+        interval: Math.max(1, Math.ceil(targetNum / 3)),
         numSteps: 3,
         useDualScale: false
       };
     }
-
     if (targetNum <= 50) {
       const rounded = Math.max(dataMax, Math.ceil(targetNum / 5) * 5);
-      return {
-        maxValue: rounded,
-        interval: rounded / 4,
-        numSteps: 4,
-        useDualScale: false
-      };
+      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
     }
-
     if (targetNum <= 200) {
       const rounded = Math.max(dataMax, Math.ceil(targetNum / 20) * 20);
-      return {
-        maxValue: rounded,
-        interval: rounded / 4,
-        numSteps: 4,
-        useDualScale: false
-      };
+      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
     }
-
     if (targetNum <= 1000) {
       const rounded = Math.max(dataMax, Math.ceil(targetNum / 100) * 100);
-      return {
-        maxValue: rounded,
-        interval: rounded / 4,
-        numSteps: 4,
-        useDualScale: false
-      };
+      return { maxValue: rounded, interval: rounded / 4, numSteps: 4, useDualScale: false };
     }
 
-    // For very large targets
+    // Very large targets
     const rounded = Math.max(dataMax, Math.ceil(targetNum / 500) * 500);
-    return {
-      maxValue: rounded,
-      interval: rounded / 3,
-      numSteps: 3,
-      useDualScale: false
-    };
+    return { maxValue: rounded, interval: rounded / 3, numSteps: 3, useDualScale: false };
   };
 
   // Calculate scaling
@@ -2168,7 +2138,7 @@ const generateVerticalBarChart = (chartData) => {
   const chartHeight = 180;
   const segmentHeight = chartHeight / numSteps;
 
-  // ✅ IMPROVED: Generate Y-axis with special handling for small values
+  // ✅ Generate Y-axis
   const generateYAxis = () => {
     let yAxis = '';
 
@@ -2176,33 +2146,31 @@ const generateVerticalBarChart = (chartData) => {
       const value = i * interval;
       let displayValue = formatLargeNumber(value);
 
-      // Special indicator for extremely small values
       if (useDualScale && i === numSteps && cleantarget) {
-        displayValue += ` (target: ${formatLargeNumber(cleantarget)})`;
+        displayValue += ` (T:${formatLargeNumber(cleantarget)})`;
       }
 
       const tolerance = interval / 2;
       let indicators = '';
 
-      if (cleantarget && Math.abs(value - cleantarget) < tolerance) indicators += ' ';
+      if (cleantarget && Math.abs(value - cleantarget) < tolerance) indicators += ' 🎯';
       if (cleanMax && Math.abs(value - cleanMax) < tolerance) indicators += ' 📈';
       if (cleanMin && Math.abs(value - cleanMin) < tolerance) indicators += ' 📉';
 
       yAxis += `
         <tr>
-          <td height="${segmentHeight}" valign="top" align="right" 
-              style="font-size: 10px; color: #666; padding-right: 8px;">
+          <td height="${segmentHeight}" valign="top" align="right"
+              style="font-size: 10px; color: #666; padding-right: 8px; white-space: nowrap;">
             ${displayValue}${indicators}
           </td>
         </tr>
       `;
     }
 
-    // Add a note for extremely small values
     if (useDualScale) {
       yAxis += `
         <tr>
-          <td height="20" valign="top" align="right" 
+          <td height="20" valign="top" align="right"
               style="font-size: 8px; color: #ff9800; padding-right: 8px; font-style: italic;">
             * Value scale ≠ target scale
           </td>
@@ -2213,30 +2181,23 @@ const generateVerticalBarChart = (chartData) => {
     return yAxis;
   };
 
-  // ✅ IMPROVED: Calculate segment positions with minimum bar height
+  // ✅ Calculate segment positions
   const getSegmentForValue = (value) => {
-    if (!value || value <= 0) return -1;
-    const seg = Math.round((parseFloat(value) / maxValue) * numSteps);
-    return Math.max(1, seg); // ← clamps to at least 1 row above X-axis
+    if (!value || value <= 0 || isNaN(value)) return -1;
+    return Math.round((parseFloat(value) / maxValue) * numSteps);
   };
 
   const targetSegment = getSegmentForValue(cleantarget);
   let maxSegment = cleanMax !== null ? getSegmentForValue(cleanMax) : -1;
-  const upperToleranceSegment = -1; // Upper Tolerance line hidden
-
-
-  // ✅ FIX: Min=0 should render at segment 1 (just above X-axis)
   let minSegment = -1;
   if (cleanMin !== null) {
     minSegment = cleanMin <= 0 ? 1 : getSegmentForValue(cleanMin);
   }
 
-  // ✅ FIX: If Max collides with target, push Max one row up
+  // Avoid line collisions
   if (maxSegment !== -1 && maxSegment === targetSegment && cleanMax !== cleantarget) {
     maxSegment = Math.min(maxSegment + 1, numSteps + 1);
   }
-
-  // ✅ FIX: If Min collides with target or max, push Min one row down
   if (minSegment !== -1 && minSegment === targetSegment) {
     minSegment = Math.max(1, minSegment - 1);
   }
@@ -2244,68 +2205,52 @@ const generateVerticalBarChart = (chartData) => {
     minSegment = Math.max(1, minSegment - 1);
   }
 
-  // ✅ FIX: If Max line collides with target line, push it one row up
-  if (maxSegment !== -1 && maxSegment === targetSegment && cleanMax !== cleantarget) {
-    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
-  }
-  // ✅ CRITICAL FIX: Calculate bar heights with MINIMUM VISIBLE HEIGHT
+  // ✅ Bar heights using data array
   const barSegmentHeights = data.map(value => {
-    if (value <= 0) return 0;
+    if (!value || value <= 0 || isNaN(value)) return 0;
 
     let segmentHeightRatio = (value / maxValue) * numSteps;
 
-    // ENSURE MINIMUM VISIBLE HEIGHT: At least 2 segments for any non-zero value
     if (segmentHeightRatio < 0.5 && value > 0) {
-      segmentHeightRatio = 0.5; // Minimum 0.5 segments (will be at least 1px visible)
+      segmentHeightRatio = 0.5;
     }
 
-    return Math.max(1, Math.round(segmentHeightRatio)); // At least 1 segment
+    return Math.max(1, Math.round(segmentHeightRatio));
   });
 
-  // ✅ UPDATED: Determine bar colors
+  // ✅ Bar color logic
   const getBarColor = (value) => {
     if (cleantarget && cleantarget > 0) {
-      const targetNum = cleantarget;
-
       if (upper_tolerance_limit && lower_tolerance_limit) {
-        if (value >= lower_tolerance_limit && value <= upper_tolerance_limit) {
-          return '#28a745';
-        } else if (value < lower_tolerance_limit) {
-          return '#dc3545';
-        } else {
-          return '#ff9800';
-        }
+        if (value >= lower_tolerance_limit && value <= upper_tolerance_limit) return '#28a745';
+        if (value < lower_tolerance_limit) return '#dc3545';
+        return '#ff9800';
       }
-
-      if (value >= targetNum) return '#28a745';
-      if (value >= targetNum * 0.9) return '#ffc107';
+      if (value >= cleantarget) return '#28a745';
+      if (value >= cleantarget * 0.9) return '#ffc107';
       return '#dc3545';
     }
     return '#2196F3';
   };
 
-  // ✅ UPDATED: Generate chart with visible bars
+  // ✅ Generate chart rows
   const generateChart = () => {
     let chart = '';
 
-    // Start from one segment above max to show values, go down to 0 (X-axis)
     for (let seg = numSteps + 1; seg >= 0; seg--) {
-      const hastarget = seg === targetSegment;
+      const hasTarget = seg === targetSegment;
       const hasMax = cleanMax !== null && seg === maxSegment && cleanMax !== cleantarget;
       const hasMin = seg === minSegment;
-      const hasUpperTolerance = false; // hidden
-      const hasLowerTolerance = false;
-      const hasLine = hastarget || hasMax || hasMin || hasUpperTolerance || hasLowerTolerance;
+      const hasLine = hasTarget || hasMax || hasMin;
 
       let lineColor = '';
       let lineLabel = '';
       let lineLabelColor = '';
-      let lineStyle = '2px dashed';
 
-      if (hastarget) {
+      if (hasTarget) {
         lineColor = '#28a745';
         lineLabelColor = '#28a745';
-        lineLabel = 'target';
+        lineLabel = 'Target';
       } else if (hasMax) {
         lineColor = '#ff9800';
         lineLabelColor = '#ff9800';
@@ -2322,39 +2267,39 @@ const generateVerticalBarChart = (chartData) => {
         const barHeight = barSegmentHeights[idx];
         const isCurrent = idx === data.length - 1;
         const barColor = getBarColor(value);
-        const isExtremelySmall = value > 0 && value < (maxValue * 0.01); // Less than 1% of max
+        const isExtremelySmall = value > 0 && value < (maxValue * 0.01);
 
         let cellContent = '';
         let cellBorder = '';
 
         if (hasLine) {
-          cellBorder = `border-top: ${lineStyle} ${lineColor};`;
+          cellBorder = `border-top: 2px dashed ${lineColor};`;
         }
 
-        // Top area: value label - ALWAYS SHOW for current value
-        // Show value label above EVERY bar (not just current/last)
+        // Value label above bar
         if (seg === barHeight + 1 && barHeight > 0) {
           const displayVal = formatLargeNumber(value);
           cellContent = `
-          <table border="0" cellpadding="2" cellspacing="0" width="100%">
-          <tr><td align="center" style="font-size: 10px; font-weight: bold; color: #333;">
-           ${displayVal}
-           </td></tr>
+            <table border="0" cellpadding="2" cellspacing="0" width="100%">
+              <tr><td align="center" style="font-size: 10px; font-weight: bold; color: #333;">
+                ${displayVal}
+              </td></tr>
             </table>
-           `;
+          `;
         }
-        else if (seg > 0 && seg <= barHeight) {
-          // Ensure minimum bar height for visibility
-          const actualBarHeight = Math.max(segmentHeight, 4); // At least 4px
-          cellContent = `
+
+        // Bar body
+        if (seg > 0 && seg <= barHeight) {
+          const actualBarHeight = Math.max(segmentHeight, 4);
+          cellContent += `
             <table border="0" cellpadding="0" cellspacing="0" width="60" align="center">
               <tr>
-                <td height="${actualBarHeight}" 
-                    style="background-color: ${barColor}; 
-                           border: none; 
-                           padding: 0; 
-                           margin: 0; 
-                           font-size: 1px; 
+                <td height="${actualBarHeight}"
+                    style="background-color: ${barColor};
+                           border: none;
+                           padding: 0;
+                           margin: 0;
+                           font-size: 1px;
                            line-height: ${actualBarHeight}px;
                            ${isExtremelySmall ? 'border: 1px solid #ff9800;' : ''}">
                   &nbsp;
@@ -2362,27 +2307,21 @@ const generateVerticalBarChart = (chartData) => {
               </tr>
             </table>
           `;
-
-          // Add a dot marker for extremely small values
-          if (isExtremelySmall && seg === 1) {
-            cellContent += `
-              <div style="position: relative; top: -2px; text-align: center;">
-                <div style="display: inline-block; width: 6px; height: 6px; background: #ff9800; border-radius: 50%;"></div>
-              </div>
-            `;
-          }
         }
-        else if (seg === 0) {
+
+        // X-axis label
+        if (seg === 0) {
           const w = weekLabels[idx] || `W${idx + 1}`;
           cellContent = `
-           <table border="0" cellpadding="2" cellspacing="0" width="100%">
-           <tr><td align="center" style="font-size: 10px; color: #666; padding-top: 6px;">
-             ${w}
-           </td></tr>
-           </table>
-           `;
+            <table border="0" cellpadding="2" cellspacing="0" width="100%">
+              <tr><td align="center" style="font-size: 10px; color: #666; padding-top: 6px;">
+                ${w}
+              </td></tr>
+            </table>
+          `;
         }
 
+        // Line label on last column
         if (hasLine && idx === data.length - 1) {
           cellContent += `
             <table border="0" cellpadding="0" cellspacing="0" width="100%">
@@ -2394,10 +2333,13 @@ const generateVerticalBarChart = (chartData) => {
         }
 
         chart += `
-          <td align="center" width="${100 / data.length}%" 
-              style="padding: 0 4px; vertical-align: middle; ${cellBorder} 
-                     height: ${seg >= 0 ? segmentHeight : 'auto'}px; 
-                     line-height: 0; font-size: 0;
+          <td align="center" width="${100 / data.length}%"
+              style="padding: 0 4px;
+                     vertical-align: middle;
+                     ${cellBorder}
+                     height: ${seg >= 0 ? segmentHeight : 'auto'}px;
+                     line-height: 0;
+                     font-size: 0;
                      position: relative;">
             ${cellContent}
           </td>
@@ -2410,11 +2352,10 @@ const generateVerticalBarChart = (chartData) => {
     return chart;
   };
 
-  // ✅ Calculate achievement
+  // ✅ Calculate target achievement
   let targetAchievement = 'N/A';
   let achievementColor = '#dfc54dff';
   if (cleantarget !== null && cleantarget > 0) {
-    const currentValue = data[data.length - 1];
     const achievementPercent = ((currentValue / cleantarget) * 100).toFixed(1);
     targetAchievement = `${achievementPercent}%`;
 
@@ -2427,17 +2368,13 @@ const generateVerticalBarChart = (chartData) => {
         achievementColor = '#ff9800';
       }
     } else {
-      if (parseFloat(achievementPercent) >= 100) {
-        achievementColor = '#28a745';
-      } else if (parseFloat(achievementPercent) >= 90) {
-        achievementColor = '#ffc107';
-      } else {
-        achievementColor = '#dc3545';
-      }
+      if (parseFloat(achievementPercent) >= 100) achievementColor = '#28a745';
+      else if (parseFloat(achievementPercent) >= 90) achievementColor = '#ffc107';
+      else achievementColor = '#dc3545';
     }
   }
 
-  // Add warning for extremely small values
+  // Warning for extremely small values
   let smallValueWarning = '';
   if (isValueExtremelySmall && cleantarget) {
     smallValueWarning = `
@@ -2452,35 +2389,31 @@ const generateVerticalBarChart = (chartData) => {
     `;
   }
 
-  // Helper to format tolerance as percentage
+  // Tolerance info display
   const formatTolerance = (value) => value ? `${(parseFloat(value) * 100).toFixed(0)}%` : '';
 
-  // Create tolerance info display
   let toleranceInfo = '';
   if (tolerance_type && (up_tolerance || low_tolerance)) {
     toleranceInfo = `
-    <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #6c757d;">
-      <div style="font-size: 12px; color: #495057; font-weight: 600; margin-bottom: 5px;">
-        Tolerance Settings: ${tolerance_type}
+      <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #6c757d;">
+        <div style="font-size: 12px; color: #495057; font-weight: 600; margin-bottom: 5px;">
+          Tolerance Settings: ${tolerance_type}
+        </div>
+        <table border="0" cellpadding="2" cellspacing="2" style="font-size: 11px; color: #6c757d;">
+          <tr>
+            ${up_tolerance ? `<td>Upper: ${formatTolerance(up_tolerance)}</td>` : ''}
+            ${low_tolerance ? `<td>Lower: ${formatTolerance(low_tolerance)}</td>` : ''}
+          </tr>
+        </table>
       </div>
-      <table border="0" cellpadding="2" cellspacing="2" style="font-size: 11px; color: #6c757d;">
-        <tr>
-          ${up_tolerance ? `<td>Upper: ${formatTolerance(up_tolerance)}</td>` : ''}
-          ${low_tolerance ? `<td>Lower: ${formatTolerance(low_tolerance)}</td>` : ''}
-        </tr>
-        ${upper_tolerance_limit || lower_tolerance_limit ? `
-   
-        ` : ''}
-      </table>
-    </div>
-  `;
+    `;
   }
 
-  // ✅ Return HTML with visible bars
+  // ✅ Return full chart HTML
   return `
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 20px 0; background: white; border-radius: 8px; border: 1px solid #e0e0e0; font-family: Arial, sans-serif;">
       <tr><td style="padding: 20px;">
-        
+
         <!-- Header -->
         <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 20px;">
           <tr><td>
@@ -2489,24 +2422,24 @@ const generateVerticalBarChart = (chartData) => {
             ${definition ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px; font-style: italic;">${definition}</p>` : ''}
             ${unit ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px;">Unit: ${unit}</p>` : ''}
             ${frequency ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px;">Frequency: ${frequency}</p>` : ''}
-            
+
             ${smallValueWarning}
             ${toleranceInfo}
-            
+
             <table border="0" cellpadding="0" cellspacing="0" style="margin-top: 8px;">
               <tr>
-                ${cleantarget !== null ? `<td style="color: #28a745; font-size: 12px; font-weight: 600; padding-right: 15px;">🎯 target: ${formatLargeNumber(cleantarget)}</td>` : ''}
+                ${cleantarget !== null ? `<td style="color: #28a745; font-size: 12px; font-weight: 600; padding-right: 15px;">🎯 Target: ${formatLargeNumber(cleantarget)}</td>` : ''}
                 ${cleanMax !== null ? `<td style="color: #ff9800; font-size: 12px; font-weight: 600; padding-right: 15px;">📈 Max: ${formatLargeNumber(cleanMax)}</td>` : ''}
                 ${cleanMin !== null ? `<td style="color: #dc3545; font-size: 12px; font-weight: 600;">📉 Min: ${formatLargeNumber(cleanMin)}</td>` : ''}
               </tr>
             </table>
           </td></tr>
         </table>
-        
+
         <!-- Chart -->
         <table border="0" cellpadding="0" cellspacing="0" width="100%">
           <tr>
-            <td width="50" valign="top" style="border-right: 2px solid #ccc; padding-right: 10px;">
+            <td width="55" valign="top" style="border-right: 2px solid #ccc; padding-right: 10px;">
               <table border="0" cellpadding="0" cellspacing="0" width="100%" style="height: ${chartHeight}px;">
                 ${generateYAxis()}
               </table>
@@ -2518,29 +2451,28 @@ const generateVerticalBarChart = (chartData) => {
             </td>
           </tr>
         </table>
-        
+
         <!-- Stats -->
         <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #3880c7ff; border-radius: 6px; margin-top: 20px;">
           <tr>
-            <td width="20%" align="center" style="border-right: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">CURRENT</div>
-                <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.current)}
-              <div style="font-size: 10px; color: #999;">${currentWeek.replace('2026-Week', 'Week ')}</div>
+            <td width="33%" align="center" style="border-right: 1px solid #e0e0e0; padding: 10px;">
+              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">CURRENT</div>
+              <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.current)}</div>
+              <div style="font-size: 10px; color: #dce8f8;">${currentWeek.replace('2026-Week', 'Week ')}</div>
             </td>
-           
-            <td width="20%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
+            <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
+              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
               <div style="font-size: 20px; font-weight: 700; color: #4CAF50;">${formatNumber(stats.average)}</div>
-              <div style="font-size: 10px; color: #999;">${stats.dataPoints || data.length} periods</div>
+              <div style="font-size: 10px; color: #dce8f8;">${stats.dataPoints || data.length} periods</div>
             </td>
-            <td width="20%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">TREND</div>
+            <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
+              <div style="font-size: 11px; color: #dce8f8; text-transform: uppercase; margin-bottom: 5px;">TREND</div>
               <div style="font-size: 20px; font-weight: 700; color: ${stats.trend.startsWith('-') ? '#F44336' : '#4CAF50'};">${stats.trend}</div>
-              <div style="font-size: 10px; color: #999;">Week over week</div>
+              <div style="font-size: 10px; color: #dce8f8;">Week over week</div>
             </td>
           </tr>
         </table>
-        
+
         <!-- Legend -->
         <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #f0f0f0;">
           <tr><td align="center">
@@ -2549,10 +2481,9 @@ const generateVerticalBarChart = (chartData) => {
                 ${cleantarget !== null ? `
                   <td><table border="0" cellpadding="0" cellspacing="5"><tr>
                     <td width="20" height="12" style="border-top: 2px dashed #28a745;"></td>
-                    <td style="font-size: 11px; color: #666;">target</td>
+                    <td style="font-size: 11px; color: #666;">Target</td>
                   </tr></table></td>
                 ` : ''}
-               
                 ${cleanMax !== null ? `
                   <td><table border="0" cellpadding="0" cellspacing="5"><tr>
                     <td width="20" height="12" style="border-top: 2px dashed #ff9800;"></td>
@@ -2566,16 +2497,16 @@ const generateVerticalBarChart = (chartData) => {
                   </tr></table></td>
                 ` : ''}
                 ${isValueExtremelySmall ? `
-                <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                  <td width="12" height="12" style="background-color: #ff9800; border: 1px solid #ff9800;"></td>
-                  <td style="font-size: 11px; color: #666;">Exaggerated for visibility</td>
-                </tr></table></td>
+                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
+                    <td width="12" height="12" style="background-color: #ff9800; border: 1px solid #ff9800;"></td>
+                    <td style="font-size: 11px; color: #666;">Exaggerated for visibility</td>
+                  </tr></table></td>
                 ` : ''}
               </tr>
             </table>
           </td></tr>
         </table>
-        
+
       </td></tr>
     </table>
   `;
@@ -2896,7 +2827,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Start filling your KPI forms to track your performance over time.
             </p>
-            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #28a745; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2912,7 +2843,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Fill your KPI form for week ${reportWeek} to generate performance charts.
             </p>
-            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #0078D7; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2969,7 +2900,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         <td>
           <!-- View History Button Container -->
          <div style="text-align: center; margin-top: 20px;">
-  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
+  <a href="http://localhost:5000/kpi-trends?responsible_id=${responsible.responsible_id}"
      class="view-history-btn"
      style="
        display: inline-block;
@@ -3109,21 +3040,12 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 
 
 // ---------- Schedule weekly email to submit kpi----------
-// let cronRunning = false;
+let cronRunning = false;
 cron.schedule(
-  "30 9 1 * *",
+ "30 9 1 * *",
   async () => {
-    const lockId = "kpi_weekly_email_job";
-
-    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
-
-    if (!acquired) {
-      console.log(`⏭️ Instance skipped KPI cron (lock not acquired)`);
-      return;
-    }
-
-    try {
-      console.log("🚀 KPI email cron started");
+    if (cronRunning) return console.log("⏭️ Cron already running, skip...");
+    cronRunning = true;
 
       const now = new Date();
       const startOfYear = new Date(now.getFullYear(), 0, 1);
@@ -3132,131 +3054,119 @@ cron.schedule(
       const targetWeek = currentWeek - 1;
       const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
       const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`; // e.g. "2026-Week8"
-
+    try {
+      // Send only to responsibles who actually have KPI records for that week
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id
         FROM public."Responsible" r
-        JOIN public.kpi_values kv 
-          ON kv.responsible_id = r.responsible_id
+        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
         WHERE kv.week = $1
       `, [forcedWeek]);
 
-      console.log(`📊 Sending KPI emails to ${resps.rows.length} responsibles`);
-
-      for (const [index, row] of resps.rows.entries()) {
-        try {
-          await sendKPIEmail(row.responsible_id, forcedWeek);
-
-          console.log(`  [${index + 1}/${resps.rows.length}] Email sent`);
-
-          // Optional rate limit safety
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-        } catch (err) {
-          console.error(
-            `  [${index + 1}/${resps.rows.length}] Failed:`,
-            err.message
-          );
-        }
+      for (let r of resps.rows) {
+        await sendKPIEmail(r.responsible_id, forcedWeek);
       }
 
-      console.log("✅ KPI cron job completed");
-
+      console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
     } catch (err) {
-      console.error("❌ Cron job error:", err.message);
-
+      console.error("❌ Error sending scheduled emails:", err.message);
     } finally {
-      await releaseJobLock(lockId, instanceId, lockHash);
+      cronRunning = false;
     }
   },
-  {
-    scheduled: true,
-    timezone: "Africa/Tunis"
-  }
+  { scheduled: true, timezone: "Africa/Tunis" }
 );
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
-// let reportCronRunning = false;
-
+let reportCronRunning = false;
 cron.schedule(
-  "00 12 * * *",
+  "47 12 * * *", // Every MOnday at 9:00 AM
   async () => {
-    const lockId = "weekly_report_job";
-
-    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
-
-    if (!acquired) {
-      console.log(`⏭️ Instance ${instanceId} skipped cron job (lock not acquired)`);
+    if (reportCronRunning) {
+      console.log("⏭️ Weekly report cron already running, skipping...");
       return;
     }
 
+    reportCronRunning = true;
+
     try {
-      if (reportCronRunning) {
-        console.log("⏭️ Weekly report cron already running in this instance...");
-        return;
-      }
-
-      reportCronRunning = true;
-
-      console.log("🚀 Weekly report cron started");
-
-      // Calculate week
+      // Calculate current week
       const now = new Date();
       const year = now.getFullYear();
 
+      // Get week number function
       const getWeekNumber = (date) => {
         const d = new Date(date);
         d.setHours(0, 0, 0, 0);
         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
         const yearStart = new Date(d.getFullYear(), 0, 1);
-        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        return weekNo;
       };
 
       const weekNumber = getWeekNumber(now);
+      const currentWeek = `${year}-Week${weekNumber}`;
       const previousWeek = `${year}-Week${weekNumber - 1}`;
 
+      console.log(`Current week: ${currentWeek}, Previous week: ${previousWeek}`);
+
+      // Get all responsibles who have ANY KPI history data
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id, r.email, r.name
         FROM public."Responsible" r
-        JOIN public.kpi_values_hist26 h 
-          ON r.responsible_id = h.responsible_id
+        JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
         WHERE r.email IS NOT NULL
-        AND r.email != ''
+          AND r.email != ''
+        GROUP BY r.responsible_id, r.email, r.name
+        HAVING COUNT(h.hist_id) > 0
         ORDER BY r.responsible_id
       `);
 
-      console.log(`📊 Sending weekly reports for ${previousWeek}`);
+      console.log(`📊 Sending weekly reports for week ${previousWeek} to ${resps.rows.length} responsibles...`);
 
+      const results = [];
       for (const [index, resp] of resps.rows.entries()) {
         try {
-          await generateWeeklyReportEmail(
-            resp.responsible_id,
-            previousWeek
-          );
+          await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
+          console.log(`  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`);
+          results.push({
+            responsible_id: resp.responsible_id,
+            name: resp.name,
+            status: 'success'
+          });
 
-          console.log(
-            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name}`
-          );
-
-          // Rate limit protection
+          // Add delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 1500));
-
         } catch (err) {
-          console.error(
-            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
-            err.message
-          );
+          console.error(`  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`, err.message);
+          results.push({
+            responsible_id: resp.responsible_id,
+            name: resp.name,
+            status: 'error',
+            message: err.message
+          });
         }
       }
 
-      console.log("✅ Weekly report cron finished");
+      const succeeded = results.filter(r => r.status === 'success').length;
+      console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
+
+      // Log summary
+      console.log('\n=== REPORT SUMMARY ===');
+      console.log(`Total responsibles: ${results.length}`);
+      console.log(`Successfully sent: ${succeeded}`);
+      console.log(`Failed: ${results.length - succeeded}`);
+
+      if (results.length - succeeded > 0) {
+        const failed = results.filter(r => r.status === 'error');
+        console.log('Failed responsibles:');
+        failed.forEach(f => console.log(`  - ${f.name}: ${f.message}`));
+      }
 
     } catch (error) {
-      console.error("❌ Cron job error:", error.message);
-
+      console.error("❌ Error in weekly report cron job:", error.message);
     } finally {
       reportCronRunning = false;
-      await releaseJobLock(lockId, instanceId, lockHash);
     }
   },
   {
@@ -3271,7 +3181,6 @@ cron.schedule(
 
 // ========== UPDATED CHART FUNCTION WITH WEEKLY BAR CHART ==========
 // ========== CORRECTED CHART FUNCTION - HANDLES NULL MAX ==========
-// ========== CORRECTED CHART FUNCTION - HANDLES NULL MAX & PROPER SCALING ==========
 const createIndividualKPIChart = (kpi) => {
   const color = getDepartmentColor(kpi.department);
 
@@ -3298,7 +3207,7 @@ const createIndividualKPIChart = (kpi) => {
     `;
   }
 
-  console.log(`KPI: ${kpi.subtitle}, Values: ${values.join(', ')}, target: ${target}, Min: ${min}, Max: ${max}`);
+  console.log(`KPI: ${kpi.subtitle}, Values: ${values.join(', ')}, Target: ${target}, Min: ${min}, Max: ${max}`);
 
   /* ===================== TREND ===================== */
   let trendArrow = '→';
@@ -3320,7 +3229,7 @@ const createIndividualKPIChart = (kpi) => {
   const currentValue = values[values.length - 1];
   const formattedAverage = avg.toFixed(kpi.unit === '%' ? 1 : 2);
 
-  /* ===================== SCALE - ONLY ADD NON-NULL VALUES ===================== */
+  /* ===================== SCALE ===================== */
   const allValues = [...values.filter(val => val > 0)];
   if (target !== null && target > 0) allValues.push(target);
   if (min !== null && min > 0) allValues.push(min);
@@ -3335,40 +3244,75 @@ const createIndividualKPIChart = (kpi) => {
     interval = 5;
   } else if (dataMax <= 100) {
     interval = 10;
+  } else if (dataMax <= 500) {
+    interval = 50;
+  } else if (dataMax <= 1000) {
+    interval = 100;
   } else {
-    interval = 20;
+    interval = Math.ceil(dataMax / 10 / 100) * 100;
   }
 
   const maxValue = Math.ceil(dataMax / interval) * interval + interval;
 
   const chartHeight = 180;
-  const numSegments = Math.ceil(maxValue);
-  const segmentHeight = chartHeight / numSegments;
+  // ✅ FIX: Define numSteps properly
+  const numSteps = Math.ceil(maxValue / interval);
+  const segmentHeight = chartHeight / numSteps;
 
-  console.log(`Chart scale - MaxValue: ${maxValue}, Interval: ${interval}, NumSegments: ${numSegments}, SegmentHeight: ${segmentHeight}`);
+  console.log(`Chart scale - MaxValue: ${maxValue}, Interval: ${interval}, NumSteps: ${numSteps}, SegmentHeight: ${segmentHeight}`);
 
-  /* ===================== CALCULATE SEGMENT POSITIONS - SKIP NULL MAX ===================== */
+  /* ===================== CALCULATE SEGMENT POSITIONS ===================== */
   const getSegmentForValue = (value) => {
-    if (!value || value <= 0) return -1;
+    if (value === null || value === undefined || value <= 0) return -1;
     const seg = Math.round((parseFloat(value) / maxValue) * numSteps);
-    return Math.max(1, seg); // Always at least 1 segment above X-axis
+    return Math.max(1, seg);
   };
 
   const targetSegment = getSegmentForValue(target);
-  const maxSegment = max !== null ? getSegmentForValue(max) : -1;
-  const minSegment = getSegmentForValue(min);
+  let maxSegment = max !== null ? getSegmentForValue(max) : -1;
+  let minSegment = min !== null ? (min <= 0 ? 1 : getSegmentForValue(min)) : -1;
 
+  // ✅ FIX: Avoid line collisions
+  if (maxSegment !== -1 && maxSegment === targetSegment && max !== target) {
+    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
+  }
+  if (minSegment !== -1 && minSegment === targetSegment) {
+    minSegment = Math.max(1, minSegment - 1);
+  }
+  if (minSegment !== -1 && minSegment === maxSegment) {
+    minSegment = Math.max(1, minSegment - 1);
+  }
+
+  // ✅ FIX: Use values (not data) for bar segment heights
   const barSegmentHeights = values.map(value => {
-    if (value <= 0) return 0;
-    return Math.round((value / maxValue) * numSegments);
+    if (!value || value <= 0 || isNaN(value)) return 0;
+
+    let segmentHeightRatio = (value / maxValue) * numSteps;
+
+    if (segmentHeightRatio < 0.5 && value > 0) {
+      segmentHeightRatio = 0.5;
+    }
+
+    return Math.max(1, Math.round(segmentHeightRatio));
   });
 
   console.log(`Bar heights (segments): ${barSegmentHeights.join(', ')}`);
-  console.log(`Reference lines - target: ${targetSegment}, Max: ${maxSegment}, Min: ${minSegment}`);
+  console.log(`Reference lines - Target: ${targetSegment}, Max: ${maxSegment}, Min: ${minSegment}`);
 
-  /* ===================== GENERATE Y-AXIS - SKIP NULL MAX ===================== */
+  /* ===================== HELPER: FORMAT NUMBERS ===================== */
+  const formatLargeNumber = (num) => {
+    if (num === null || num === undefined || isNaN(num)) return '0';
+    const isWhole = Math.abs(num - Math.round(num)) < 0.0001;
+    if (num >= 1000000) return (num / 1000000).toFixed(isWhole ? 0 : 1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(isWhole ? 0 : 1) + 'k';
+    if (isWhole) return Math.round(num).toString();
+    if (num < 1) return num.toFixed(2);
+    if (num < 10) return num.toFixed(1);
+    return num.toFixed(1);
+  };
+
+  /* ===================== GENERATE Y-AXIS ===================== */
   const generateYAxis = () => {
-    const numSteps = Math.ceil(maxValue / interval);
     const stepHeight = chartHeight / numSteps;
     let yAxis = '';
 
@@ -3377,14 +3321,14 @@ const createIndividualKPIChart = (kpi) => {
       const tolerance = interval / 2;
       let indicators = '';
 
-      if (target !== null && Math.abs(value - target) < tolerance) indicators += ' ';
+      if (target !== null && Math.abs(value - target) < tolerance) indicators += ' 🎯';
       if (max !== null && Math.abs(value - max) < tolerance) indicators += ' 📈';
       if (min !== null && Math.abs(value - min) < tolerance) indicators += ' 📉';
 
       yAxis += `
         <tr>
-          <td height="${stepHeight}" valign="top" align="right" style="font-size: 9px; color: #666; padding-right: 8px;">
-            ${value}${indicators}
+          <td height="${stepHeight}" valign="top" align="right" style="font-size: 9px; color: #666; padding-right: 8px; white-space: nowrap;">
+            ${formatLargeNumber(value)}${indicators}
           </td>
         </tr>
       `;
@@ -3392,24 +3336,24 @@ const createIndividualKPIChart = (kpi) => {
     return yAxis;
   };
 
-  /* ===================== GENERATE CHART - SKIP NULL MAX LINE ===================== */
+  /* ===================== GENERATE CHART ===================== */
   const generateChart = () => {
     let chart = '';
 
-    for (let seg = numSegments; seg >= -1; seg--) {
-      const hastarget = seg === targetSegment;
+    for (let seg = numSteps + 1; seg >= 0; seg--) {
+      const hasTarget = seg === targetSegment;
       const hasMax = max !== null && seg === maxSegment && max !== target;
-      const hasMin = seg === minSegment;
-      const hasLine = hastarget || hasMax || hasMin;
+      const hasMin = min !== null && seg === minSegment;
+      const hasLine = hasTarget || hasMax || hasMin;
 
       let lineColor = '';
       let lineLabel = '';
       let lineLabelColor = '';
 
-      if (hastarget) {
+      if (hasTarget) {
         lineColor = '#16a34a';
         lineLabelColor = '#16a34a';
-        lineLabel = 'target';
+        lineLabel = 'Target';
       } else if (hasMax) {
         lineColor = '#f97316';
         lineLabelColor = '#f97316';
@@ -3426,6 +3370,20 @@ const createIndividualKPIChart = (kpi) => {
         const barHeight = barSegmentHeights[idx];
         const isCurrent = idx === values.length - 1;
 
+        // ✅ FIX: Define barColor inside the forEach scope
+        let barColor;
+        if (target !== null && target > 0) {
+          if (value >= target) {
+            barColor = '#16a34a';         // green - at or above target
+          } else if (value >= target * 0.9) {
+            barColor = '#f59e0b';         // amber - near target
+          } else {
+            barColor = '#dc2626';         // red - below target
+          }
+        } else {
+          barColor = color || '#2196F3';  // fallback to department color
+        }
+
         let cellContent = '';
         let cellBorder = '';
 
@@ -3433,61 +3391,80 @@ const createIndividualKPIChart = (kpi) => {
           cellBorder = `border-top: 2px dashed ${lineColor};`;
         }
 
+        // Value label row (just above the bar)
         if (seg === barHeight + 1 && barHeight > 0) {
-          const displayVal = value >= 100 ? value.toFixed(0) : value.toFixed(kpi.unit === '%' ? 1 : 2);
+          const displayVal = value >= 1000
+            ? formatLargeNumber(value)
+            : value >= 100
+              ? value.toFixed(0)
+              : value.toFixed(kpi.unit === '%' ? 1 : 2);
 
           cellContent = `
             <table border="0" cellpadding="0" cellspacing="0" width="100%">
               <tr>
                 <td align="center" style="font-size: 10px; font-weight: bold; color: #333; padding-bottom: 4px;">
-                  ${formatNumber(displayVal)}
+                  ${displayVal}
                 </td>
               </tr>
             </table>
           `;
         }
 
-        // Build bar from bottom (seg 1) up to barHeight
+        // Bar body rows
         if (seg > 0 && seg <= barHeight) {
           cellContent += `
-           <table border="0" cellpadding="0" cellspacing="0" width="60" align="center">
-            <tr>
-            <td height="${segmentHeight}" 
-            style="background-color: ${barColor}; 
-                   border: none; 
-                   padding: 0; 
-                   margin: 0;">
-                   &nbsp;
-             </td>
-             </tr>
+            <table border="0" cellpadding="0" cellspacing="0" width="60" align="center">
+              <tr>
+                <td height="${segmentHeight}"
+                    style="background-color: ${barColor};
+                           border: none;
+                           padding: 0;
+                           margin: 0;
+                           font-size: 1px;
+                           line-height: ${segmentHeight}px;">
+                  &nbsp;
+                </td>
+              </tr>
             </table>
-              `;
+          `;
         }
 
-        if (seg === -1) {
-          const w = weeks[idx]?.replace('2026-Week', '') || idx + 1;
+        // X-axis label row
+        if (seg === 0) {
+          const w = weeks[idx]?.replace('2026-Week', '') || (idx + 1);
           cellContent = `
             <table border="0" cellpadding="2" cellspacing="0" width="100%">
               <tr>
                 <td align="center" style="font-size: 10px; color: #666; padding-top: 6px;">W${w}</td>
               </tr>
-              ${isCurrent ? '<tr><td align="center" style="padding-top:2px;"><div style="width:8px;height:8px;background:#16a34a;border-radius:50%;margin:0 auto;"></div></td></tr>' : ''}
+              ${isCurrent
+              ? '<tr><td align="center" style="padding-top:2px;"><div style="width:8px;height:8px;background:#16a34a;border-radius:50%;margin:0 auto;"></div></td></tr>'
+              : ''}
             </table>
           `;
         }
 
+        // Line label on the last column
         if (hasLine && idx === values.length - 1) {
           cellContent += `
             <table border="0" cellpadding="0" cellspacing="0" width="100%">
               <tr>
-                <td align="right" style="font-size: 9px; color: ${lineLabelColor}; font-weight: 600; white-space: nowrap; padding-left: 8px;">${lineLabel}</td>
+                <td align="right" style="font-size: 9px; color: ${lineLabelColor}; font-weight: 600; white-space: nowrap; padding-left: 8px;">
+                  ${lineLabel}
+                </td>
               </tr>
             </table>
           `;
         }
 
         chart += `
-          <td align="center" width="${100 / values.length}%" style="padding: 0 4px; vertical-align: middle; ${cellBorder} height: ${seg >= 0 ? segmentHeight : 'auto'}px; line-height: 0; font-size: 0;">
+          <td align="center" width="${100 / values.length}%"
+              style="padding: 0 4px;
+                     vertical-align: middle;
+                     ${cellBorder}
+                     height: ${seg >= 0 ? segmentHeight : 'auto'}px;
+                     line-height: 0;
+                     font-size: 0;">
             ${cellContent}
           </td>
         `;
@@ -3504,47 +3481,52 @@ const createIndividualKPIChart = (kpi) => {
     <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px">
       <tr>
         <td align="center" width="33%">
-          ${target !== null && target > 0 ? `
-            <div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">🎯 target: ${target}</div>
-          ` : `
-            <div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🎯 N/A</div>
-          `}
+          ${target !== null && target > 0
+      ? `<div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">🎯 Target: ${target}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🎯 N/A</div>`
+    }
         </td>
         <td align="center" width="33%">
-          ${max !== null && max > 0 ? `
-            <div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">📈 Max: ${max}</div>
-          ` : `
-            <div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📈 N/A</div>
-          `}
+          ${max !== null && max > 0
+      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">📈 Max: ${max}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📈 N/A</div>`
+    }
         </td>
         <td align="center" width="33%">
-          ${min !== null && min > 0 ? `
-            <div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">📉 Min: ${min}</div>
-          ` : `
-            <div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📉 N/A</div>
-          `}
+          ${min !== null && min > 0
+      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">📉 Min: ${min}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📉 N/A</div>`
+    }
         </td>
       </tr>
     </table>
   `;
 
+  /* ===================== RETURN FINAL HTML ===================== */
   return `
 <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px">
   <tr>
     <td style="padding:16px">
+      <!-- KPI Header Row -->
       <table border="0" cellpadding="0" cellspacing="0" width="100%">
         <tr>
-          <td style="font-weight:700;font-size:14px;color:#333;white-space:nowrap;padding-right:15px;">${kpi.subtitle || kpi.title}</td>
+          <td style="font-weight:700;font-size:14px;color:#333;padding-right:15px;">
+            ${kpi.subtitle || kpi.title}
+          </td>
           <td align="center" valign="middle" style="padding:0 15px;">
             <div style="display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;padding:6px 12px;border-radius:8px;">
               <span style="font-size:11px;color:#475569;font-weight:600;">${kpi.responsible || 'N/A'}</span>
             </div>
           </td>
           <td align="right" width="50" style="padding-left:15px;">
-            <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;">${trendArrow}</div>
+            <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;">
+              ${trendArrow}
+            </div>
           </td>
         </tr>
       </table>
+
+      <!-- Current Value Badge -->
       <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin:10px 0">
         <tr>
           <td align="center">
@@ -3554,10 +3536,14 @@ const createIndividualKPIChart = (kpi) => {
           </td>
         </tr>
       </table>
+
+      <!-- Threshold Badges -->
       ${thresholdBadges}
+
+      <!-- Chart -->
       <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:15px">
         <tr>
-          <td width="40" valign="top" style="border-right: 2px solid #e5e7eb; padding-right: 8px;">
+          <td width="45" valign="top" style="border-right: 2px solid #e5e7eb; padding-right: 8px;">
             <table border="0" cellpadding="0" cellspacing="0" width="100%" style="height: ${chartHeight}px;">
               ${generateYAxis()}
             </table>
@@ -3568,6 +3554,34 @@ const createIndividualKPIChart = (kpi) => {
             </table>
           </td>
         </tr>
+      </table>
+
+      <!-- Legend -->
+      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #f0f0f0;">
+        <tr><td align="center">
+          <table border="0" cellpadding="6" cellspacing="0">
+            <tr>
+              ${target !== null ? `
+                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
+                  <td width="20" height="10" style="border-top: 2px dashed #16a34a;"></td>
+                  <td style="font-size: 10px; color: #666;">Target</td>
+                </tr></table></td>
+              ` : ''}
+              ${max !== null ? `
+                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
+                  <td width="20" height="10" style="border-top: 2px dashed #f97316;"></td>
+                  <td style="font-size: 10px; color: #666;">Max</td>
+                </tr></table></td>
+              ` : ''}
+              ${min !== null ? `
+                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
+                  <td width="20" height="10" style="border-top: 2px dashed #dc2626;"></td>
+                  <td style="font-size: 10px; color: #666;">Min</td>
+                </tr></table></td>
+              ` : ''}
+            </tr>
+          </table>
+        </td></tr>
       </table>
     </td>
   </tr>
@@ -3728,7 +3742,7 @@ const generateManagerReportHtml = (reportData) => {
             color: #2c3e50;
             letter-spacing: -0.5px;
           ">
-            📊 PLANT WEEKLY KPI DASHBOARD
+            📊 CEO  KPI  KODIR DASHBOARD
           </h1>
           <div style="font-size: 14px; color: #6c757d;">
             <strong style="color: #495057;">${plant.plant_name}</strong> • 
@@ -4865,9 +4879,9 @@ function initializeChartJS(kpi, index) {
           label: '${kpi.subject}',
           data: ${JSON.stringify(kpi.values)},
           borderColor: '${kpi.colors[0] || '#667eea'}',
-          backgroundColor: ${kpi.values.length === 1 
-            ? `'${kpi.colors[0] || '#667eea'}'` 
-            : `gradient${index}`},
+          backgroundColor: ${kpi.values.length === 1
+      ? `'${kpi.colors[0] || '#667eea'}'`
+      : `gradient${index}`},
           borderWidth: 3,
           fill: true,
           tension: 0.4,
@@ -5042,6 +5056,335 @@ function createErrorHTML(message) {
   `;
 }
 
+const getPreviousWeek = (currentWeek) => {
+  const [yearStr, weekStr] = currentWeek.split('-Week');
+  let year = parseInt(yearStr);
+  let weekNumber = parseInt(weekStr);
+
+  weekNumber -= 1;
+  if (weekNumber < 1) {
+    year -= 1;
+    weekNumber = 52;
+  }
+
+  return `${year}-Week${weekNumber}`;
+};
+
+const getDepartmentKPIReport = async (plantId, week) => {
+  try {
+    // 1. Get plant and manager info
+    const plantRes = await pool.query(
+      `
+      SELECT p.plant_id, p.name AS plant_name, p.manager, p.manager_email
+      FROM public."Plant" p
+      WHERE p.plant_id = $1 AND p.manager_email IS NOT NULL
+      `,
+      [plantId]
+    );
+
+    const plant = plantRes.rows[0];
+    if (!plant || !plant.manager_email) {
+      return null;
+    }
+
+    // 2. Get KPIs with target, min, max values - UPDATED QUERY
+    // In getDepartmentKPIReport function, update the kpiRes query:
+
+    const kpiRes = await pool.query(
+      `
+WITH LatestKPIValues AS (
+  SELECT 
+    h.kpi_id,
+    h.responsible_id,
+    r.name AS responsible_name,
+    h.week,
+    h.new_value,
+    h.updated_at,
+    r.department_id,
+    d.name AS department_name,
+    k.indicator_title,
+    k.indicator_sub_title,
+    k.unit,
+    k.target,
+    k.min,
+    k.max,
+    ROW_NUMBER() OVER (
+      PARTITION BY h.kpi_id, h.responsible_id, h.week 
+      ORDER BY h.updated_at DESC
+    ) as rn
+  FROM public.kpi_values_hist26 h
+  JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
+  JOIN public."Department" d ON r.department_id = d.department_id
+  JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+  WHERE r.plant_id = $1 
+    AND h.week = $2
+    AND h.new_value IS NOT NULL
+    AND h.new_value != ''
+    AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'  -- FIXED: Cast to text first
+)
+SELECT * FROM LatestKPIValues WHERE rn = 1
+ORDER BY indicator_title
+  `,
+      [plantId, week]
+    );
+
+    if (!kpiRes.rows.length) {
+      console.log(`No KPI data found for plant ${plantId} week ${week}`);
+      return null;
+    }
+
+    // 3. Get WEEKLY TREND DATA for ALL KPIs (last 12 weeks)
+    const weeklyTrendRes = await pool.query(
+      `
+WITH WeeklyKPIData AS (
+  SELECT 
+    k.kpi_id,
+    k.indicator_title,
+    k.indicator_sub_title,
+    k.unit,
+    k.target,
+    k.min,
+    k.max,
+    h.week,
+    AVG(CAST(h.new_value AS NUMERIC)) as avg_value,
+    MIN(CAST(h.new_value AS NUMERIC)) as min_value,
+    MAX(CAST(h.new_value AS NUMERIC)) as max_value,
+    COUNT(*) as data_points,
+    CAST(SPLIT_PART(h.week, 'Week', 2) AS INTEGER) as week_num
+  FROM public.kpi_values_hist26 h
+  JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+  JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
+  WHERE r.plant_id = $1 
+    AND h.new_value IS NOT NULL
+    AND h.new_value != ''
+    AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'  -- FIXED: Cast to text first
+    AND h.week LIKE '2026-Week%'
+  GROUP BY k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit, 
+           k.target, k.min, k.max, h.week
+)
+SELECT * FROM WeeklyKPIData
+ORDER BY kpi_id, week_num DESC
+LIMIT 500
+      `,
+      [plantId]
+    );
+
+    // Helper function to extract department from indicator_title
+    const extractDepartmentFromTitle = (indicatorTitle) => {
+      if (!indicatorTitle) return 'Other';
+      if (indicatorTitle.includes('Actual - ')) {
+        const extracted = indicatorTitle.split('Actual - ')[1];
+        if (extracted.includes('/')) {
+          return extracted.split('/')[0].trim();
+        } else if (extracted.includes('(')) {
+          return extracted.split('(')[0].trim();
+        }
+        return extracted.trim();
+      }
+      return indicatorTitle;
+    };
+
+    // 4. Organize data by department
+    const kpisByDepartment = {};
+    const weeklyDataByKPI = {};
+
+    // First, organize weekly trend data
+    weeklyTrendRes.rows.forEach(row => {
+      const kpiKey = `${row.kpi_id}_${row.indicator_title}`;
+      const derivedDept = extractDepartmentFromTitle(row.indicator_title);
+
+      if (!weeklyDataByKPI[kpiKey]) {
+        weeklyDataByKPI[kpiKey] = {
+          kpi_id: row.kpi_id,
+          title: row.indicator_title,
+          subtitle: row.indicator_sub_title || '',
+          unit: row.unit || '',
+          target: row.target,
+          min: row.min,
+          max: row.max,
+          department: derivedDept,
+          weeks: [],
+          values: []
+        };
+      }
+
+      weeklyDataByKPI[kpiKey].weeks.push(row.week);
+      weeklyDataByKPI[kpiKey].values.push(parseFloat(row.avg_value));
+    });
+
+    // Then, organize current week data by extracted department
+    kpiRes.rows.forEach(row => {
+      const derivedDepartment = extractDepartmentFromTitle(row.indicator_title);
+      const kpiKey = `${row.kpi_id}_${row.indicator_title}`;
+
+      if (!kpisByDepartment[derivedDepartment]) {
+        kpisByDepartment[derivedDepartment] = [];
+      }
+
+      let existingKpi = kpisByDepartment[derivedDepartment].find(k =>
+        k.id === row.kpi_id && k.title === row.indicator_title
+      );
+
+      if (!existingKpi) {
+        const value = parseFloat(row.new_value);
+
+        existingKpi = {
+          id: row.kpi_id,
+          title: row.indicator_title,
+          subtitle: row.indicator_sub_title || '',
+          unit: row.unit || '',
+          target: row.target,
+          min: row.min,
+          max: row.max,
+          department: derivedDepartment,
+          originalDepartment: row.department_name,
+          currentValue: value,
+          weeklyData: weeklyDataByKPI[kpiKey] || { weeks: [], values: [] },
+          lastUpdated: row.updated_at,
+          responsible: row.responsible_name || ''
+        };
+
+        kpisByDepartment[derivedDepartment].push(existingKpi);
+      }
+    });
+
+    // Sort departments alphabetically
+    const sortedDepartments = {};
+    Object.keys(kpisByDepartment)
+      .sort()
+      .forEach(dept => {
+        sortedDepartments[dept] = kpisByDepartment[dept];
+      });
+
+    return {
+      plant: plant,
+      week: week,
+      kpisByDepartment: sortedDepartments,
+      stats: {
+        totalDepartments: Object.keys(sortedDepartments).length,
+        totalKPIs: Object.values(sortedDepartments).reduce((sum, kpis) => sum + kpis.length, 0),
+        totalValues: kpiRes.rows.length
+      }
+    };
+  } catch (error) {
+    console.error(`Error getting KPI report for plant ${plantId}:`, error.message);
+    return null;
+  }
+};
+
+
+
+// Email sender function (unchanged)
+const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
+  try {
+    const prevWeek = getPreviousWeek(currentWeek);
+    const reportData = await getDepartmentKPIReport(plantId, prevWeek);
+
+    if (!reportData || reportData.stats.totalKPIs === 0) {
+      console.log(`⚠️ No department KPI data to send for plant ${plantId} week ${prevWeek}`);
+      return null;
+    }
+
+    const emailHtml = generateManagerReportHtml(reportData);
+
+    const transporter = createTransporter();
+    const mailOptions = {
+      from: '"AVOCarbon Plant Analytics" <administration.STS@avocarbon.com>',
+      to: reportData.plant.manager_email,
+      subject: `📊 Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${prevWeek.replace('2026-Week', '')}`,
+      html: emailHtml
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Weekly KPI report sent to ${reportData.plant.manager_email} for plant ${reportData.plant.plant_name} (Week ${prevWeek})`);
+
+    return info;
+  } catch (error) {
+    console.error(`❌ Failed to send KPI report for plant ${plantId}:`, error.message);
+    return null;
+  }
+};
+// ---------- Update Cron Job for Department Reports ----------
+// ---------- Schedule Department Reports ----------
+
+cron.schedule(
+  "00 13 * * *", // Every day at 8:02 PM
+  async () => {
+    const lockId = 'department_report_job';
+    const lock = await acquireJobLock(lockId, 60); // 60 minute TTL
+
+    // Exit immediately if we didn't get the lock
+    if (!lock.acquired) {
+      console.log(`⏭️ [Department Report] Skipping - lock held by another instance`);
+      return;
+    }
+
+    try {
+      const now = new Date();
+
+      // Get week number
+      const getWeekNumber = (date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+        const yearStart = new Date(d.getFullYear(), 0, 1);
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        return weekNo;
+      };
+
+      const weekNumber = getWeekNumber(now);
+      const currentWeek = `2026-Week${weekNumber}`;
+
+      console.log(`📊 [Department Report] Starting for week ${currentWeek}...`);
+
+      // Get all plants with managers
+      const plantsRes = await pool.query(`
+        SELECT plant_id, name, manager_email 
+        FROM public."Plant" 
+        WHERE manager_email IS NOT NULL AND manager_email != ''
+      `);
+
+      console.log(`📊 [Department Report] Found ${plantsRes.rows.length} plants with managers`);
+
+      const results = [];
+      for (const [index, plant] of plantsRes.rows.entries()) {
+        try {
+          console.log(`  🏭 [${index + 1}/${plantsRes.rows.length}] Processing ${plant.name}...`);
+          await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+          console.log(`  ✅ [${index + 1}/${plantsRes.rows.length}] Sent to ${plant.name}`);
+          results.push({
+            plant_id: plant.plant_id,
+            name: plant.name,
+            status: 'success'
+          });
+
+          // Add delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        } catch (err) {
+          console.error(`  ❌ [${index + 1}/${plantsRes.rows.length}] Failed for ${plant.name}:`, err.message);
+          results.push({
+            plant_id: plant.plant_id,
+            name: plant.name,
+            status: 'error',
+            message: err.message
+          });
+        }
+      }
+
+      const succeeded = results.filter(r => r.status === 'success').length;
+      console.log(`✅ [Department Report] Completed. Sent: ${succeeded}/${results.length}`);
+
+    } catch (error) {
+      console.error("❌ [Department Report] Error:", error.message);
+    } finally {
+      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+    }
+  },
+  {
+    scheduled: true,
+    timezone: "Africa/Tunis"
+  }
+);
 
 // ---------- Start server ----------
 app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
