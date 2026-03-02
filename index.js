@@ -17,7 +17,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const pool = new Pool({
   user: "administrationSTS",
   host: "avo-adb-002.postgres.database.azure.com",
-  database: "kpi_codir",
+  database: "kpi_codir_test",
   password: "St$@0987",
   port: 5432,
   ssl: { rejectUnauthorized: false },
@@ -1841,14 +1841,14 @@ app.get("/dashboard", async (req, res) => {
     
            <div style="display: flex; align-items: center; gap: 10px;">
            <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
-           <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 20px;">${hasValue ? kpi.value : "Not filled yet"}</span>
+          <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 20px;">${hasValue ? kpi.value : "Not filled yet"}</span>
          ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
            </div>
           </div>
            ` : `
            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
              <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
-             <span class="kpi-value ${!hasValue ? 'no-data' : ''}">${hasValue ? kpi.value : "Not filled yet"}</span>
+            <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 14px;">${hasValue ? kpi.value : "Not filled yet"}</span>
              ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
              </div>
              `}
@@ -2886,7 +2886,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     const toleranceDisplay = toleranceTypes.size > 0 ?
       Array.from(toleranceTypes).join(', ') : 'N/A';
 
-    const emailHtml = `
+ const emailHtml = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -2909,43 +2909,59 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background: #f4f6f9; line-height: 1.4;">
   <!-- Simple container for Outlook -->
   <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f4f6f9;">
- <tr>
-  <td align="center" style="padding: 20px;">
-    <!-- Header Content -->
-    <table border="0" cellpadding="0" cellspacing="0" width="100%">
-      <tr>
-        <td style="background: #0078D7; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
-          <h1 style="margin: 0; color: white; font-size: 24px; font-weight: 600;">📊 KPI Performance Report</h1>
-          <p style="margin: 10px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">
-            ${reportWeek.replace('2026-Week', 'Week ')} • ${frequencyDisplay} View
-          </p>
-        </td>
-      </tr>
-      <tr>
-        <td>
-          <!-- View History Button Container -->
-         <div style="text-align: center; margin-top: 20px;">
-  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
-     class="view-history-btn"
-     style="
-       display: inline-block;
-       padding: 12px 24px;
-       background-color: #38bdf8; /* sky blue */
-       color: white;
-       text-decoration: none;
-       border-radius: 8px;
-       font-weight: 600;
-       font-size: 14px;
-     ">
-    📈 View Kpi History
-  </a>
-</div>
-        </td>
-      </tr>
-    </table>
-  </td>
-</tr>
-          
+    <tr>
+      <td align="center" style="padding: 20px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+
+          <!-- ✅ HEADER with buttons inside -->
+          <tr>
+            <td style="background: #0078D7; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+              <h1 style="margin: 0; color: white; font-size: 24px; font-weight: 600;">📊 KPI Performance Report</h1>
+              <p style="margin: 10px 0 20px 0; color: rgba(255,255,255,0.9); font-size: 16px;">
+                ${reportWeek.replace('2026-Week', 'Week ')} • ${frequencyDisplay} View
+              </p>
+
+              <!-- Buttons inside the header -->
+              <table border="0" cellpadding="0" cellspacing="0" align="center">
+                <tr>
+                  <td style="padding: 0 8px;">
+                    <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
+                      class="view-history-btn"
+                      style="
+                        display: inline-block;
+                        padding: 12px 24px;
+                        background-color: #38bdf8;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 8px;
+                        font-weight: 600;
+                        font-size: 14px;
+                      ">
+                      📈 View KPI Graphics
+                    </a>
+                  </td>
+                  <td style="padding: 0 8px;">
+                    <!-- ✅ Fixed href -->
+                    <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
+                      class="view-history-btn"
+                      style="
+                        display: inline-block;
+                        padding: 12px 24px;
+                        background-color: #38bdf8;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 8px;
+                        font-weight: 600;
+                        font-size: 14px;
+                      ">
+                      📊 View Dashboard
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
           <!-- Responsible Info -->
           <tr>
             <td style="padding: 25px 30px; border-bottom: 1px solid #e9ecef;">
@@ -2967,7 +2983,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               </table>
             </td>
           </tr>
-          
+
           <!-- KPI Summary Info -->
           ${hasData ? `
           <tr>
@@ -2986,14 +3002,14 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             </td>
           </tr>
           ` : ''}
-          
+
           <!-- Charts Section -->
           <tr>
             <td style="padding: 30px;">
               ${chartsHtml}
             </td>
           </tr>
-          
+
           <!-- Action Section -->
           <tr>
             <td style="padding: 20px 30px; background: #f8f9fa; border-top: 1px solid #e9ecef;">
@@ -3008,7 +3024,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               </table>
             </td>
           </tr>
-          
+
           <!-- Footer -->
           <tr>
             <td style="padding: 20px 30px; background: #f8f9fa; border-top: 1px solid #e9ecef; border-radius: 0 0 8px 8px;">
@@ -3020,13 +3036,13 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
                     </p>
                     <p style="margin: 0; font-size: 11px; color: #999;">
                       Generated on ${new Date().toLocaleDateString('en-GB', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })} • 
+                        weekday: 'long',
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })} • 
                       Contact: <a href="mailto:administration.STS@avocarbon.com" 
                                 style="color: #0078D7; text-decoration: none;">administration.STS@avocarbon.com</a>
                     </p>
@@ -3035,6 +3051,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               </table>
             </td>
           </tr>
+
         </table>
       </td>
     </tr>
@@ -3042,7 +3059,6 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 </body>
 </html>
 `;
-
     // Send email
     const transporter = createTransporter();
     const mailOptions = {
@@ -3067,10 +3083,24 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 let cronRunning = false;
 cron.schedule(
- "30 9 1 * *",
+  "48 13 * * *",
   async () => {
-    if (cronRunning) return console.log("⏭️ Cron already running, skip...");
-    cronRunning = true;
+    const lockId = "send_kpi_weekly_email_job";
+
+    // Try to acquire distributed lock
+    const lock = await acquireJobLock(lockId);
+
+    if (!lock.acquired) {
+      return; // Another instance is running it
+    }
+
+    try {
+      if (cronRunning) {
+        console.log("⏭️ Cron already running locally, skip...");
+        return;
+      }
+
+      cronRunning = true;
 
       const now = new Date();
       const startOfYear = new Date(now.getFullYear(), 0, 1);
@@ -3078,25 +3108,31 @@ cron.schedule(
       const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
       const targetWeek = currentWeek - 1;
       const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
-      const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`; // e.g. "2026-Week8"
-    try {
-      // Send only to responsibles who actually have KPI records for that week
-      const resps = await pool.query(`
+      const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
+
+      const resps = await pool.query(
+        `
         SELECT DISTINCT r.responsible_id
         FROM public."Responsible" r
         JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
         WHERE kv.week = $1
-      `, [forcedWeek]);
+      `,
+        [forcedWeek]
+      );
 
       for (let r of resps.rows) {
         await sendKPIEmail(r.responsible_id, forcedWeek);
       }
 
       console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
+
     } catch (err) {
       console.error("❌ Error sending scheduled emails:", err.message);
     } finally {
       cronRunning = false;
+
+      // Always release advisory lock
+      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
     }
   },
   { scheduled: true, timezone: "Africa/Tunis" }
@@ -3105,37 +3141,45 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "47 12 * * *", // Every MOnday at 9:00 AM
+  "55 14 * * *", // Every Monday at 14:49 Africa/Tunis
   async () => {
-    if (reportCronRunning) {
-      console.log("⏭️ Weekly report cron already running, skipping...");
-      return;
+
+    const lockId = "weekly_kpi_report_job";
+
+    // 🔐 Try to acquire distributed lock
+    const lock = await acquireJobLock(lockId);
+
+    if (!lock.acquired) {
+      return; // Another instance is already running it
     }
 
-    reportCronRunning = true;
-
     try {
-      // Calculate current week
+
+      if (reportCronRunning) {
+        console.log("⏭️ Weekly report cron already running locally, skipping...");
+        return;
+      }
+
+      reportCronRunning = true;
+
+      // ===== WEEK CALCULATION =====
       const now = new Date();
       const year = now.getFullYear();
 
-      // Get week number function
       const getWeekNumber = (date) => {
         const d = new Date(date);
         d.setHours(0, 0, 0, 0);
         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
         const yearStart = new Date(d.getFullYear(), 0, 1);
-        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-        return weekNo;
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
       };
 
       const weekNumber = getWeekNumber(now);
-      const currentWeek = `${year}-Week${weekNumber}`;
       const previousWeek = `${year}-Week${weekNumber - 1}`;
 
-      console.log(`Current week: ${currentWeek}, Previous week: ${previousWeek}`);
+      console.log(`📊 Sending weekly reports for ${previousWeek}...`);
 
-      // Get all responsibles who have ANY KPI history data
+      // ===== FETCH RESPONSIBLES =====
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id, r.email, r.name
         FROM public."Responsible" r
@@ -3147,51 +3191,47 @@ cron.schedule(
         ORDER BY r.responsible_id
       `);
 
-      console.log(`📊 Sending weekly reports for week ${previousWeek} to ${resps.rows.length} responsibles...`);
-
       const results = [];
+
       for (const [index, resp] of resps.rows.entries()) {
         try {
           await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
-          console.log(`  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`);
-          results.push({
-            responsible_id: resp.responsible_id,
-            name: resp.name,
-            status: 'success'
-          });
 
-          // Add delay to avoid rate limiting
+          console.log(
+            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
+          );
+
+          results.push({ responsible_id: resp.responsible_id, status: "success" });
+
+          // Prevent email rate limiting
           await new Promise(resolve => setTimeout(resolve, 1500));
+
         } catch (err) {
-          console.error(`  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`, err.message);
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
+            err.message
+          );
+
           results.push({
             responsible_id: resp.responsible_id,
-            name: resp.name,
-            status: 'error',
+            status: "error",
             message: err.message
           });
         }
       }
 
-      const succeeded = results.filter(r => r.status === 'success').length;
+      const succeeded = results.filter(r => r.status === "success").length;
+
       console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
-
-      // Log summary
-      console.log('\n=== REPORT SUMMARY ===');
-      console.log(`Total responsibles: ${results.length}`);
-      console.log(`Successfully sent: ${succeeded}`);
-      console.log(`Failed: ${results.length - succeeded}`);
-
-      if (results.length - succeeded > 0) {
-        const failed = results.filter(r => r.status === 'error');
-        console.log('Failed responsibles:');
-        failed.forEach(f => console.log(`  - ${f.name}: ${f.message}`));
-      }
 
     } catch (error) {
       console.error("❌ Error in weekly report cron job:", error.message);
     } finally {
+
       reportCronRunning = false;
+
+      // 🔓 Always release advisory lock
+      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
     }
   },
   {
@@ -3199,7 +3239,6 @@ cron.schedule(
     timezone: "Africa/Tunis"
   }
 );
-
 
 // ========== UPDATED QUERY TO GET WEEKLY DATA ==========
 
@@ -5333,28 +5372,41 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 // ---------- Schedule Department Reports ----------
 
 cron.schedule(
-  "00 13 * * *", // Every day at 8:02 PM
+  "57 14 * * *",
   async () => {
-    const lockId = 'department_report_job';
-    const lock = await acquireJobLock(lockId, 60); // 60 minute TTL
 
-    // Exit immediately if we didn't get the lock
-    if (!lock.acquired) {
-      console.log(`⏭️ [Department Report] Skipping - lock held by another instance`);
-      return;
-    }
+    const lockId = "department_report_job";
+    const client = await pool.connect();
 
     try {
+      // Create stable hash
+      const lockHash = Math.abs(
+        lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)
+      );
+
+      // Try acquiring advisory lock
+      const result = await client.query(
+        "SELECT pg_try_advisory_lock($1) as acquired",
+        [lockHash]
+      );
+
+      if (!result.rows[0].acquired) {
+        console.log("⏭️ [Department Report] Skipping - lock held by another instance");
+        return;
+      }
+
+      console.log("🔒 [Department Report] Lock acquired");
+
+      // ===== YOUR EXISTING LOGIC =====
+
       const now = new Date();
 
-      // Get week number
       const getWeekNumber = (date) => {
         const d = new Date(date);
         d.setHours(0, 0, 0, 0);
         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
         const yearStart = new Date(d.getFullYear(), 0, 1);
-        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-        return weekNo;
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
       };
 
       const weekNumber = getWeekNumber(now);
@@ -5362,47 +5414,36 @@ cron.schedule(
 
       console.log(`📊 [Department Report] Starting for week ${currentWeek}...`);
 
-      // Get all plants with managers
       const plantsRes = await pool.query(`
         SELECT plant_id, name, manager_email 
         FROM public."Plant" 
         WHERE manager_email IS NOT NULL AND manager_email != ''
       `);
 
-      console.log(`📊 [Department Report] Found ${plantsRes.rows.length} plants with managers`);
-
-      const results = [];
-      for (const [index, plant] of plantsRes.rows.entries()) {
+      for (const plant of plantsRes.rows) {
         try {
-          console.log(`  🏭 [${index + 1}/${plantsRes.rows.length}] Processing ${plant.name}...`);
           await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-          console.log(`  ✅ [${index + 1}/${plantsRes.rows.length}] Sent to ${plant.name}`);
-          results.push({
-            plant_id: plant.plant_id,
-            name: plant.name,
-            status: 'success'
-          });
-
-          // Add delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 1500));
         } catch (err) {
-          console.error(`  ❌ [${index + 1}/${plantsRes.rows.length}] Failed for ${plant.name}:`, err.message);
-          results.push({
-            plant_id: plant.plant_id,
-            name: plant.name,
-            status: 'error',
-            message: err.message
-          });
+          console.error(`❌ Failed for ${plant.name}:`, err.message);
         }
       }
 
-      const succeeded = results.filter(r => r.status === 'success').length;
-      console.log(`✅ [Department Report] Completed. Sent: ${succeeded}/${results.length}`);
+      console.log("✅ [Department Report] Completed successfully");
 
     } catch (error) {
       console.error("❌ [Department Report] Error:", error.message);
     } finally {
-      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+      try {
+        await client.query("SELECT pg_advisory_unlock($1)", [
+          Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0))
+        ]);
+        console.log("🔓 [Department Report] Lock released");
+      } catch (e) {
+        console.error("⚠️ Failed to release lock:", e.message);
+      }
+
+      client.release();
     }
   },
   {
