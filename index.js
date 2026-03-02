@@ -163,7 +163,7 @@ const generateEmailHtml = ({ responsible, week }) => {
       ${responsible.plant_name}
     </h3>
         
-    <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${week}"
+    <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
        style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
               border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
               box-shadow:0 4px 12px rgba(0,120,215,0.4);">
@@ -964,7 +964,7 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
 
 //       <!-- CTA Button -->
 // <div style="text-align:center;margin:30px 0;">
-//   <a href="http://localhost:5000/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
+//   <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
 //      style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
 //             border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
 //             box-shadow:0 4px 10px rgba(211,47,47,0.3);">
@@ -2827,7 +2827,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Start filling your KPI forms to track your performance over time.
             </p>
-            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #28a745; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2843,7 +2843,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
               Fill your KPI form for week ${reportWeek} to generate performance charts.
             </p>
-            <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
+            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
                style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
                       background: #0078D7; color: white; text-decoration: none; 
                       border-radius: 6px; font-weight: 600; font-size: 14px;">
@@ -2900,7 +2900,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         <td>
           <!-- View History Button Container -->
          <div style="text-align: center; margin-top: 20px;">
-  <a href="http://localhost:5000/kpi-trends?responsible_id=${responsible.responsible_id}"
+  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
      class="view-history-btn"
      style="
        display: inline-block;
