@@ -17,7 +17,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const pool = new Pool({
   user: "administrationSTS",
   host: "avo-adb-002.postgres.database.azure.com",
-  database: "kpi_codir_test",
+  database: "kpi_codir",
   password: "St$@0987",
   port: 5432,
   ssl: { rejectUnauthorized: false },
@@ -3141,7 +3141,7 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 let reportCronRunning = false;
 cron.schedule(
-  "10 15 * * *", // Every Monday at 14:49 Africa/Tunis
+  "18 15 * * *", // Every Monday at 14:49 Africa/Tunis
   async () => {
 
     const lockId = "weekly_kpi_report_job";
