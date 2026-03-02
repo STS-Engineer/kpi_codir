@@ -1841,7 +1841,7 @@ app.get("/dashboard", async (req, res) => {
     
            <div style="display: flex; align-items: center; gap: 10px;">
            <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
-          <span class="kpi-value ${!hasValue ? 'no-data' : ''}">${hasValue ? kpi.value : "Not filled yet"}</span>
+           <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 20px;">${hasValue ? kpi.value : "Not filled yet"}</span>
          ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
            </div>
           </div>
