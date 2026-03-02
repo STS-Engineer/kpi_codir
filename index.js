@@ -3125,7 +3125,13 @@ cron.schedule(
     try {
       console.log("🚀 KPI email cron started");
 
-      const forcedWeek = "2026-Week9"; // Or compute dynamically
+      const now = new Date();
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
+      const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
+      const targetWeek = currentWeek - 1;
+      const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
+      const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`; // e.g. "2026-Week8"
 
       const resps = await pool.query(`
         SELECT DISTINCT r.responsible_id
