@@ -3111,7 +3111,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // ---------- Schedule weekly email to submit kpi----------
 // let cronRunning = false;
 cron.schedule(
-  "30 9 * * *",
+  "30 9 1 * *",
   async () => {
     const lockId = "kpi_weekly_email_job";
 
@@ -3178,92 +3178,92 @@ cron.schedule(
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 // let reportCronRunning = false;
 
-// cron.schedule(
-//   "42 15 * * *",
-//   async () => {
-//     const lockId = "weekly_report_job";
+cron.schedule(
+  "00 12 * * *",
+  async () => {
+    const lockId = "weekly_report_job";
 
-//     const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
+    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
 
-//     if (!acquired) {
-//       console.log(`⏭️ Instance ${instanceId} skipped cron job (lock not acquired)`);
-//       return;
-//     }
+    if (!acquired) {
+      console.log(`⏭️ Instance ${instanceId} skipped cron job (lock not acquired)`);
+      return;
+    }
 
-//     try {
-//       if (reportCronRunning) {
-//         console.log("⏭️ Weekly report cron already running in this instance...");
-//         return;
-//       }
+    try {
+      if (reportCronRunning) {
+        console.log("⏭️ Weekly report cron already running in this instance...");
+        return;
+      }
 
-//       reportCronRunning = true;
+      reportCronRunning = true;
 
-//       console.log("🚀 Weekly report cron started");
+      console.log("🚀 Weekly report cron started");
 
-//       // Calculate week
-//       const now = new Date();
-//       const year = now.getFullYear();
+      // Calculate week
+      const now = new Date();
+      const year = now.getFullYear();
 
-//       const getWeekNumber = (date) => {
-//         const d = new Date(date);
-//         d.setHours(0, 0, 0, 0);
-//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//         const yearStart = new Date(d.getFullYear(), 0, 1);
-//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//       };
+      const getWeekNumber = (date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+        const yearStart = new Date(d.getFullYear(), 0, 1);
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+      };
 
-//       const weekNumber = getWeekNumber(now);
-//       const previousWeek = `${year}-Week${weekNumber - 1}`;
+      const weekNumber = getWeekNumber(now);
+      const previousWeek = `${year}-Week${weekNumber - 1}`;
 
-//       const resps = await pool.query(`
-//         SELECT DISTINCT r.responsible_id, r.email, r.name
-//         FROM public."Responsible" r
-//         JOIN public.kpi_values_hist26 h 
-//           ON r.responsible_id = h.responsible_id
-//         WHERE r.email IS NOT NULL
-//         AND r.email != ''
-//         ORDER BY r.responsible_id
-//       `);
+      const resps = await pool.query(`
+        SELECT DISTINCT r.responsible_id, r.email, r.name
+        FROM public."Responsible" r
+        JOIN public.kpi_values_hist26 h 
+          ON r.responsible_id = h.responsible_id
+        WHERE r.email IS NOT NULL
+        AND r.email != ''
+        ORDER BY r.responsible_id
+      `);
 
-//       console.log(`📊 Sending weekly reports for ${previousWeek}`);
+      console.log(`📊 Sending weekly reports for ${previousWeek}`);
 
-//       for (const [index, resp] of resps.rows.entries()) {
-//         try {
-//           await generateWeeklyReportEmail(
-//             resp.responsible_id,
-//             previousWeek
-//           );
+      for (const [index, resp] of resps.rows.entries()) {
+        try {
+          await generateWeeklyReportEmail(
+            resp.responsible_id,
+            previousWeek
+          );
 
-//           console.log(
-//             `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name}`
-//           );
+          console.log(
+            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name}`
+          );
 
-//           // Rate limit protection
-//           await new Promise(resolve => setTimeout(resolve, 1500));
+          // Rate limit protection
+          await new Promise(resolve => setTimeout(resolve, 1500));
 
-//         } catch (err) {
-//           console.error(
-//             `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
-//             err.message
-//           );
-//         }
-//       }
+        } catch (err) {
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
+            err.message
+          );
+        }
+      }
 
-//       console.log("✅ Weekly report cron finished");
+      console.log("✅ Weekly report cron finished");
 
-//     } catch (error) {
-//       console.error("❌ Cron job error:", error.message);
+    } catch (error) {
+      console.error("❌ Cron job error:", error.message);
 
-//     } finally {
-//       reportCronRunning = false;
-//       await releaseJobLock(lockId, instanceId, lockHash);
-//     }
-//   },
-//   {
-//     scheduled: true,
-//     timezone: "Africa/Tunis"
-//   }
-// );
+    } finally {
+      reportCronRunning = false;
+      await releaseJobLock(lockId, instanceId, lockHash);
+    }
+  },
+  {
+    scheduled: true,
+    timezone: "Africa/Tunis"
+  }
+);
 
 
 // ========== UPDATED QUERY TO GET WEEKLY DATA ==========
