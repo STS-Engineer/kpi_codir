@@ -3110,64 +3110,64 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 
 // ---------- Schedule weekly email to submit kpi----------
 // let cronRunning = false;
-// cron.schedule(
-//   "00 9 * * *",
-//   async () => {
-//     const lockId = "kpi_weekly_email_job";
+cron.schedule(
+  "30 9 * * *",
+  async () => {
+    const lockId = "kpi_weekly_email_job";
 
-//     const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
+    const { acquired, instanceId, lockHash } = await acquireJobLock(lockId);
 
-//     if (!acquired) {
-//       console.log(`⏭️ Instance skipped KPI cron (lock not acquired)`);
-//       return;
-//     }
+    if (!acquired) {
+      console.log(`⏭️ Instance skipped KPI cron (lock not acquired)`);
+      return;
+    }
 
-//     try {
-//       console.log("🚀 KPI email cron started");
+    try {
+      console.log("🚀 KPI email cron started");
 
-//       const forcedWeek = "2026-Week8"; // Or compute dynamically
+      const forcedWeek = "2026-Week9"; // Or compute dynamically
 
-//       const resps = await pool.query(`
-//         SELECT DISTINCT r.responsible_id
-//         FROM public."Responsible" r
-//         JOIN public.kpi_values kv 
-//           ON kv.responsible_id = r.responsible_id
-//         WHERE kv.week = $1
-//       `, [forcedWeek]);
+      const resps = await pool.query(`
+        SELECT DISTINCT r.responsible_id
+        FROM public."Responsible" r
+        JOIN public.kpi_values kv 
+          ON kv.responsible_id = r.responsible_id
+        WHERE kv.week = $1
+      `, [forcedWeek]);
 
-//       console.log(`📊 Sending KPI emails to ${resps.rows.length} responsibles`);
+      console.log(`📊 Sending KPI emails to ${resps.rows.length} responsibles`);
 
-//       for (const [index, row] of resps.rows.entries()) {
-//         try {
-//           await sendKPIEmail(row.responsible_id, forcedWeek);
+      for (const [index, row] of resps.rows.entries()) {
+        try {
+          await sendKPIEmail(row.responsible_id, forcedWeek);
 
-//           console.log(`  [${index + 1}/${resps.rows.length}] Email sent`);
+          console.log(`  [${index + 1}/${resps.rows.length}] Email sent`);
 
-//           // Optional rate limit safety
-//           await new Promise(resolve => setTimeout(resolve, 1000));
+          // Optional rate limit safety
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-//         } catch (err) {
-//           console.error(
-//             `  [${index + 1}/${resps.rows.length}] Failed:`,
-//             err.message
-//           );
-//         }
-//       }
+        } catch (err) {
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed:`,
+            err.message
+          );
+        }
+      }
 
-//       console.log("✅ KPI cron job completed");
+      console.log("✅ KPI cron job completed");
 
-//     } catch (err) {
-//       console.error("❌ Cron job error:", err.message);
+    } catch (err) {
+      console.error("❌ Cron job error:", err.message);
 
-//     } finally {
-//       await releaseJobLock(lockId, instanceId, lockHash);
-//     }
-//   },
-//   {
-//     scheduled: true,
-//     timezone: "Africa/Tunis"
-//   }
-// );
+    } finally {
+      await releaseJobLock(lockId, instanceId, lockHash);
+    }
+  },
+  {
+    scheduled: true,
+    timezone: "Africa/Tunis"
+  }
+);
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
 // let reportCronRunning = false;
