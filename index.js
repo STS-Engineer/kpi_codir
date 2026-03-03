@@ -3129,106 +3129,106 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 // );
 
 // ---------- Schedule Weekly Reports  to send it for each responsible  ----------
-// let reportCronRunning = false;
-// cron.schedule(
-//   "00 09 * * *", // Every Monday at 14:49 Africa/Tunis
-//   async () => {
+let reportCronRunning = false;
+cron.schedule(
+  "00 09 * * *", // Every Monday at 14:49 Africa/Tunis
+  async () => {
 
-//     const lockId = "weekly_kpi_report_job";
+    const lockId = "weekly_kpi_report_job";
 
-//     // 🔐 Try to acquire distributed lock
-//     const lock = await acquireJobLock(lockId);
+    // 🔐 Try to acquire distributed lock
+    const lock = await acquireJobLock(lockId);
 
-//     if (!lock.acquired) {
-//       return; // Another instance is already running it
-//     }
+    if (!lock.acquired) {
+      return; // Another instance is already running it
+    }
 
-//     try {
+    try {
 
-//       if (reportCronRunning) {
-//         console.log("⏭️ Weekly report cron already running locally, skipping...");
-//         return;
-//       }
+      if (reportCronRunning) {
+        console.log("⏭️ Weekly report cron already running locally, skipping...");
+        return;
+      }
 
-//       reportCronRunning = true;
+      reportCronRunning = true;
 
-//       // ===== WEEK CALCULATION =====
-//       const now = new Date();
-//       const year = now.getFullYear();
+      // ===== WEEK CALCULATION =====
+      const now = new Date();
+      const year = now.getFullYear();
 
-//       const getWeekNumber = (date) => {
-//         const d = new Date(date);
-//         d.setHours(0, 0, 0, 0);
-//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//         const yearStart = new Date(d.getFullYear(), 0, 1);
-//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//       };
+      const getWeekNumber = (date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+        const yearStart = new Date(d.getFullYear(), 0, 1);
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+      };
 
-//       const weekNumber = getWeekNumber(now);
-//       const previousWeek = `${year}-Week${weekNumber - 1}`;
+      const weekNumber = getWeekNumber(now);
+      const previousWeek = `${year}-Week${weekNumber - 1}`;
 
-//       console.log(`📊 Sending weekly reports for ${previousWeek}...`);
+      console.log(`📊 Sending weekly reports for ${previousWeek}...`);
 
-//       // ===== FETCH RESPONSIBLES =====
-//       const resps = await pool.query(`
-//         SELECT DISTINCT r.responsible_id, r.email, r.name
-//         FROM public."Responsible" r
-//         JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
-//         WHERE r.email IS NOT NULL
-//           AND r.email != ''
-//         GROUP BY r.responsible_id, r.email, r.name
-//         HAVING COUNT(h.hist_id) > 0
-//         ORDER BY r.responsible_id
-//       `);
+      // ===== FETCH RESPONSIBLES =====
+      const resps = await pool.query(`
+        SELECT DISTINCT r.responsible_id, r.email, r.name
+        FROM public."Responsible" r
+        JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
+        WHERE r.email IS NOT NULL
+          AND r.email != ''
+        GROUP BY r.responsible_id, r.email, r.name
+        HAVING COUNT(h.hist_id) > 0
+        ORDER BY r.responsible_id
+      `);
 
-//       const results = [];
+      const results = [];
 
-//       for (const [index, resp] of resps.rows.entries()) {
-//         try {
-//           await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
+      for (const [index, resp] of resps.rows.entries()) {
+        try {
+          await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
 
-//           console.log(
-//             `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
-//           );
+          console.log(
+            `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
+          );
 
-//           results.push({ responsible_id: resp.responsible_id, status: "success" });
+          results.push({ responsible_id: resp.responsible_id, status: "success" });
 
-//           // Prevent email rate limiting
-//           await new Promise(resolve => setTimeout(resolve, 1500));
+          // Prevent email rate limiting
+          await new Promise(resolve => setTimeout(resolve, 1500));
 
-//         } catch (err) {
-//           console.error(
-//             `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
-//             err.message
-//           );
+        } catch (err) {
+          console.error(
+            `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
+            err.message
+          );
 
-//           results.push({
-//             responsible_id: resp.responsible_id,
-//             status: "error",
-//             message: err.message
-//           });
-//         }
-//       }
+          results.push({
+            responsible_id: resp.responsible_id,
+            status: "error",
+            message: err.message
+          });
+        }
+      }
 
-//       const succeeded = results.filter(r => r.status === "success").length;
+      const succeeded = results.filter(r => r.status === "success").length;
 
-//       console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
+      console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
 
-//     } catch (error) {
-//       console.error("❌ Error in weekly report cron job:", error.message);
-//     } finally {
+    } catch (error) {
+      console.error("❌ Error in weekly report cron job:", error.message);
+    } finally {
 
-//       reportCronRunning = false;
+      reportCronRunning = false;
 
-//       // 🔓 Always release advisory lock
-//       await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//     }
-//   },
-//   {
-//     scheduled: true,
-//     timezone: "Africa/Tunis"
-//   }
-// );
+      // 🔓 Always release advisory lock
+      await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+    }
+  },
+  {
+    scheduled: true,
+    timezone: "Africa/Tunis"
+  }
+);
 
 // ========== UPDATED QUERY TO GET WEEKLY DATA ==========
 
