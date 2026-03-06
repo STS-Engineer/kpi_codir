@@ -5,7 +5,8 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
-
+const { registerRecommendationRoutes } = require('./kpi-recommendations');
+const { generateAndSendKPIRecommendations, generateAndSendManagerReport, generateKPIRecommendationsPDFBuffer, generatePlantKPIRecommendationsPDFBuffer } = require('./kpi-recommendations');
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -17,33 +18,44 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const pool = new Pool({
   user: "administrationSTS",
   host: "avo-adb-002.postgres.database.azure.com",
-  database: "kpi_codir",
+  database: "kpi_codir_test",
   password: "St$@0987",
   port: 5432,
   ssl: { rejectUnauthorized: false },
 });
 
+// ============================================================
+// DOT COLOR HELPER
+// red    = below low_limit
+// orange = within 10% above low_limit (close to it)
+// green  = fine
+// ============================================================
+const getDotColor = (value, lowLimit, highLimit) => {
+  const val = parseFloat(value);
+  if (isNaN(val)) return '#6c757d';
+  const low = (lowLimit !== null && lowLimit !== undefined &&
+    lowLimit !== '' && lowLimit !== 'None')
+    ? parseFloat(lowLimit) : null;
+  if (low !== null) {
+    if (val < low) return '#dc3545';        // red
+    if (val < low * 1.10) return '#ff9800'; // orange
+  }
+  return '#28a745'; // green
+};
 
 // ---------- IMPROVED Job Lock Helper with PostgreSQL Advisory Locks ----------
 const acquireJobLock = async (lockId, ttlMinutes = 9) => {
   const instanceId = process.env.WEBSITE_INSTANCE_ID || `instance_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
   try {
-    // Convert lockId string to a consistent integer hash
     const lockHash = Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0));
-
-    // Try to acquire PostgreSQL advisory lock (non-blocking)
     const result = await pool.query('SELECT pg_try_advisory_lock($1) as acquired', [lockHash]);
-
     if (result.rows[0].acquired) {
-      console.log(`🔒 Instance ${instanceId} acquired lock ${lockId} (hash: ${lockHash})`);
+      console.log(`🔒 Instance ${instanceId} acquired lock ${lockId}`);
       return { acquired: true, instanceId, lockHash };
     } else {
-      console.log(`⏭️ Instance ${instanceId} failed to acquire lock ${lockId} - another instance is running this job`);
       return { acquired: false, instanceId, lockHash };
     }
   } catch (error) {
-    console.error(`❌ Error acquiring lock ${lockId}:`, error.message);
     return { acquired: false, instanceId, error: error.message };
   }
 };
@@ -52,7 +64,6 @@ const releaseJobLock = async (lockId, instanceId, lockHash) => {
   try {
     if (lockHash) {
       await pool.query('SELECT pg_advisory_unlock($1)', [lockHash]);
-      console.log(`🔓 Instance ${instanceId} released lock ${lockId}`);
     }
   } catch (error) {
     console.error(`⚠️ Could not release lock ${lockId}:`, error.message);
@@ -71,729 +82,760 @@ const createTransporter = () =>
     },
   });
 
-// ---------- Fix getResponsibleWithKPIs function ----------
+// ============================================================
+// getResponsibleWithKPIs — now also fetches existing corrective
+// action data (root_cause, implemented_solution, evidence)
+// ============================================================
 const getResponsibleWithKPIs = async (responsibleId, week) => {
   const resResp = await pool.query(
-    `
-    SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-           p.name AS plant_name, d.name AS department_name
-    FROM public."Responsible" r
-    JOIN public."Plant" p ON r.plant_id = p.plant_id
-    JOIN public."Department" d ON r.department_id = d.department_id
-    WHERE r.responsible_id = $1
-    `,
+    `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
+             p.name AS plant_name, d.name AS department_name
+      FROM public."Responsible" r
+      JOIN public."Plant" p ON r.plant_id = p.plant_id
+      JOIN public."Department" d ON r.department_id = d.department_id
+      WHERE r.responsible_id = $1`,
     [responsibleId]
   );
-
   const responsible = resResp.rows[0];
   if (!responsible) throw new Error("Responsible not found");
 
   const kpiRes = await pool.query(
-    `
-    SELECT kv.kpi_values_id, kv.value, kv.week, k.kpi_id, 
+    `SELECT kv.kpi_values_id, kv.value, kv.week, k.kpi_id,
            k.subject, k.indicator_sub_title, k.unit,
            k.target, k.min, k.max, k.tolerance_type,
            k.up_tolerance, k.low_tolerance, k.frequency,
            k.definition, k.calculation_on, k.target_auto_adjustment,
-           -- Get latest update time from history or use current time
+           k.high_limit, k.low_limit,
            COALESCE(
-             (SELECT MAX(updated_at) 
-              FROM public.kpi_values_hist26 
-              WHERE kpi_values_id = kv.kpi_values_id),
-             NOW()
-           ) as last_updated
+             (SELECT MAX(updated_at) FROM public.kpi_values_hist26
+              WHERE kpi_values_id = kv.kpi_values_id), NOW()
+           ) as last_updated,
+           (SELECT h.comment FROM public.kpi_values_hist26 h
+            WHERE h.kpi_values_id = kv.kpi_values_id
+              AND h.responsible_id = $1 AND h.week = $2
+            ORDER BY h.updated_at DESC LIMIT 1) as latest_comment,
+           -- Corrective action fields from corrective_actions table
+           ca.corrective_action_id,
+           ca.root_cause       AS ca_root_cause,
+           ca.implemented_solution AS ca_implemented_solution,
+           ca.evidence         AS ca_evidence,
+           ca.status           AS ca_status
     FROM public.kpi_values kv
     JOIN "Kpi" k ON kv.kpi_id = k.kpi_id
+    LEFT JOIN public.corrective_actions ca
+           ON ca.kpi_id = kv.kpi_id
+          AND ca.responsible_id = $1
+          AND ca.week = $2
     WHERE kv.responsible_id = $1 AND kv.week = $2
-    ORDER BY k.kpi_id ASC
-    `,
+    ORDER BY k.kpi_id ASC`,
     [responsibleId, week]
   );
-
   return { responsible, kpis: kpiRes.rows };
 };
 
-// ---------- Generate Email HTML with Button ----------
 const generateEmailHtml = ({ responsible, week }) => {
   return `
-  <!DOCTYPE html>
-  <html>
-  <head><meta charset="utf-8"><title>KPI Form</title></head>
-<body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
-  <div style="max-width:600px;margin:0 auto;background:#fff;padding:25px;
-              border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
-    
-    <!-- Logo -->
-    <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0" 
-         alt="AVOCarbon Logo" style="width:80px;height:80px;object-fit:contain;margin-bottom:10px;">
-
-    <!-- KPI CODIR badge (table-based for email compatibility) -->
-    <div style="margin-bottom:24px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" 
-             style="margin:0 auto;border-collapse:collapse;">
-        <tr>
-      <td style="background:#ffffff;border-radius:30px;padding:8px 24px;
-           border:2px solid #0078D7;
-           box-shadow:0 4px 12px rgba(0,120,215,0.2);">
-  <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-    <tr>
-      <td style="padding-right:8px;vertical-align:middle;">
-        <div style="width:7px;height:7px;background:#0078D7;border-radius:50%;"></div>
-      </td>
-      <td style="vertical-align:middle;">
-        <span style="color:#0078D7;font-size:13px;font-weight:700;
-                     letter-spacing:3px;text-transform:uppercase;
-                     font-family:'Segoe UI',Arial,sans-serif;">
-          KPI&nbsp;CODIR
-        </span>
-      </td>
-      <td style="padding-left:8px;vertical-align:middle;">
-        <div style="width:7px;height:7px;background:#0078D7;border-radius:50%;"></div>
-      </td>
-        </tr>
-       </table>
-        </td>
-        </tr>
-      </table>
+  <!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form</title></head>
+  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
+    <div style="max-width:600px;margin:0 auto;background:#fff;padding:25px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
+      <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0"
+           alt="AVOCarbon Logo" style="width:80px;height:80px;object-fit:contain;margin-bottom:10px;">
+      <h2 style="color:#0078D7;font-size:22px;margin-bottom:20px;">KPI Submission - ${week}</h2>
+      <h3 style="color:#0078D7;font-size:16px;margin-bottom:20px;">${responsible.plant_name}</h3>
+      <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
+         style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
+                border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;">
+        Fill KPI Form
+      </a>
+      <p style="margin-top:20px;font-size:12px;color:#888;">Click the button above to fill your KPIs for week ${week}.</p>
     </div>
-
-    <h2 style="color:#0078D7;font-size:22px;margin-bottom:20px;">KPI Submission - ${week}</h2>
-  
-    <h3 style="color:#0078D7;font-size:16px;margin-bottom:20px;">
-      ${responsible.plant_name}
-    </h3>
-        
-    <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
-       style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
-              border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
-              box-shadow:0 4px 12px rgba(0,120,215,0.4);">
-      Fill KPI Form
-    </a>
-
-    <p style="margin-top:20px;font-size:12px;color:#888;">
-      Click the button above to fill your KPIs for week ${week}.
-    </p>
-  </div>
-</body>
-  </html>
-  `;
+  </body></html>`;
 };
 
-
-
-// Helper function to parse target values safely
 const parsetargetValue = (targetValue) => {
-  if (targetValue === null || targetValue === undefined || targetValue === '') {
-    return null;
-  }
-
-  // Try to parse as number
+  if (targetValue === null || targetValue === undefined || targetValue === '') return null;
   const parsed = parseFloat(targetValue);
   return isNaN(parsed) ? null : parsed;
 };
 
-
-// Send consolidated target update email
 const sendConsolidatedTargetUpdateEmail = async (responsibleId, week, targetUpdates) => {
   try {
-    // Get responsible info
     const resResp = await pool.query(
       `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1`,
+              p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`,
       [responsibleId]
     );
-
     const responsible = resResp.rows[0];
-    if (!responsible || !responsible.email) {
-      console.log(`No email found for responsible ${responsibleId}`);
-      return null;
-    }
-
-    if (targetUpdates.length === 0) {
-      console.log(`No target updates to send for responsible ${responsibleId}, week ${week}`);
-      return null;
-    }
-
-    // Get KPI details for each update
+    if (!responsible || !responsible.email || targetUpdates.length === 0) return null;
     const enhancedUpdates = [];
     for (const update of targetUpdates) {
       const kpiRes = await pool.query(
-        `SELECT indicator_title, indicator_sub_title, unit
-         FROM public."Kpi"
-         WHERE kpi_id = $1`,
+        `SELECT indicator_title, indicator_sub_title, unit FROM public."Kpi" WHERE kpi_id = $1`,
         [update.kpiId]
       );
-
       if (kpiRes.rows[0]) {
         const kpi = kpiRes.rows[0];
-        const improvement = ((update.newTarget - update.oldTarget) / update.oldTarget * 100).toFixed(1);
-
         enhancedUpdates.push({
-          kpiId: update.kpiId,
+          ...update,
           indicator_title: kpi.indicator_title,
           indicator_sub_title: kpi.indicator_sub_title,
           unit: kpi.unit || '',
-          oldTarget: update.oldTarget,
-          newTarget: update.newTarget,
-          improvement: improvement
+          improvement: ((update.newTarget - update.oldTarget) / update.oldTarget * 100).toFixed(1)
         });
       }
     }
-
-    const html = generateConsolidatedTargetUpdateEmailHtml({
-      responsible,
-      week,
-      targetUpdates: enhancedUpdates
-    });
-
     const transporter = createTransporter();
-    const info = await transporter.sendMail({
-      from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
-      to: responsible.email,
-      subject: `🎯 ${targetUpdates.length} KPI Target${targetUpdates.length > 1 ? 's' : ''} Updated - Week ${week}`,
-      html,
-    });
-
-    console.log(`✅ Consolidated target update email sent to ${responsible.email} (${targetUpdates.length} KPIs)`);
-    return info;
+    console.log(`✅ Target update email sent to ${responsible.email}`);
   } catch (err) {
     console.error(`❌ Failed to send consolidated target update email:`, err.message);
+  }
+};
+
+const checkAndTriggerCorrectiveActions = async (responsibleId, kpiId, week, newValue, histId) => {
+  try {
+    const kpiRes = await pool.query(`SELECT target FROM public."Kpi" WHERE kpi_id = $1`, [kpiId]);
+    if (!kpiRes.rows.length) return { targetUpdated: false };
+    const currentTarget = parseFloat(kpiRes.rows[0].target);
+    const numValue = parseFloat(newValue);
+    if (isNaN(numValue) || isNaN(currentTarget)) return { targetUpdated: false };
+
+    await pool.query(
+      `UPDATE public.kpi_values_hist26
+       SET target = $1
+       WHERE responsible_id = $2 AND kpi_id = $3 AND week = $4 AND (target IS NULL OR target < $1)`,
+      [numValue, responsibleId, kpiId, week]
+    );
+
+    if (numValue > currentTarget) {
+      await pool.query(`UPDATE public."Kpi" SET target = $1 WHERE kpi_id = $2`, [numValue, kpiId]);
+      return { targetUpdated: true, updateInfo: { kpiId, oldTarget: currentTarget, newTarget: numValue } };
+    }
+
+    return { targetUpdated: false };
+  } catch (error) {
+    return { targetUpdated: false, error: error.message };
+  }
+};
+
+// ============================================================
+// upsertCorrectiveAction — saves root_cause, implemented_solution,
+// evidence into corrective_actions table for a given kpi/week
+// ============================================================
+const upsertCorrectiveAction = async (
+  responsibleId,
+  kpiId,
+  week,
+  { rootCause, implementedSolution, evidence }
+) => {
+  try {
+    const result = await pool.query(
+      `UPDATE public.corrective_actions
+       SET root_cause = $4::text,
+           implemented_solution = $5::text,
+           evidence = $6::text,
+           status = CASE
+             WHEN $4::text IS NOT NULL
+              AND $5::text IS NOT NULL
+              AND $6::text IS NOT NULL
+             THEN 'Waiting for validation'
+             ELSE status
+           END,
+           updated_date = NOW()
+       WHERE responsible_id = $1
+       AND kpi_id = $2
+       AND week = $3
+       RETURNING corrective_action_id`,
+      [
+        responsibleId,
+        kpiId,
+        week,
+        rootCause || null,
+        implementedSolution || null,
+        evidence || null
+      ]
+    );
+
+    // If no row was updated → insert
+    if (result.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO public.corrective_actions
+         (responsible_id, kpi_id, week, root_cause, implemented_solution, evidence, status)
+         VALUES ($1,$2,$3,$4::text,$5::text,$6::text,
+           CASE
+             WHEN $4::text IS NOT NULL
+              AND $5::text IS NOT NULL
+              AND $6::text IS NOT NULL
+             THEN 'Waiting for validation'
+             ELSE 'Open'
+           END)`,
+        [
+          responsibleId,
+          kpiId,
+          week,
+          rootCause || null,
+          implementedSolution || null,
+          evidence || null
+        ]
+      );
+    }
+
+    return true;
+  } catch (err) {
+    console.error("upsertCorrectiveAction error:", err.message);
+    return false;
+  }
+};
+// ============================================================
+// AI SUGGESTION HELPER — generates 2 CA suggestions for a KPI
+// ============================================================
+const generateCASuggestions = async (kpi) => {
+  try {
+    const OpenAI = require("openai");
+    const openai = new OpenAI({ apiKey: process.env.SECRET_KEY });
+
+    const currentVal = parseFloat(kpi.value || 0);
+    const targetVal = parseFloat(kpi.target || 0);
+    const gap = targetVal > 0 ? (targetVal - currentVal).toFixed(2) : "N/A";
+    const pctGap = targetVal > 0
+      ? (((targetVal - currentVal) / targetVal) * 100).toFixed(1)
+      : "N/A";
+
+    const prompt = `You are an industrial manufacturing and continuous-improvement expert.
+
+A KPI is BELOW its target. Give exactly 2 distinct corrective action plans.
+Each plan must have:
+1. root_cause       – likely reason the KPI is below target (1-2 sentences)
+2. immediate_action – what to do right now, within 1 week (1-2 sentences)
+3. evidence         – how to prove the action is working (1-2 sentences)
+
+The 2 plans should represent DIFFERENT root-cause hypotheses so the responsible can pick the most relevant one.
+
+KPI Details:
+- Indicator: ${kpi.subject}${kpi.indicator_sub_title ? ` — ${kpi.indicator_sub_title}` : ""}
+- Unit: ${kpi.unit || "N/A"}
+- Current Value: ${currentVal} ${kpi.unit || ""}
+- Target Value: ${targetVal} ${kpi.unit || ""}
+- Gap: ${gap} ${kpi.unit || ""} (${pctGap}% below target)
+
+Rules:
+- Be specific to this KPI context, not generic
+- Return ONLY valid JSON, no markdown, no extra text
+
+Format:
+{
+  "suggestion_1": { "root_cause": "...", "immediate_action": "...", "evidence": "..." },
+  "suggestion_2": { "root_cause": "...", "immediate_action": "...", "evidence": "..." }
+}`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+      max_tokens: 600,
+    });
+
+    const raw = completion.choices[0].message.content.trim()
+      .replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(raw);
+
+    return [
+      {
+        root_cause: parsed.suggestion_1?.root_cause || "",
+        immediate_action: parsed.suggestion_1?.immediate_action || "",
+        evidence: parsed.suggestion_1?.evidence || "",
+      },
+      {
+        root_cause: parsed.suggestion_2?.root_cause || "",
+        immediate_action: parsed.suggestion_2?.immediate_action || "",
+        evidence: parsed.suggestion_2?.evidence || "",
+      },
+    ];
+  } catch (err) {
+    console.error("AI suggestion error:", kpi.subject, err.message);
     return null;
   }
 };
 
-
-
-const checkAndTriggerCorrectiveActions = async (
-  responsibleId,
-  kpiId,
-  week,
-  newValue,
-  histId
-) => {
+// GET /generate-ca-suggestion?kpi_id=&responsible_id=&week=
+app.get("/generate-ca-suggestion", async (req, res) => {
   try {
-    // 1️⃣ Get current target value
+    const { kpi_id, responsible_id, week } = req.query;
+
     const kpiRes = await pool.query(
-      `SELECT target FROM public."Kpi" WHERE kpi_id = $1`,
-      [kpiId]
-    );
-
-    if (!kpiRes.rows.length) return { targetUpdated: false };
-
-    const currentTarget = parseFloat(kpiRes.rows[0].target);
-    const numValue = parseFloat(newValue);
-
-    if (isNaN(numValue) || isNaN(currentTarget)) return { targetUpdated: false };
-
-    // 2️⃣ Always update history with current target
-    await pool.query(
-      `UPDATE public.kpi_values_hist26
-       SET target = $1
-       WHERE responsible_id = $2
-         AND kpi_id = $3
-         AND week = $4
-         AND (target IS NULL OR target < $1)`,
-      [numValue, responsibleId, kpiId, week]
-    );
-
-    console.log(`📝 History updated with target: ${currentTarget} for hist_id: ${histId}`);
-
-    // 3️⃣ If value exceeds target → update KPI target and RETURN update info
-    if (numValue > currentTarget) {
-      const oldTarget = currentTarget;
-
-      // ✅ Update KPI target
-      await pool.query(
-        `UPDATE public."Kpi"
-         SET target = $1
-         WHERE kpi_id = $2`,
-        [numValue, kpiId]
-      );
-
-      console.log(`🎯 Updated target for KPI ${kpiId}: ${oldTarget} → ${numValue}`);
-
-      // ✅ Return target update info (NO EMAIL SENT HERE)
-      return {
-        targetUpdated: true,
-        updateInfo: {
-          kpiId: kpiId,
-          oldTarget: oldTarget,
-          newTarget: numValue
-        }
-      };
-    }
-
-    // 4️⃣ If value is BELOW target → create corrective action
-    if (numValue < currentTarget) {
-      const existingCA = await pool.query(
-        `SELECT corrective_action_id
-         FROM public.corrective_actions
-         WHERE responsible_id = $1
-           AND kpi_id = $2
-           AND week = $3
-           AND status = 'Open'`,
-        [responsibleId, kpiId, week]
-      );
-
-      if (existingCA.rows.length === 0) {
-        await pool.query(
-          `INSERT INTO public.corrective_actions
-           (responsible_id, kpi_id, week, status)
-           VALUES ($1, $2, $3, 'Open')`,
-          [responsibleId, kpiId, week]
-        );
-
-        console.log(`🔴 Corrective action created for KPI ${kpiId}, Week ${week}`);
-      }
-    }
-
-    return { targetUpdated: false };
-
-  } catch (error) {
-    console.error(`Error checking corrective actions:`, error.message);
-    return { targetUpdated: false, error: error.message };
-  }
-};
-// ========== CORRECTIVE ACTION SYSTEM - END ==========
-
-
-
-// ========== VIEW CORRECTIVE ACTIONS LIST ==========
-app.get("/corrective-actions-list", async (req, res) => {
-  try {
-    const { responsible_id } = req.query;
-
-    const actionsRes = await pool.query(
-      `SELECT ca.*, k.indicator_title, k.indicator_sub_title, k.unit
-      FROM public.corrective_actions ca
-      JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
-      WHERE ca.responsible_id = $1
-      ORDER BY ca.created_date DESC`,
-      [responsible_id]
-    );
-
-    const actions = actionsRes.rows;
-
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Corrective Actions History</title>
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; padding: 20px; margin: 0; }
-          .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-          h1 { color: #0078D7; margin-bottom: 25px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-          th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
-          th { background: #0078D7; color: white; font-weight: 600; }
-          tr:nth-child(even) { background: #f8f9fa; }
-          .status-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-          .status-open { background: #ffebee; color: #c62828; }
-          .status-completed { background: #e8f5e9; color: #2e7d32; }
-          .action-link { color: #0078D7; text-decoration: none; font-weight: 600; }
-          .action-link:hover { text-decoration: underline; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>📋 Corrective Actions History</h1>
-          <table>
-            <thead>
-              <tr>
-                <th>Week</th>
-                <th>KPI</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${actions.length === 0 ?
-        '<tr><td colspan="5" style="text-align:center;padding:40px;color:#999;">No corrective actions found</td></tr>'
-        :
-        actions.map(action => `
-                  <tr>
-                    <td>${action.week}</td>
-                    <td>
-                      <strong>${action.indicator_title}</strong>
-                      ${action.indicator_sub_title ? `<br><small>${action.indicator_sub_title}</small>` : ''}
-                    </td>
-                    <td>
-                      <span class="status-badge status-${action.status.toLowerCase()}">
-                        ${action.status}
-                      </span>
-                    </td>
-                    <td>${new Date(action.created_date).toLocaleDateString()}</td>
-                    <td>
-                      <a href="/corrective-action-form?responsible_id=${responsible_id}&kpi_id=${action.kpi_id}&week=${action.week}" class="action-link">
-                        ${action.status === 'Open' ? 'Complete' : 'View'}
-                      </a>
-                    </td>
-                  </tr>`
-        ).join('')}
-            </tbody>
-          </table>
-        </div>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    console.error("Error loading corrective actions list:", err);
-    res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
-  }
-});
-
-
-// ========== CORRECTIVE ACTION FORM PAGE ==========
-app.get("/corrective-action-form", async (req, res) => {
-  try {
-    const { responsible_id, kpi_id, week } = req.query;
-
-    const resResp = await pool.query(
-      `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1`,
-      [responsible_id]
-    );
-
-    const responsible = resResp.rows[0];
-    if (!responsible) return res.status(404).send("Responsible not found");
-
-    const kpiResp = await pool.query(
-      `SELECT k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit, k.target,
-              kv.value
+      `SELECT k.kpi_id, k.subject, k.indicator_sub_title,
+              k.unit, k.target, kv.value
        FROM public."Kpi" k
-       LEFT JOIN public.kpi_values kv ON k.kpi_id = kv.kpi_id 
-       WHERE k.kpi_id = $1 AND kv.responsible_id = $2 AND kv.week = $3`,
+       LEFT JOIN public.kpi_values kv
+         ON kv.kpi_id = k.kpi_id
+        AND kv.responsible_id = $2
+        AND kv.week = $3
+       WHERE k.kpi_id = $1
+       LIMIT 1`,
       [kpi_id, responsible_id, week]
     );
 
-    const kpi = kpiResp.rows[0];
-    if (!kpi) return res.status(404).send("KPI not found");
+    if (!kpiRes.rows.length)
+      return res.status(404).json({ error: "KPI not found" });
 
-    const existingCA = await pool.query(
-      `SELECT * FROM public.corrective_actions
-       WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3
-       ORDER BY created_date DESC LIMIT 1`,
-      [responsible_id, kpi_id, week]
-    );
+    const suggestions = await generateCASuggestions(kpiRes.rows[0]);
 
-    const existingData = existingCA.rows[0] || {};
+    if (!suggestions || suggestions.length === 0)
+      return res.status(500).json({ error: "Could not generate suggestion" });
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Corrective Action Form</title>
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; padding: 20px; margin: 0; }
-          .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden; }
-          .header { background: linear-gradient(135deg, #d32f2f 0%, #f44336 100%); color: white; padding: 25px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .alert-badge { background: rgba(255,255,255,0.2); display: inline-block; padding: 8px 16px; border-radius: 20px; margin-top: 10px; font-size: 13px; }
-          .form-section { padding: 30px; }
-          .info-box { background: #fff3e0; border-left: 4px solid #ff9800; padding: 20px; margin-bottom: 25px; border-radius: 4px; }
-          .info-row { display: flex; margin-bottom: 12px; font-size: 14px; }
-          .info-label { font-weight: 600; width: 140px; color: #333; }
-          .info-value { flex: 1; color: #666; }
-          .performance-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0; }
-          .perf-item { text-align: center; padding: 15px; background: #f8f9fa; border-radius: 6px; }
-          .perf-label { font-size: 11px; color: #666; margin-bottom: 8px; text-transform: uppercase; }
-          .perf-value { font-size: 24px; font-weight: 700; }
-          .perf-value.current { color: #d32f2f; }
-          .perf-value.target{ color: #4caf50; }
-          .perf-value.gap { color: #ff9800; }
-          .form-group { margin-bottom: 25px; }
-          label { display: block; font-weight: 600; color: #333; margin-bottom: 8px; font-size: 14px; }
-          label .required { color: #d32f2f; margin-left: 4px; }
-          textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: 'Segoe UI', sans-serif; box-sizing: border-box; min-height: 100px; resize: vertical; }
-          textarea:focus { border-color: #d32f2f; outline: none; box-shadow: 0 0 0 2px rgba(211,47,47,0.1); }
-          .help-text { font-size: 12px; color: #666; margin-top: 5px; font-style: italic; }
-          .submit-btn { background: #d32f2f; color: white; border: none; padding: 14px 30px; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; }
-          .submit-btn:hover { background: #b71c1c; }
-          .status-badge { display: inline-block; padding: 6px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-          .status-open { background: #ffebee; color: #c62828; }
-          .status-completed { background: #e8f5e9; color: #2e7d32; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div style="font-size: 40px;margin-bottom:10px;">⚠️</div>
-            <h1>Corrective Action Form</h1>
-            <div class="alert-badge">Week ${week} - Performance Below target</div>
-          </div>
-
-          <div class="form-section">
-            <div class="info-box">
-              <div class="info-row">
-                <div class="info-label">Responsible:</div>
-                <div class="info-value">${responsible.name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">Plant:</div>
-                <div class="info-value">${responsible.plant_name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">Department:</div>
-                <div class="info-value">${responsible.department_name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">KPI:</div>
-                <div class="info-value">${kpi.indicator_title}</div>
-              </div>
-            </div>
-
-            <div class="performance-box">
-              <div class="perf-item">
-                <div class="perf-label">Current Value</div>
-                <div class="perf-value current">${kpi.value || '0'}${kpi.unit || ''}</div>
-              </div>
-              <div class="perf-item">
-                <div class="perf-label">target</div>
-                <div class="perf-value target">${kpi.target || 'N/A'}${kpi.unit || ''}</div>
-              </div>
-              <div class="perf-item">
-                <div class="perf-label">Gap</div>
-                <div class="perf-value gap">
-                  ${kpi.target ? (parseFloat(kpi.target) - parseFloat(kpi.value || 0)).toFixed(2) : 'N/A'}${kpi.unit || ''}
-                </div>
-              </div>
-            </div>
-
-            ${existingData.corrective_action_id ? `
-            <div style="background:#e3f2fd;padding:15px;border-radius:6px;margin-bottom:20px;">
-              <strong>Status:</strong> 
-              <span class="status-badge status-${existingData.status.toLowerCase()}">${existingData.status}</span>
-              <div style="font-size:12px;color:#666;margin-top:8px;">
-                Last updated: ${new Date(existingData.updated_date).toLocaleString()}
-              </div>
-            </div>
-            ` : ''}
-
-            <form action="/submit-corrective-action" method="POST">
-              <input type="hidden" name="responsible_id" value="${responsible_id}">
-              <input type="hidden" name="kpi_id" value="${kpi_id}">
-              <input type="hidden" name="week" value="${week}">
-              ${existingData.corrective_action_id ?
-        `<input type="hidden" name="corrective_action_id" value="${existingData.corrective_action_id}">`
-        : ''}
-
-              <div class="form-group">
-                <label>Root Cause Analysis<span class="required">*</span></label>
-                <textarea name="root_cause" required placeholder="Describe the root cause of the performance gap...">${existingData.root_cause || ''}</textarea>
-                <div class="help-text">Use the 5 Whys technique or fishbone diagram to identify the root cause</div>
-              </div>
-
-              <div class="form-group">
-                <label>Implemented Solution<span class="required">*</span></label>
-                <textarea name="implemented_solution" required placeholder="Describe the corrective actions taken...">${existingData.implemented_solution || ''}</textarea>
-                <div class="help-text">Detail the specific actions, responsibilities, and timeline</div>
-              </div>
-
-              <div class="form-group">
-                <label>Evidence of Improvement<span class="required">*</span></label>
-                <textarea name="evidence" required placeholder="Provide evidence that the solution is effective...">${existingData.evidence || ''}</textarea>
-                <div class="help-text">Include data, observations, or metrics showing improvement</div>
-              </div>
-
-              <button type="submit" class="submit-btn">
-                ${existingData.corrective_action_id ? '✓ Update' : '📝 Submit'} Corrective Action
-              </button>
-            </form>
-          </div>
-        </div>
-      </body>
-      </html>
-    `);
+    // Randomly pick one suggestion to give variety on re-generate
+    const suggestion = suggestions[Math.floor(Math.random() * suggestions.length)];
+    res.json({ suggestion });
   } catch (err) {
-    console.error("Error loading corrective action form:", err);
+    console.error("Error generating CA suggestion:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== CORRECTIVE ACTION ROUTES ==========
+app.get("/corrective-actions-list", async (req, res) => {
+  try {
+    const { responsible_id } = req.query;
+    const actionsRes = await pool.query(
+      `SELECT ca.*, k.indicator_title, k.indicator_sub_title, k.unit
+       FROM public.corrective_actions ca
+       JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
+       WHERE ca.responsible_id = $1 ORDER BY ca.created_date DESC`,
+      [responsible_id]
+    );
+    const actions = actionsRes.rows;
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Corrective Actions</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;padding:20px}
+      .container{max-width:1200px;margin:0 auto;background:white;padding:30px;border-radius:8px}
+      h1{color:#0078D7}table{width:100%;border-collapse:collapse;margin-top:20px}
+      th,td{padding:12px;border:1px solid #ddd}th{background:#0078D7;color:white}
+      tr:nth-child(even){background:#f8f9fa}
+      .status-open{background:#ffebee;color:#c62828;padding:4px 10px;border-radius:12px;font-size:12px}
+      .status-completed{background:#e8f5e9;color:#2e7d32;padding:4px 10px;border-radius:12px;font-size:12px}
+      </style></head><body>
+      <div class="container"><h1>📋 Corrective Actions History</h1>
+      <table><thead><tr><th>Week</th><th>KPI</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+      <tbody>${actions.length === 0
+        ? '<tr><td colspan="5" style="text-align:center;padding:40px;color:#999;">No corrective actions found</td></tr>'
+        : actions.map(a => `<tr>
+            <td>${a.week}</td>
+            <td><strong>${a.indicator_title}</strong>${a.indicator_sub_title ? `<br><small>${a.indicator_sub_title}</small>` : ''}</td>
+            <td><span class="status-${a.status.toLowerCase()}">${a.status}</span></td>
+            <td>${new Date(a.created_date).toLocaleDateString()}</td>
+            <td><a href="/corrective-action-form?responsible_id=${responsible_id}&kpi_id=${a.kpi_id}&week=${a.week}"
+                   style="color:#0078D7;font-weight:600;">${a.status === 'Open' ? 'Complete' : 'View'}</a></td>
+          </tr>`).join('')}
+      </tbody></table></div></body></html>`);
+  } catch (err) {
     res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
 
-// ========== BULK CORRECTIVE ACTIONS FORM ==========
+app.get("/corrective-action-form", async (req, res) => {
+  try {
+    const { responsible_id, kpi_id, week } = req.query;
+    const resResp = await pool.query(
+      `SELECT r.*, p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`, [responsible_id]);
+    const responsible = resResp.rows[0];
+    if (!responsible) return res.status(404).send("Responsible not found");
+    const kpiResp = await pool.query(
+      `SELECT k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit, k.target, kv.value
+       FROM public."Kpi" k
+       LEFT JOIN public.kpi_values kv ON k.kpi_id = kv.kpi_id
+       WHERE k.kpi_id = $1 AND kv.responsible_id = $2 AND kv.week = $3`,
+      [kpi_id, responsible_id, week]);
+    const kpi = kpiResp.rows[0];
+    if (!kpi) return res.status(404).send("KPI not found");
+    const existingCA = await pool.query(
+      `SELECT * FROM public.corrective_actions WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3
+       ORDER BY created_date DESC LIMIT 1`, [responsible_id, kpi_id, week]);
+    const ed = existingCA.rows[0] || {};
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Corrective Action</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;padding:20px}
+      .container{max-width:800px;margin:0 auto;background:white;border-radius:8px;overflow:hidden}
+      .header{background:linear-gradient(135deg,#d32f2f,#f44336);color:white;padding:25px;text-align:center}
+      .form-section{padding:30px}label{display:block;font-weight:600;margin-bottom:8px}
+      textarea{width:100%;padding:12px;border:1px solid #ddd;border-radius:4px;min-height:100px;resize:vertical}
+      .submit-btn{background:#d32f2f;color:white;border:none;padding:14px 30px;border-radius:6px;
+                  font-size:16px;font-weight:600;cursor:pointer;width:100%}</style></head><body>
+      <div class="container">
+        <div class="header"><h1>Corrective Action Form</h1><div>Week ${week}</div></div>
+        <div class="form-section">
+          <form action="/submit-corrective-action" method="POST">
+            <input type="hidden" name="responsible_id" value="${responsible_id}">
+            <input type="hidden" name="kpi_id" value="${kpi_id}">
+            <input type="hidden" name="week" value="${week}">
+            ${ed.corrective_action_id ? `<input type="hidden" name="corrective_action_id" value="${ed.corrective_action_id}">` : ''}
+            <div style="margin-bottom:20px"><label>Root Cause Analysis *</label>
+              <textarea name="root_cause" required>${ed.root_cause || ''}</textarea></div>
+            <div style="margin-bottom:20px"><label>Implemented Solution *</label>
+              <textarea name="implemented_solution" required>${ed.implemented_solution || ''}</textarea></div>
+            <div style="margin-bottom:20px"><label>Evidence of Improvement *</label>
+              <textarea name="evidence" required>${ed.evidence || ''}</textarea></div>
+            <button type="submit" class="submit-btn">Submit Corrective Action</button>
+          </form>
+        </div>
+      </div></body></html>`);
+  } catch (err) {
+    res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
+  }
+});
+
 app.get("/corrective-actions-bulk", async (req, res) => {
   try {
     const { responsible_id, week } = req.query;
 
-    // Get responsible info
     const resResp = await pool.query(
       `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1`,
+              p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`,
       [responsible_id]
     );
-
     const responsible = resResp.rows[0];
     if (!responsible) return res.status(404).send("Responsible not found");
 
-    // Get all open corrective actions
     const actionsRes = await pool.query(
-      `SELECT ca.*, k.indicator_title, k.indicator_sub_title, k.unit, k.target,
-              kv.value
+      `SELECT ca.*, k.kpi_id, k.subject AS indicator_title, k.indicator_sub_title,
+              k.unit, k.target, kv.value
        FROM public.corrective_actions ca
        JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
-       LEFT JOIN public.kpi_values kv ON ca.kpi_id = kv.kpi_id 
-         AND kv.responsible_id = ca.responsible_id 
-         AND kv.week = ca.week
-       WHERE ca.responsible_id = $1 
-         AND ca.week = $2 
-         AND ca.status = 'Open'
-       ORDER BY k.indicator_title`,
+       LEFT JOIN public.kpi_values kv
+         ON ca.kpi_id = kv.kpi_id
+        AND kv.responsible_id = ca.responsible_id
+        AND kv.week = ca.week
+       WHERE ca.responsible_id = $1 AND ca.week = $2 AND ca.status = 'Open'
+       ORDER BY k.subject`,
       [responsible_id, week]
     );
-
     const actions = actionsRes.rows;
+
     if (actions.length === 0) {
       return res.send(`
         <div style="text-align:center;padding:60px;font-family:'Segoe UI',sans-serif;">
           <h2 style="color:#4caf50;">✅ No Open Corrective Actions</h2>
           <p>All corrective actions for week ${week} have been completed.</p>
-          <a href="/dashboard?responsible_id=${responsible_id}" style="display:inline-block;padding:12px 25px;background:#0078D7;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">Go to Dashboard</a>
-        </div>
-      `);
+          <a href="/dashboard?responsible_id=${responsible_id}"
+             style="display:inline-block;padding:12px 25px;background:#0078D7;color:white;
+                    text-decoration:none;border-radius:6px;font-weight:bold;">
+            Go to Dashboard
+          </a>
+        </div>`);
     }
+
+    const kpiSectionsHtml = actions.map((action, index) => {
+      const gap = action.target
+        ? (parseFloat(action.target) - parseFloat(action.value || 0)).toFixed(2)
+        : null;
+      const pctGap = action.target && action.value
+        ? (((parseFloat(action.target) - parseFloat(action.value)) / parseFloat(action.target)) * 100).toFixed(1)
+        : null;
+
+      return `
+        <div class="kpi-section">
+          <input type="hidden" name="corrective_action_ids[]" value="${action.corrective_action_id}">
+
+          <div class="kpi-header">
+            <div class="kpi-number">${index + 1}</div>
+            <div class="kpi-info">
+              <div class="kpi-title">${action.indicator_title}</div>
+              ${action.indicator_sub_title ? `<div class="kpi-subtitle">${action.indicator_sub_title}</div>` : ''}
+            </div>
+          </div>
+
+          <div class="perf-stats">
+            <div class="stat-box stat-current">
+              <div class="stat-label">Current Value</div>
+              <div class="stat-value">${action.value || '0'} <span class="stat-unit">${action.unit || ''}</span></div>
+            </div>
+            <div class="stat-box stat-target">
+              <div class="stat-label">Target</div>
+              <div class="stat-value">${action.target || 'N/A'} <span class="stat-unit">${action.unit || ''}</span></div>
+            </div>
+            <div class="stat-box stat-gap">
+              <div class="stat-label">Gap</div>
+              <div class="stat-value">${gap || 'N/A'} <span class="stat-unit">${action.unit || ''}</span></div>
+              ${pctGap ? `<div class="stat-pct">${pctGap}% below target</div>` : ''}
+            </div>
+          </div>
+
+          <!-- AI Box -->
+          <div class="ai-box" id="ai-box-${action.corrective_action_id}">
+            <div class="ai-box-header">
+              <span class="ai-icon">🤖</span>
+              <span class="ai-title">AI Corrective Action Suggestion</span>
+              <button type="button" class="generate-btn"
+                id="gen-btn-${action.corrective_action_id}"
+                onclick="generateSuggestion('${action.corrective_action_id}','${action.kpi_id}','${responsible_id}','${week}')">
+                <span class="gen-btn-icon">✨</span>
+                <span class="gen-btn-text">Generate Suggestion</span>
+              </button>
+            </div>
+
+            <div class="suggestion-content" id="suggestion-${action.corrective_action_id}" style="display:none;">
+              <div class="ai-suggestion-row">
+                <div class="ai-suggestion-card root-cause-card"
+                     onclick="applyToField('root_cause_${action.corrective_action_id}',this)">
+                  <div class="ai-card-label">
+                    <span class="ai-card-icon">🔍</span>Root Cause
+                    <span class="apply-hint">Click to apply ↓</span>
+                  </div>
+                  <div class="ai-card-text" id="rc-text-${action.corrective_action_id}"></div>
+                </div>
+                <div class="ai-suggestion-card action-card"
+                     onclick="applyToField('solution_${action.corrective_action_id}',this)">
+                  <div class="ai-card-label">
+                    <span class="ai-card-icon">⚡</span>Immediate Action
+                    <span class="apply-hint">Click to apply ↓</span>
+                  </div>
+                  <div class="ai-card-text" id="ia-text-${action.corrective_action_id}"></div>
+                </div>
+                <div class="ai-suggestion-card evidence-card"
+                     onclick="applyToField('evidence_${action.corrective_action_id}',this)">
+                  <div class="ai-card-label">
+                    <span class="ai-card-icon">📊</span>Evidence
+                    <span class="apply-hint">Click to apply ↓</span>
+                  </div>
+                  <div class="ai-card-text" id="ev-text-${action.corrective_action_id}"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="suggestion-error" id="error-${action.corrective_action_id}" style="display:none;">
+              <span>⚠️ Could not generate suggestion. Please try again or fill manually.</span>
+            </div>
+          </div>
+
+          <!-- Form Fields -->
+          <div class="form-fields">
+            <div class="form-group">
+              <label for="root_cause_${action.corrective_action_id}">
+                🔍 Root Cause <span class="required">*</span>
+              </label>
+              <textarea name="root_cause_${action.corrective_action_id}"
+                        id="root_cause_${action.corrective_action_id}" required
+                        placeholder="Click 'Generate Suggestion' above, or describe the root cause manually"
+              >${action.root_cause || ''}</textarea>
+            </div>
+            <div class="form-group">
+              <label for="solution_${action.corrective_action_id}">
+                ⚡ Implemented Solution <span class="required">*</span>
+              </label>
+              <textarea name="solution_${action.corrective_action_id}"
+                        id="solution_${action.corrective_action_id}" required
+                        placeholder="Click 'Generate Suggestion' above, or describe actions taken manually"
+              >${action.implemented_solution || ''}</textarea>
+            </div>
+            <div class="form-group">
+              <label for="evidence_${action.corrective_action_id}">
+                📊 Evidence <span class="required">*</span>
+              </label>
+              <textarea name="evidence_${action.corrective_action_id}"
+                        id="evidence_${action.corrective_action_id}" required
+                        placeholder="What evidence shows improvement?"
+              >${action.evidence || ''}</textarea>
+              <div class="help-text">Provide data, metrics, or observations demonstrating effectiveness</div>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
 
     res.send(`
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
       <head>
         <meta charset="utf-8">
-        <title>Corrective Actions - Week ${week}</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1.0">
+        <title>Corrective Actions — Week ${week}</title>
         <style>
-        body {
-          font-family: 'Segoe UI', sans-serif;
-          margin: 0;
-          padding: 20px;
-          min-height: 100vh;
-          background-image: url("https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600");
-          background-size: cover;
-          background-position: center;
-          background-repeat: no-repeat;
-          background-attachment: fixed;
-         }
-
-        .container {
-           max-width: 1000px;
-           margin: 0 auto;
-           background: rgba(255, 255, 255, 0.95);
-           backdrop-filter: blur(5px);
-           border-radius: 8px;
-           box-shadow: 0 2px 20px rgba(0,0,0,0.3);
-           overflow: hidden;
-           }
-
-          .header { background: linear-gradient(135deg, #d32f2f 0%, #f44336 100%); color: white; padding: 30px; text-align: center; }
-          .header h1 { margin: 0; font-size: 26px; font-weight: 600; }
-          .badge { background: rgba(255,255,255,0.2); display: inline-block; padding: 8px 16px; border-radius: 20px; margin-top: 10px; font-size: 14px; }
-          .form-section { padding: 30px; }
-          .info-box { background: #fff3e0; border-left: 4px solid #ff9800; padding: 20px; margin-bottom: 25px; border-radius: 4px; }
-          .kpi-section { margin-bottom: 30px; border: 2px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa; }
-          .kpi-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 2px solid #e0e0e0; }
-          .kpi-title { font-size: 16px; font-weight: 700; color: #333; }
-          .kpi-subtitle { font-size: 13px; color: #666; margin-top: 5px; }
-          .perf-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
-          .stat-box { text-align: center; padding: 12px; background: white; border-radius: 6px; border: 1px solid #e0e0e0; }
-          .stat-label { font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px; }
-          .stat-value { font-size: 20px; font-weight: 700; }
-          .stat-value.current { color: #d32f2f; }
-          .stat-value.target { color: #4caf50; }
-          .stat-value.gap { color: #ff9800; }
-          .form-group { margin-bottom: 20px; }
-          label { display: block; font-weight: 600; color: #333; margin-bottom: 8px; font-size: 13px; }
-          label .required { color: #d32f2f; }
-          textarea { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; font-family: 'Segoe UI', sans-serif; box-sizing: border-box; min-height: 80px; resize: vertical; }
-          textarea:focus { border-color: #d32f2f; outline: none; box-shadow: 0 0 0 2px rgba(211,47,47,0.1); }
-          .help-text { font-size: 11px; color: #666; margin-top: 5px; font-style: italic; }
-          .submit-btn { background: #d32f2f; color: white; border: none; padding: 16px 40px; border-radius: 6px; font-size: 17px; font-weight: 700; cursor: pointer; width: 100%; margin-top: 20px; }
-          .submit-btn:hover { background: #b71c1c; }
+          *,*::before,*::after{box-sizing:border-box;}
+          body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;padding:24px 16px;min-height:100vh;
+            background:#f0f2f5;
+            background-image:url("https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600");
+            background-size:cover;background-position:center;background-attachment:fixed;}
+          .container{max-width:960px;margin:0 auto;background:rgba(255,255,255,0.97);border-radius:12px;
+            box-shadow:0 8px 32px rgba(0,0,0,0.18);overflow:hidden;}
+          .header{background:linear-gradient(135deg,#b71c1c 0%,#e53935 100%);color:white;
+            padding:32px 28px;text-align:center;}
+          .header-icon{font-size:52px;margin-bottom:12px;}
+          .header h1{margin:0 0 8px;font-size:26px;font-weight:700;}
+          .header-badge{display:inline-block;background:rgba(255,255,255,0.2);padding:6px 18px;
+            border-radius:20px;font-size:13px;margin-top:6px;}
+          .responsible-bar{background:rgba(0,0,0,0.15);padding:10px 20px;font-size:13px;text-align:center;}
+          .form-section{padding:28px;}
+          .kpi-section{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;
+            margin-bottom:32px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);}
+          .kpi-header{display:flex;align-items:center;gap:14px;padding:18px 20px;
+            background:#fef2f2;border-bottom:1.5px solid #fecaca;}
+          .kpi-number{flex-shrink:0;width:36px;height:36px;background:#dc2626;color:white;
+            border-radius:50%;display:flex;align-items:center;justify-content:center;
+            font-weight:700;font-size:15px;}
+          .kpi-title{font-size:16px;font-weight:700;color:#111827;}
+          .kpi-subtitle{font-size:12px;color:#6b7280;margin-top:3px;}
+          .perf-stats{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1.5px solid #f3f4f6;}
+          .stat-box{text-align:center;padding:16px 12px;}
+          .stat-box+.stat-box{border-left:1px solid #f3f4f6;}
+          .stat-label{font-size:10px;font-weight:600;text-transform:uppercase;color:#9ca3af;
+            letter-spacing:0.6px;margin-bottom:6px;}
+          .stat-value{font-size:22px;font-weight:800;}
+          .stat-unit{font-size:13px;font-weight:500;}
+          .stat-pct{font-size:11px;margin-top:4px;font-weight:600;}
+          .stat-current .stat-value{color:#dc2626;}
+          .stat-target .stat-value{color:#16a34a;}
+          .stat-gap .stat-value{color:#d97706;}
+          .stat-gap .stat-pct{color:#d97706;}
+          /* AI Box */
+          .ai-box{margin:20px 20px 0;border:1.5px solid #c4b5fd;border-radius:10px;
+            background:linear-gradient(135deg,#f5f3ff 0%,#ede9fe 100%);overflow:hidden;}
+          .ai-box-header{display:flex;align-items:center;gap:8px;padding:12px 16px;
+            background:rgba(109,40,217,0.08);border-bottom:1px solid #ddd6fe;}
+          .ai-icon{font-size:18px;}
+          .ai-title{font-size:14px;font-weight:700;color:#5b21b6;flex:1;}
+          .generate-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;
+            background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;
+            border-radius:20px;font-size:13px;font-weight:600;cursor:pointer;
+            transition:all 0.2s;box-shadow:0 2px 8px rgba(109,40,217,0.35);}
+          .generate-btn:hover:not(:disabled){background:linear-gradient(135deg,#6d28d9,#5b21b6);
+            transform:translateY(-1px);box-shadow:0 4px 12px rgba(109,40,217,0.45);}
+          .generate-btn:disabled{opacity:0.7;cursor:not-allowed;transform:none;}
+          .generate-btn.loading .gen-btn-icon{animation:spin 1s linear infinite;display:inline-block;}
+          @keyframes spin{to{transform:rotate(360deg);}}
+          @keyframes fadeIn{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
+          .suggestion-content{padding:14px 16px;animation:fadeIn 0.3s ease;}
+          .suggestion-error{padding:12px 16px;font-size:13px;color:#92400e;background:#fff7ed;}
+          .ai-suggestion-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+          .ai-suggestion-card{background:white;border-radius:8px;padding:14px;cursor:pointer;
+            transition:transform 0.15s,box-shadow 0.15s;border:1.5px solid transparent;}
+          .ai-suggestion-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,0.1);}
+          .ai-suggestion-card.applied{border-color:#4ade80!important;background:#f0fdf4;}
+          .root-cause-card{border-top:3px solid #ef4444;}
+          .action-card{border-top:3px solid #f59e0b;}
+          .evidence-card{border-top:3px solid #3b82f6;}
+          .ai-card-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;
+            margin-bottom:8px;display:flex;align-items:center;gap:5px;}
+          .root-cause-card .ai-card-label{color:#dc2626;}
+          .action-card .ai-card-label{color:#d97706;}
+          .evidence-card .ai-card-label{color:#2563eb;}
+          .apply-hint{margin-left:auto;font-size:10px;font-weight:500;color:#9ca3af;
+            text-transform:none;letter-spacing:0;}
+          .ai-card-text{font-size:13px;color:#374151;line-height:1.55;}
+          /* Form fields */
+          .form-fields{padding:20px;}
+          .form-group{margin-bottom:18px;}
+          label{display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;}
+          .required{color:#dc2626;margin-left:3px;}
+          textarea{width:100%;padding:11px 14px;border:1.5px solid #d1d5db;border-radius:6px;
+            font-size:13px;font-family:inherit;resize:vertical;min-height:80px;
+            transition:border-color 0.2s;}
+          textarea:focus{border-color:#7c3aed;outline:none;
+            box-shadow:0 0 0 3px rgba(124,58,237,0.1);}
+          textarea.highlight{animation:highlightFade 1.8s forwards;}
+          @keyframes highlightFade{
+            0%{background:#dcfce7;border-color:#16a34a;}
+            100%{background:white;border-color:#d1d5db;}}
+          .help-text{font-size:11px;color:#6b7280;margin-top:5px;}
+          .submit-btn{width:100%;padding:16px;background:linear-gradient(135deg,#b71c1c,#e53935);
+            color:white;border:none;border-radius:8px;font-size:17px;font-weight:700;
+            cursor:pointer;margin-top:8px;transition:opacity 0.15s;}
+          .submit-btn:hover{opacity:0.9;}
+          @media(max-width:640px){.ai-suggestion-row{grid-template-columns:1fr;}}
         </style>
       </head>
       <body>
         <div class="container">
           <div class="header">
-            <div style="font-size: 48px; margin-bottom: 15px;">⚠️</div>
+            <div class="header-icon">⚠️</div>
             <h1>Corrective Actions Required</h1>
-            <div class="badge">${actions.length} KPI${actions.length > 1 ? 's' : ''} Below Target - Week ${week}</div>
+            <div class="header-badge">
+              ${actions.length} KPI${actions.length > 1 ? 's' : ''} Below Target — Week ${week}
+            </div>
+          </div>
+          <div class="responsible-bar">
+            👤 <strong>${responsible.name}</strong> &nbsp;•&nbsp;
+            🏭 ${responsible.plant_name} &nbsp;•&nbsp;
+            🏷️ ${responsible.department_name}
           </div>
 
           <div class="form-section">
-            <div class="info-box">
-              <strong>${responsible.name}</strong> • ${responsible.plant_name} • ${responsible.department_name}
-            </div>
-
             <form action="/submit-bulk-corrective-actions" method="POST">
               <input type="hidden" name="responsible_id" value="${responsible_id}">
               <input type="hidden" name="week" value="${week}">
-
-              ${actions.map((action, index) => `
-                <div class="kpi-section">
-                  <input type="hidden" name="corrective_action_ids[]" value="${action.corrective_action_id}">
-                  
-                  <div class="kpi-header">
-                    <div>
-                      <div style="display:inline-block;width:30px;height:30px;background:#d32f2f;color:white;border-radius:50%;text-align:center;line-height:30px;font-weight:700;margin-right:10px;">${index + 1}</div>
-                      <div style="display:inline-block;vertical-align:top;">
-                        <div class="kpi-title">${action.indicator_title}</div>
-                        ${action.indicator_sub_title ? `<div class="kpi-subtitle">${action.indicator_sub_title}</div>` : ''}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="perf-stats">
-                    <div class="stat-box">
-                      <div class="stat-label">Current</div>
-                      <div class="stat-value current">${action.value || '0'} ${action.unit || ''}</div>
-                    </div>
-                    <div class="stat-box">
-                      <div class="stat-label">Target</div>
-                      <div class="stat-value target">${action.target || 'N/A'} ${action.unit || ''}</div>
-                    </div>
-                    <div class="stat-box">
-                      <div class="stat-label">Gap</div>
-                      <div class="stat-value gap">
-                        ${action.target ? (parseFloat(action.target) - parseFloat(action.value || 0)).toFixed(2) : 'N/A'} ${action.unit || ''}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="form-group">
-                    <label>Root Cause<span class="required">*</span></label>
-                    <textarea name="root_cause_${action.corrective_action_id}" required placeholder="Why did this KPI fall below target?">${action.root_cause || ''}</textarea>
-                  </div>
-
-                  <div class="form-group">
-                    <label>Implemented Solution<span class="required">*</span></label>
-                    <textarea name="solution_${action.corrective_action_id}" required placeholder="What actions have been taken?">${action.implemented_solution || ''}</textarea>
-                  </div>
-
-                  <div class="form-group">
-                    <label>Evidence<span class="required">*</span></label>
-                    <textarea name="evidence_${action.corrective_action_id}" required placeholder="What evidence shows improvement?">${action.evidence || ''}</textarea>
-                    <div class="help-text">Provide data, metrics, or observations demonstrating effectiveness</div>
-                  </div>
-                </div>
-              `).join('')}
-
+              ${kpiSectionsHtml}
               <button type="submit" class="submit-btn">
                 ✓ Submit All Corrective Actions (${actions.length})
               </button>
             </form>
           </div>
         </div>
+
+        <script>
+          function applyToField(fieldId, card) {
+            const text = card.querySelector('.ai-card-text').textContent.trim();
+            const field = document.getElementById(fieldId);
+            if (!field || !text) return;
+            field.value = text;
+            field.classList.remove('highlight');
+            void field.offsetWidth;
+            field.classList.add('highlight');
+            field.scrollIntoView({ behavior:'smooth', block:'center' });
+            card.classList.add('applied');
+            const hint = card.querySelector('.apply-hint');
+            if (hint) hint.textContent = '✓ Applied';
+          }
+
+          async function generateSuggestion(caId, kpiId, responsibleId, week) {
+            const btn         = document.getElementById('gen-btn-' + caId);
+            const suggDiv     = document.getElementById('suggestion-' + caId);
+            const errDiv      = document.getElementById('error-' + caId);
+
+            suggDiv.style.display = 'none';
+            errDiv.style.display  = 'none';
+
+            suggDiv.querySelectorAll('.ai-suggestion-card').forEach(c => {
+              c.classList.remove('applied');
+              const hint = c.querySelector('.apply-hint');
+              if (hint) hint.textContent = 'Click to apply ↓';
+            });
+
+            btn.disabled = true;
+            btn.classList.add('loading');
+            btn.querySelector('.gen-btn-icon').textContent = '⏳';
+            btn.querySelector('.gen-btn-text').textContent = 'Generating...';
+
+            try {
+              const res = await fetch(
+                '/generate-ca-suggestion?kpi_id=' + kpiId +
+                '&responsible_id=' + responsibleId +
+                '&week=' + encodeURIComponent(week)
+              );
+              if (!res.ok) throw new Error('Request failed');
+              const data = await res.json();
+              if (data.error || !data.suggestion) throw new Error(data.error || 'No suggestion');
+
+              const s = data.suggestion;
+              document.getElementById('rc-text-' + caId).textContent = s.root_cause       || '';
+              document.getElementById('ia-text-' + caId).textContent = s.immediate_action || '';
+              document.getElementById('ev-text-' + caId).textContent = s.evidence         || '';
+              suggDiv.style.display = 'block';
+            } catch (err) {
+              errDiv.style.display = 'block';
+            } finally {
+              btn.disabled = false;
+              btn.classList.remove('loading');
+              btn.querySelector('.gen-btn-icon').textContent = '🔄';
+              btn.querySelector('.gen-btn-text').textContent = 'Regenerate';
+            }
+          }
+        </script>
       </body>
       </html>
     `);
@@ -803,1202 +845,751 @@ app.get("/corrective-actions-bulk", async (req, res) => {
   }
 });
 
-// ========== SUBMIT BULK CORRECTIVE ACTIONS ==========
 app.post("/submit-bulk-corrective-actions", async (req, res) => {
   try {
     const { responsible_id, week, corrective_action_ids, ...formData } = req.body;
-
-    const ids = Array.isArray(corrective_action_ids)
-      ? corrective_action_ids
-      : [corrective_action_ids];
-
+    const ids = Array.isArray(corrective_action_ids) ? corrective_action_ids : [corrective_action_ids];
     let completedCount = 0;
-
     for (const caId of ids) {
       const rootCause = formData[`root_cause_${caId}`];
       const solution = formData[`solution_${caId}`];
       const evidence = formData[`evidence_${caId}`];
-
       if (rootCause && solution && evidence) {
         await pool.query(
           `UPDATE public.corrective_actions
-           SET root_cause = $1, 
-               implemented_solution = $2, 
-               evidence = $3,
-               status = 'Waiting for validation',
-               updated_date = NOW()
-           WHERE corrective_action_id = $4`,
+           SET root_cause=$1, implemented_solution=$2, evidence=$3,
+               status='Waiting for validation', updated_date=NOW()
+           WHERE corrective_action_id=$4`,
           [rootCause, solution, evidence, caId]
         );
         completedCount++;
       }
     }
-
     res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Corrective Actions Submitted</title>
-        <style>
-          body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-          .success-container { background: white; padding: 50px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; max-width: 600px; }
-          h1 { color: #4caf50; font-size: 32px; margin-bottom: 20px; }
-          .count { font-size: 48px; font-weight: 700; color: #4caf50; margin: 20px 0; }
-          p { font-size: 16px; color: #333; margin-bottom: 30px; line-height: 1.6; }
-          a { display: inline-block; padding: 14px 30px; background: #0078D7; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 5px; }
-          a:hover { background: #005ea6; }
-        </style>
-      </head>
-      <body>
-        <div class="success-container">
-          <h1>✅ All Corrective Actions Submitted!</h1>
-          <div class="count">${completedCount}</div>
-          <p>
-            You have successfully completed all corrective actions for week ${week}.<br>
-            The quality team will review your submissions.
-          </p>
-
-          <a href="/corrective-actions-list?responsible_id=${responsible_id}">View Corrective Actions</a>
-        </div>
-      </body>
-      </html>
-    `);
+      <!DOCTYPE html><html>
+      <head><meta charset="utf-8"><title>Corrective Actions Submitted</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;display:flex;
+        justify-content:center;align-items:center;height:100vh;margin:0;}
+      .sc{background:white;padding:50px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);
+          text-align:center;max-width:600px;}
+      h1{color:#4caf50;font-size:32px;margin-bottom:20px;}
+      .count{font-size:48px;font-weight:700;color:#4caf50;margin:20px 0;}
+      p{font-size:16px;color:#333;margin-bottom:30px;line-height:1.6;}
+      a{display:inline-block;padding:14px 30px;background:#0078D7;color:white;
+        text-decoration:none;border-radius:6px;font-weight:bold;margin:5px;}
+      a:hover{background:#005ea6;}</style></head>
+      <body><div class="sc">
+        <h1>✅ All Corrective Actions Submitted!</h1>
+        <div class="count">${completedCount}</div>
+        <p>You have successfully submitted all corrective actions for week ${week}.<br>
+           The quality team will review your submissions.</p>
+        <a href="/corrective-actions-list?responsible_id=${responsible_id}">View Corrective Actions</a>
+      </div></body></html>`);
   } catch (err) {
-    console.error("Error submitting bulk corrective actions:", err);
     res.status(500).send(`<h2 style="color:red;">Error: ${err.message}</h2>`);
   }
 });
-// Generate consolidated corrective action email with ALL KPIs below target
-// const generateConsolidatedCorrectiveActionEmail = ({ responsible, week, kpisWithActions }) => {
-//   return `
-//   <!DOCTYPE html>
-//   <html>
-//   <head><meta charset="utf-8"><title>Corrective Actions Required</title></head>
-//   <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
-//     <div style="max-width:700px;margin:0 auto;background:#fff;padding:25px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);">
 
-//       <!-- Header -->
-//       <div style="text-align:center;margin-bottom:30px;">
-//         <div style="width:90px;height:90px;margin:0 auto 15px;background:#ff9800;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-//           <span style="font-size:45px;">⚠️</span>
-//         </div>
-//         <h2 style="color:#d32f2f;font-size:24px;margin:0;">Corrective Actions Required</h2>
-//         <p style="color:#666;font-size:14px;margin:10px 0 0 0;">Week ${week} - Multiple KPIs Below Target</p>
-//       </div>
-
-//       <!-- Responsible Info -->
-//       <div style="background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #d32f2f;">
-//         <div style="margin-bottom:12px;">
-//           <span style="font-weight:600;color:#333;font-size:13px;">Responsible: </span>
-//           <span style="color:#666;font-size:13px;">${responsible.name}</span>
-//         </div>
-//         <div style="margin-bottom:12px;">
-//           <span style="font-weight:600;color:#333;font-size:13px;">Plant: </span>
-//           <span style="color:#666;font-size:13px;">${responsible.plant_name}</span>
-//         </div>
-//         <div>
-//           <span style="font-weight:600;color:#333;font-size:13px;">Department: </span>
-//           <span style="color:#666;font-size:13px;">${responsible.department_name}</span>
-//         </div>
-//       </div>
-
-//       <!-- Summary Badge -->
-//       <div style="background:#fff3e0;padding:15px;border-radius:6px;margin-bottom:25px;text-align:center;border:2px solid #ff9800;">
-//         <span style="font-size:32px;font-weight:700;color:#d32f2f;">${kpisWithActions.length}</span>
-//         <span style="font-size:14px;color:#666;display:block;margin-top:5px;">KPIs Requiring Corrective Action</span>
-//       </div>
-
-//       <!-- KPIs List -->
-//       <div style="margin-bottom:25px;">
-//         <h3 style="color:#333;font-size:16px;margin-bottom:15px;border-bottom:2px solid #e0e0e0;padding-bottom:8px;">
-//           📊 Performance Summary
-//         </h3>
-
-//         ${kpisWithActions.map((kpi, index) => `
-//         <div style="background:#fafafa;border:1px solid #e0e0e0;border-radius:6px;padding:15px;margin-bottom:12px;">
-//           <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:10px;">
-//             <div style="flex:1;">
-//               <div style="font-weight:600;color:#333;font-size:14px;margin-bottom:5px;">
-//                 ${index + 1}. ${kpi.indicator_title}
-//               </div>
-//               ${kpi.indicator_sub_title ? `
-//               <div style="color:#666;font-size:12px;margin-bottom:8px;">
-//                 ${kpi.indicator_sub_title}
-//               </div>
-//               ` : ''}
-//             </div>
-//           </div>
-
-//           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;background:white;padding:12px;border-radius:4px;">
-//             <div style="text-align:center;">
-//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Current</div>
-//               <div style="font-size:18px;font-weight:700;color:#d32f2f;">${kpi.value} ${kpi.unit || ''}</div>
-//             </div>
-//             <div style="text-align:center;">
-//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Target</div>
-//               <div style="font-size:18px;font-weight:700;color:#4caf50;">${kpi.target} ${kpi.unit || ''}</div>
-//             </div>
-//             <div style="text-align:center;">
-//               <div style="font-size:10px;color:#666;margin-bottom:4px;text-transform:uppercase;">Gap</div>
-//               <div style="font-size:18px;font-weight:700;color:#ff9800;">
-//                 ${(parseFloat(kpi.target) - parseFloat(kpi.value)).toFixed(2)} ${kpi.unit || ''}
-//               </div>
-//             </div>
-//           </div>
-//         </div>
-//         `).join('')}
-//       </div>
-
-//       <!-- Action Required Section -->
-//       <div style="background:#e3f2fd;padding:20px;border-radius:6px;margin-bottom:25px;">
-//         <h3 style="color:#1976d2;font-size:15px;margin:0 0 12px 0;">📝 What You Need To Do</h3>
-//         <ul style="margin:0;padding-left:20px;color:#555;font-size:13px;line-height:1.8;">
-//           <li>Click the button below to access the corrective action form</li>
-//           <li>Document the root cause for each underperforming KPI</li>
-//           <li>Describe the implemented solutions</li>
-//           <li>Provide evidence of improvement actions</li>
-//           <li><strong>Complete within 24 hours</strong></li>
-//         </ul>
-//       </div>
-
-//       <!-- CTA Button -->
-// <div style="text-align:center;margin:30px 0;">
-//   <a href="https://kpi-codir.azurewebsites.net/corrective-actions-bulk?responsible_id=${responsible.responsible_id}&week=${week}"
-//      style="display:inline-block;padding:16px 35px;background:#d32f2f;color:white;
-//             border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;
-//             box-shadow:0 4px 10px rgba(211,47,47,0.3);">
-//     📝 Complete Corrective Actions (${kpisWithActions.length})
-//   </a>
-// </div>
-
-//       <!-- Footer -->
-//       <div style="margin-top:30px;padding-top:20px;border-top:1px solid #e0e0e0;text-align:center;">
-//         <p style="font-size:11px;color:#999;margin:0;line-height:1.6;">
-//           This is an automated alert from AVOCarbon KPI System<br>
-//           <strong>Week ${week}</strong> • Generated on ${new Date().toLocaleDateString()}<br>
-//           For assistance, contact: <a href="mailto:administration.STS@avocarbon.com" style="color:#0078D7;">administration.STS@avocarbon.com</a>
-//         </p>
-//       </div>
-//     </div>
-//   </body>
-//   </html>
-//   `;
-// };
-
-// Send consolidated corrective action email
-// const sendConsolidatedCorrectiveActionEmail = async (responsibleId, week) => {
-//   try {
-//     // Get responsible info
-//     const resResp = await pool.query(
-//       `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-//              p.name AS plant_name, d.name AS department_name
-//       FROM public."Responsible" r
-//       JOIN public."Plant" p ON r.plant_id = p.plant_id
-//       JOIN public."Department" d ON r.department_id = d.department_id
-//       WHERE r.responsible_id = $1`,
-//       [responsibleId]
-//     );
-
-//     const responsible = resResp.rows[0];
-//     if (!responsible) throw new Error("Responsible not found");
-
-//     // Get all open corrective actions with KPI details
-//     const actionsRes = await pool.query(
-//       `SELECT ca.corrective_action_id, ca.kpi_id, ca.week,
-//               k.indicator_title, k.indicator_sub_title, k.unit, k.target,
-//               kv.value
-//        FROM public.corrective_actions ca
-//        JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
-//        LEFT JOIN public.kpi_values kv ON ca.kpi_id = kv.kpi_id 
-//          AND kv.responsible_id = ca.responsible_id 
-//          AND kv.week = ca.week
-//        WHERE ca.responsible_id = $1 
-//          AND ca.week = $2 
-//          AND ca.status = 'Open'
-//        ORDER BY k.indicator_title`,
-//       [responsibleId, week]
-//     );
-
-//     if (actionsRes.rows.length === 0) {
-//       console.log(`No open corrective actions for responsible ${responsibleId}, week ${week}`);
-//       return null;
-//     }
-
-//     const kpisWithActions = actionsRes.rows;
-
-//     const html = generateConsolidatedCorrectiveActionEmail({
-//       responsible,
-//       week,
-//       kpisWithActions
-//     });
-
-//     const transporter = createTransporter();
-//     const info = await transporter.sendMail({
-//       from: '"AVOCarbon Quality System" <administration.STS@avocarbon.com>',
-//       to: responsible.email,
-//       subject: `⚠️ ${kpisWithActions.length} Corrective Action${kpisWithActions.length > 1 ? 's' : ''} Required - Week ${week}`,
-//       html,
-//     });
-
-//     console.log(`✅ Consolidated corrective action email sent to ${responsible.email} (${kpisWithActions.length} KPIs)`);
-//     return info;
-//   } catch (err) {
-//     console.error(`❌ Failed to send consolidated corrective action email:`, err.message);
-//     throw err;
-//   }
-// };
-
-// ---------- Redirect handler with auto-adjusting target ----------
-// ---------- Redirect handler with auto-adjusting target (TEXT version) ----------
-app.get("/redirect", async (req, res) => {
+// ---------- Redirect handler ----------
+app.post("/redirect", async (req, res) => {
   try {
-    const { responsible_id, week, ...values } = req.query;
-    const kpiValues = Object.entries(values)
-      .filter(([key]) => key.startsWith("value_"))
-      .map(([key, val]) => ({
-        kpi_values_id: key.split("_")[1],
-        value: val,
-      }));
+    const { responsible_id, week, ...values } = req.body;
 
-    // Arrays to collect updates
+    // Extract KPI values
+    const kpiValues = Object.entries(values)
+      .filter(([k]) => k.startsWith("value_"))
+      .map(([k, v]) => ({ kpi_values_id: k.split("_")[1], value: v }));
+
+    // Extract comments
+    const comments = Object.entries(values)
+      .filter(([k]) => k.startsWith("comment_"))
+      .reduce((acc, [k, v]) => { acc[k.split("_")[1]] = v; return acc; }, {});
+
+    // Extract corrective action fields keyed by kpi_values_id
+    // Fields: root_cause_{kpi_values_id}, impl_solution_{kpi_values_id}, evidence_{kpi_values_id}
+    const rootCauses = Object.entries(values)
+      .filter(([k]) => k.startsWith("root_cause_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("root_cause_", "")] = v; return acc; }, {});
+
+    const implSolutions = Object.entries(values)
+      .filter(([k]) => k.startsWith("impl_solution_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("impl_solution_", "")] = v; return acc; }, {});
+
+    const evidences = Object.entries(values)
+      .filter(([k]) => k.startsWith("evidence_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("evidence_", "")] = v; return acc; }, {});
+
     const targetUpdates = [];
-    let hasCorrectiveActions = false;
+    let correctiveActionsCount = 0;
 
     for (let item of kpiValues) {
       const oldRes = await pool.query(
         `SELECT value, kpi_id FROM public."kpi_values" WHERE kpi_values_id = $1`,
         [item.kpi_values_id]
       );
+      if (!oldRes.rows.length) continue;
 
-      if (oldRes.rows.length) {
-        const { value: old_value, kpi_id } = oldRes.rows[0];
+      const { value: old_value, kpi_id } = oldRes.rows[0];
 
-        await pool.query(
-          `INSERT INTO public.kpi_values_hist26 
-          (kpi_values_id, responsible_id, kpi_id, week, old_value, new_value)
-          VALUES ($1, $2, $3, $4, $5, $6)`,
-          [item.kpi_values_id, responsible_id, kpi_id, week, old_value, item.value]
-        );
+      // Fetch kpi low_limit to determine if corrective action is needed
+      const kpiInfoRes = await pool.query(
+        `SELECT low_limit FROM public."Kpi" WHERE kpi_id = $1`, [kpi_id]
+      );
+      const kpiInfo = kpiInfoRes.rows[0];
+      const lowLimit = kpiInfo && kpiInfo.low_limit !== null ? parseFloat(kpiInfo.low_limit) : null;
+      const numValue = parseFloat(item.value);
 
-        await pool.query(
-          `UPDATE public."kpi_values" SET value = $1 WHERE kpi_values_id = $2`,
-          [item.value, item.kpi_values_id]
-        );
+      const rc = rootCauses[item.kpi_values_id] || '';
+      const is_ = implSolutions[item.kpi_values_id] || '';
+      const ev = evidences[item.kpi_values_id] || '';
 
-        // Get the latest hist_id
-        const histRes = await pool.query(
-          `SELECT hist_id FROM public.kpi_values_hist26 
-           WHERE kpi_values_id = $1 
-             AND responsible_id = $2 
-             AND kpi_id = $3 
-             AND week = $4
-           ORDER BY updated_at DESC LIMIT 1`,
-          [item.kpi_values_id, responsible_id, kpi_id, week]
-        );
+      await pool.query(
+        `INSERT INTO public.kpi_values_hist26
+         (kpi_values_id, responsible_id, kpi_id, week, old_value, new_value, comment)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [item.kpi_values_id, responsible_id, kpi_id, week, old_value, item.value,
+        comments[item.kpi_values_id] || null]
+      );
 
-        // Check and trigger actions (collects updates but doesn't send emails)
-        if (histRes.rows.length > 0) {
-          const histId = histRes.rows[0].hist_id;
-          const result = await checkAndTriggerCorrectiveActions(responsible_id, kpi_id, week, item.value, histId);
+      await pool.query(
+        `UPDATE public."kpi_values" SET value = $1 WHERE kpi_values_id = $2`,
+        [item.value, item.kpi_values_id]
+      );
 
-          // Collect target update if it happened
-          if (result.targetUpdated && result.updateInfo) {
-            targetUpdates.push(result.updateInfo);
+      // -------------------------------------------------------
+      // Save corrective action if value is below low_limit AND
+      // the user filled in the corrective action fields
+      // -------------------------------------------------------
+      if (lowLimit !== null && !isNaN(numValue) && numValue < lowLimit) {
+        if (rc || is_ || ev) {
+          await upsertCorrectiveAction(responsible_id, kpi_id, week, {
+            rootCause: rc || null,
+            implementedSolution: is_ || null,
+            evidence: ev || null,
+          });
+          correctiveActionsCount++;
+        } else {
+          // Create an Open corrective action record (without content) if none exists
+          const existing = await pool.query(
+            `SELECT corrective_action_id FROM public.corrective_actions
+             WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3 LIMIT 1`,
+            [responsible_id, kpi_id, week]
+          );
+          if (existing.rows.length === 0) {
+            await pool.query(
+              `INSERT INTO public.corrective_actions (responsible_id, kpi_id, week, status)
+               VALUES ($1, $2, $3, 'Open')`,
+              [responsible_id, kpi_id, week]
+            );
           }
-
-          // Check if corrective action was created
-          // if (!result.targetUpdated) {
-          //   const caCheck = await pool.query(
-          //     `SELECT corrective_action_id FROM public.corrective_actions
-          //      WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3 AND status = 'Open'`,
-          //     [responsible_id, kpi_id, week]
-          //   );
-          //   if (caCheck.rows.length > 0) {
-          //     hasCorrectiveActions = true;
-          //   }
-          // }
         }
+      }
+
+      const histRes = await pool.query(
+        `SELECT hist_id FROM public.kpi_values_hist26
+         WHERE kpi_values_id=$1 AND responsible_id=$2 AND kpi_id=$3 AND week=$4
+         ORDER BY updated_at DESC LIMIT 1`,
+        [item.kpi_values_id, responsible_id, kpi_id, week]
+      );
+      if (histRes.rows.length > 0) {
+        const result = await checkAndTriggerCorrectiveActions(
+          responsible_id, kpi_id, week, item.value, histRes.rows[0].hist_id
+        );
+        if (result.targetUpdated && result.updateInfo) targetUpdates.push(result.updateInfo);
       }
     }
 
-
-
-    // Determine success message based on what happened
-    let successMessage = `<h1>✅ KPI Submitted Successfully!</h1>`;
     let notifications = [];
+    if (targetUpdates.length > 0)
+      notifications.push(`🎯 <strong>${targetUpdates.length} KPI target${targetUpdates.length > 1 ? 's' : ''} updated</strong>`);
+    if (correctiveActionsCount > 0)
+      notifications.push(`📋 <strong>${correctiveActionsCount} corrective action${correctiveActionsCount > 1 ? 's' : ''} recorded</strong>`);
+    if (notifications.length === 0) notifications.push(`📊 All KPIs are within targets`);
 
-    if (targetUpdates.length > 0) {
-      notifications.push(`🎯 <strong>${targetUpdates.length} KPI target${targetUpdates.length > 1 ? 's' : ''} updated</strong> - You will receive a consolidated email`);
-    }
-
-
-
-    if (notifications.length === 0) {
-      notifications.push(`📊 All KPIs are within targets`);
-    }
-
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>KPI Submitted</title>
-        <style>
-          body { 
-            font-family:'Segoe UI',sans-serif; 
-            background:#f4f4f4; 
-            display:flex; 
-            justify-content:center; 
-            align-items:center; 
-            height:100vh; 
-            margin:0; 
-          }
-          .success-container {
-            background:#fff; 
-            padding:40px; 
-            border-radius:10px; 
-            box-shadow:0 4px 15px rgba(0,0,0,0.1);
-            text-align:center;
-            max-width:600px;
-          }
-          h1 { color:#28a745; font-size:28px; margin-bottom:20px; }
-          p { font-size:16px; color:#333; margin-bottom:10px; }
-          .notifications {
-            background:#f8f9fa;
-            padding:20px;
-            border-radius:8px;
-            margin:20px 0;
-            text-align:left;
-          }
-          .notification-item {
-            display:flex;
-            align-items:center;
-            margin:10px 0;
-            padding:10px;
-            background:white;
-            border-radius:6px;
-          }
-          .notification-icon {
-            font-size:20px;
-            margin-right:10px;
-          }
-          .notification-text {
-            flex:1;
-          }
-          .btn {
-            display:inline-block;
-            padding:12px 25px;
-            background:#0078D7;
-            color:white;
-            text-decoration:none;
-            border-radius:6px;
-            font-weight:bold;
-            margin:5px;
-          }
-          .btn:hover { background:#005ea6; }
-        </style>
-      </head>
-      <body>
-        <div class="success-container">
-          ${successMessage}
-          <p>Your KPI values for ${week} have been saved.</p>
-
-          <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Submitted</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f4f4;display:flex;
+        justify-content:center;align-items:center;height:100vh;margin:0;}
+      .sc{background:#fff;padding:40px;border-radius:10px;text-align:center;max-width:600px;}
+      .ni{display:flex;align-items:center;margin:10px 0;padding:10px;background:white;border-radius:6px;}
+      .btn{display:inline-block;padding:12px 25px;background:#0078D7;color:white;
+           text-decoration:none;border-radius:6px;font-weight:bold;margin:5px;}</style></head>
+      <body><div class="sc">
+        <h1 style="color:#28a745;">✅ KPI Submitted Successfully!</h1>
+        <p>Your KPI values for ${week} have been saved.</p>
+        <div style="background:#f8f9fa;padding:20px;border-radius:8px;margin:20px 0;">
+          ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">📌</span><span>${n}</span></div>`).join('')}
         </div>
-      </body>
-      </html>
-    `);
-
+        <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
+        <a href="/kpi-trends?responsible_id=${responsible_id}" class="btn">View Trends</a>
+      </div></body></html>`);
   } catch (err) {
-    console.error("❌ Error in /redirect:", err.message);
-    res.status(500).send(`
-      <h2 style="color:red;">❌ Failed to submit KPI values</h2>
-      <p>${err.message}</p>
-    `);
+    res.status(500).send(`<h2 style="color:red;">❌ Failed: ${err.message}</h2>`);
   }
 });
-// ---------- Modern Web  page ----------
+
+// ---------- Form page ----------
 app.get("/form", async (req, res) => {
   try {
     const { responsible_id, week } = req.query;
     const { responsible, kpis } = await getResponsibleWithKPIs(responsible_id, week);
     if (!kpis.length) return res.send("<p>No KPIs found for this week.</p>");
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>KPI Form - Week ${week}</title>
-        <style>
-          body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: #f4f6f9;
-            background-image: url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            background-repeat: no-repeat;
-            padding: 20px;
-            margin: 0;
-            min-height: 100vh;
-          }
-          body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.3);
-            z-index: -1;
-          }
-          .container { 
-            max-width: 800px; 
-            margin: 0 auto; 
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 8px; 
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-            overflow: hidden;
-          }
-          .header { 
-            background: #0078D7; 
-            color: white; 
-            padding: 20px; 
-            text-align: center;
-          }
-          .header h1 { 
-            margin: 0; 
-            font-size: 24px;
-            font-weight: 600;
-          }
-          .form-section { 
-            padding: 30px;
-          }
-          .info-section {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 6px;
-            margin-bottom: 25px;
-            border-left: 4px solid #0078D7;
-          }
-          .info-row {
-            display: flex;
-            margin-bottom: 15px;
-            align-items: center;
-          }
-          .info-label {
-            font-weight: 600;
-            color: #333;
-            width: 120px;
-            font-size: 14px;
-          }
-          .info-value {
-            flex: 1;
-            padding: 8px 12px;
-            background: white;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-          }
-          .kpi-section {
-            margin-top: 30px;
-          }
-          .kpi-section h3 {
-            color: #0078D7;
-            margin-bottom: 20px;
-            font-size: 18px;
-            border-bottom: 2px solid #0078D7;
-            padding-bottom: 8px;
-          }
-          .kpi-card {
-            background: #fff;
-            border: 1px solid #e1e5e9;
-            border-radius: 6px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-          }
-          .kpi-title {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 5px;
-            font-size: 15px;
-          }
-          .kpi-subtitle {
-            color: #666;
-            font-size: 13px;
-            margin-bottom: 10px;
-          }
-          .kpi-input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-            transition: border-color 0.2s;
-          }
-          .kpi-input:focus {
-            border-color: #0078D7;
-            outline: none;
-            box-shadow: 0 0 0 2px rgba(0,120,215,0.1);
-          }
-          .submit-btn {
-            background: #0078D7;
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 4px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.2s;
-            display: block;
-            width: 100%;
-            margin-top: 20px;
-          }
-          .submit-btn:hover {
-            background: #005ea6;
-          }
-          .unit-label {
-            color: #888;
-            font-size: 12px;
-            margin-top: 5px;
-          }
+    let kpiCardsHtml = '';
+    kpis.forEach(kpi => {
+      let lowLimit = null;
+      if (kpi.low_limit && kpi.low_limit !== 'None' && kpi.low_limit !== 'null' &&
+        kpi.low_limit !== '' && !isNaN(parseFloat(kpi.low_limit)))
+        lowLimit = parseFloat(kpi.low_limit);
 
-          /* ── Loading Overlay ── */
-          .loading-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.6);
-            z-index: 9999;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 20px;
-          }
-          .loading-overlay.active {
-            display: flex;
-          }
-          .loading-overlay .spinner {
-            width: 56px;
-            height: 56px;
-            border: 6px solid rgba(255, 255, 255, 0.3);
-            border-top-color: #ffffff;
-            border-radius: 50%;
-            animation: spin 0.9s linear infinite;
-          }
-          @keyframes spin {
-            to { transform: rotate(360deg); }
-          }
-          .loading-text {
-            color: #ffffff;
-            font-size: 18px;
-            font-weight: 600;
-          }
-          .loading-sub {
-            color: rgba(255, 255, 255, 0.75);
-            font-size: 13px;
-            margin-top: -14px;
-          }
-        </style>
-      </head>
-      <body>
+      const currentValue = kpi.value && kpi.value !== '' ? parseFloat(kpi.value) : null;
+      const showCA = lowLimit !== null && currentValue !== null && currentValue < lowLimit;
 
-        <!-- Loading Overlay -->
-        <div class="loading-overlay" id="loadingOverlay">
-          <div class="spinner"></div>
-          <div class="loading-text">Submitting KPI Values...</div>
-          <div class="loading-sub">Please wait while we process your submission</div>
-        </div>
+      // Pre-fill from existing corrective action if available
+      const existingRC = kpi.ca_root_cause || '';
+      const existingIS = kpi.ca_implemented_solution || '';
+      const existingEV = kpi.ca_evidence || '';
+      const caStatus = kpi.ca_status || '';
 
-        <div class="container">
-          <div class="header">
-            <h2 style="color:white;font-size:22px;margin-bottom:5px;">
-              KPI Submission - ${week}
-            </h2>
-          </div>
-          
-          <div class="form-section">
-            <div class="info-section">
-              <div class="info-row">
-                <div class="info-label">Responsible Name</div>
-                <div class="info-value">${responsible.name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">Group</div>
-                <div class="info-value">${responsible.plant_name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">Department</div>
-                <div class="info-value">${responsible.department_name}</div>
-              </div>
-              <div class="info-row">
-                <div class="info-label">Week</div>
-                <div class="info-value">${week}</div>
-              </div>
-            </div>
+      kpiCardsHtml += `
+        <div class="kpi-card" data-kpi-id="${kpi.kpi_id}" data-low-limit="${lowLimit !== null ? lowLimit : ''}">
+       <div class="kpi-header">
+       <div class="kpi-title">${kpi.subject}</div>
 
-      <div class="kpi-section">
-       <h3>KPI Values</h3>
-       <form action="/redirect" method="GET" id="kpiForm" novalidate>
-      <input type="hidden" name="responsible_id" value="${responsible_id}" />
-       <input type="hidden" name="week" value="${week}" />
-         ${kpis.map(kpi => `
-       <div class="kpi-card">
-      <div class="kpi-title">${kpi.subject}</div>
-      ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
-      <input 
-        type="text" 
-        name="value_${kpi.kpi_values_id}" 
-        value="${kpi.value || ''}" 
-        placeholder="Enter value" 
-        class="kpi-input"
-        required
-        oninput="clearError(this)"
-        />
-         <div class="field-error" style="display:none; color:#dc3545; font-size:12px; margin-top:4px;">
-           ⚠️ This field is required
+       <div class="kpi-limits">
+        ${lowLimit !== null ? `<span class="limit-badge low">Low: ${lowLimit} ${kpi.unit || ''}</span>` : ''}
+
+        ${(kpi.high_limit && kpi.high_limit !== 'None' && kpi.high_limit !== 'null' && kpi.high_limit !== '' && !isNaN(parseFloat(kpi.high_limit)))
+          ? `<span class="limit-badge high">High: ${parseFloat(kpi.high_limit)} ${kpi.unit || ''}</span>`
+          : ''
+        }
          </div>
-          ${kpi.unit ? `<div class="unit-label">Unit: ${kpi.unit}</div>` : ''}
-          </div>
-         `).join('')}
-          <button type="submit" class="submit-btn">Submit KPI Values</button>
-          </form>
+         </div>
+          ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
+          <input type="number" step="any" name="value_${kpi.kpi_values_id}"
+                 value="${kpi.value || ''}" placeholder="Enter value"
+                 class="kpi-input value-input"
+                 data-kpi-values-id="${kpi.kpi_values_id}"
+                 data-low-limit="${lowLimit !== null ? lowLimit : ''}" required />
+      
+
+          <!-- ===== CORRECTIVE ACTION PANEL ===== -->
+          <div class="ca-container ${showCA ? 'visible' : ''}"
+               id="ca_container_${kpi.kpi_values_id}">
+
+            <!-- Header row -->
+            <div class="ca-header">
+              ⚠️ Value is below low limit — corrective action required
+              ${caStatus ? `<span class="ca-status-badge ca-status-${caStatus.toLowerCase().replace(/ /g, '-')}">${caStatus}</span>` : ''}
+            </div>
+
+            <!-- AI Suggestion Box -->
+            <div class="ca-ai-box" id="ca-ai-box-${kpi.kpi_values_id}">
+              <div class="ca-ai-header">
+                <span style="font-size:16px;">🤖</span>
+                <span class="ca-ai-title">AI Corrective Action Suggestion</span>
+                <button type="button" class="ca-gen-btn"
+                  id="ca-gen-btn-${kpi.kpi_values_id}"
+                  onclick="formGenerateSuggestion('${kpi.kpi_values_id}','${kpi.kpi_id}','${responsible_id}','${week}')">
+                  <span class="ca-gen-icon">✨</span>
+                  <span class="ca-gen-text">Generate Suggestion</span>
+                </button>
+              </div>
+
+              <!-- Cards shown after generation -->
+              <div class="ca-suggestion-content" id="ca-sugg-${kpi.kpi_values_id}" style="display:none;">
+                <div class="ca-ai-row">
+                  <div class="ca-ai-card ca-rc-card"
+                       onclick="formApplyField('root_cause_${kpi.kpi_values_id}',this)">
+                    <div class="ca-ai-card-label">
+                      <span>🔍</span> Root Cause
+                      <span class="ca-apply-hint">Click to apply ↓</span>
+                    </div>
+                    <div class="ca-ai-card-text" id="ca-rc-text-${kpi.kpi_values_id}"></div>
+                  </div>
+                  <div class="ca-ai-card ca-sol-card"
+                       onclick="formApplyField('impl_solution_${kpi.kpi_values_id}',this)">
+                    <div class="ca-ai-card-label">
+                      <span>⚡</span> Immediate Action
+                      <span class="ca-apply-hint">Click to apply ↓</span>
+                    </div>
+                    <div class="ca-ai-card-text" id="ca-sol-text-${kpi.kpi_values_id}"></div>
+                  </div>
+                  <div class="ca-ai-card ca-ev-card"
+                       onclick="formApplyField('evidence_${kpi.kpi_values_id}',this)">
+                    <div class="ca-ai-card-label">
+                      <span>📊</span> Evidence
+                      <span class="ca-apply-hint">Click to apply ↓</span>
+                    </div>
+                    <div class="ca-ai-card-text" id="ca-ev-text-${kpi.kpi_values_id}"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ca-sugg-error" id="ca-err-${kpi.kpi_values_id}" style="display:none;">
+                ⚠️ Could not generate suggestion. Please fill manually.
+              </div>
+            </div>
+
+            <!-- Input fields -->
+            <div class="ca-field">
+              <label class="ca-label" for="root_cause_${kpi.kpi_values_id}">
+                🔍 Root Cause Analysis <span class="ca-required">*</span>
+              </label>
+              <textarea id="root_cause_${kpi.kpi_values_id}"
+                        name="root_cause_${kpi.kpi_values_id}"
+                        class="ca-textarea root-cause-input"
+                        data-kpi-values-id="${kpi.kpi_values_id}"
+                        placeholder="Click 'Generate Suggestion' or describe the root cause manually..."
+                        ${showCA ? 'required' : ''}>${existingRC}</textarea>
+            </div>
+
+            <div class="ca-field">
+              <label class="ca-label" for="impl_solution_${kpi.kpi_values_id}">
+                🔧 Implemented Solution <span class="ca-required">*</span>
+              </label>
+              <textarea id="impl_solution_${kpi.kpi_values_id}"
+                        name="impl_solution_${kpi.kpi_values_id}"
+                        class="ca-textarea impl-solution-input"
+                        data-kpi-values-id="${kpi.kpi_values_id}"
+                        placeholder="Click 'Generate Suggestion' or describe the solution taken..."
+                        ${showCA ? 'required' : ''}>${existingIS}</textarea>
+            </div>
+
+            <div class="ca-field">
+              <label class="ca-label" for="evidence_${kpi.kpi_values_id}">
+                📎 Evidence of Improvement <span class="ca-required">*</span>
+              </label>
+              <textarea id="evidence_${kpi.kpi_values_id}"
+                        name="evidence_${kpi.kpi_values_id}"
+                        class="ca-textarea evidence-input"
+                        data-kpi-values-id="${kpi.kpi_values_id}"
+                        placeholder="Provide evidence showing the improvement..."
+                        ${showCA ? 'required' : ''}>${existingEV}</textarea>
             </div>
           </div>
-        </div>
+          <!-- ===== END CORRECTIVE ACTION PANEL ===== -->
 
-   <script>
-    function clearError(input) {
-     const errorDiv = input.nextElementSibling;
-     if (errorDiv && errorDiv.classList.contains('field-error')) {
-      errorDiv.style.display = 'none';
-      input.style.borderColor = '#ddd';
-    }
-    }
-
-    document.getElementById('kpiForm').addEventListener('submit', function (e) {
-    const inputs = this.querySelectorAll('input.kpi-input[required]');
-    let hasError = false;
-
-    inputs.forEach(input => {
-      const errorDiv = input.nextElementSibling;
-      if (!input.value.trim()) {
-        e.preventDefault();
-        hasError = true;
-        input.style.borderColor = '#dc3545';
-        input.style.boxShadow = '0 0 0 2px rgba(220,53,69,0.2)';
-        if (errorDiv && errorDiv.classList.contains('field-error')) {
-          errorDiv.style.display = 'block';
-        }
-      } else if (isNaN(input.value.trim())) {
-        // Optional: block non-numeric values
-        e.preventDefault();
-        hasError = true;
-        input.style.borderColor = '#dc3545';
-        input.style.boxShadow = '0 0 0 2px rgba(220,53,69,0.2)';
-        if (errorDiv && errorDiv.classList.contains('field-error')) {
-          errorDiv.textContent = '⚠️ Please enter a valid number';
-          errorDiv.style.display = 'block';
-        }
-      }
+          <div class="comment-section">
+            <div class="comment-label">Manager Comment <span style="font-size:11px;color:#888;">(Optional)</span></div>
+            <textarea name="comment_${kpi.kpi_values_id}" class="comment-input"
+                      placeholder="Add your comment...">${kpi.latest_comment || ''}</textarea>
+          </div>
+        </div>`;
     });
 
-    if (hasError) {
-      // Scroll to first error
-      const firstError = this.querySelector('input.kpi-input[required][style*="dc3545"]');
-      if (firstError) {
-        firstError.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        firstError.focus();
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form - Week ${week}</title>
+      <style>
+        body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;
+          background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
+          background-size:cover;background-position:center;background-attachment:fixed;
+          padding:20px;margin:0;min-height:100vh;}
+        .container{max-width:800px;margin:0 auto;background:rgba(255,255,255,0.95);
+          border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.2);overflow:hidden;}
+        .header{background:#0078D7;color:white;padding:20px;text-align:center;}
+        .form-section{padding:30px;}
+        .info-section{background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #0078D7;}
+        .info-row{display:flex;margin-bottom:15px;align-items:center;}
+        .info-label{font-weight:600;color:#333;width:120px;font-size:14px;}
+        .info-value{flex:1;padding:8px 12px;background:white;border:1px solid #ddd;border-radius:4px;}
+        .kpi-card{background:#fff;border:1px solid #e1e5e9;border-radius:6px;padding:20px;margin-bottom:20px;}
+        .kpi-header{
+         display:flex;
+         justify-content:space-between;
+         align-items:center;
+         margin-bottom:4px;
+        }
+        .kpi-title{font-weight:600;color:#333;margin-bottom:5px;font-size:15px;}
+       .kpi-title{
+        font-weight:600;
+        color:#333;
+        font-size:15px;
+         }
+
+       .kpi-limits{
+        display:flex;
+        gap:8px;
+        }
+
+      .limit-badge{
+       font-size:11px;
+       font-weight:700;
+       padding:3px 10px;
+       border-radius:999px;
+       border:1px solid transparent;
       }
-      return;
-    }
 
-    // Show loading overlay only if no errors
-    document.getElementById('loadingOverlay').classList.add('active');
-      });
-    </script>
+     .limit-badge.low{
+      background:#ffebee;
+      color:#c62828;
+      border-color:#ef9a9a;
+     }
 
-      </body>
-      </html>
-    `);
+    .limit-badge.high{
+     background:#e8f5e9;
+     color:#1b5e20;
+     border-color:#a5d6a7;
+        }
+        .kpi-subtitle{color:#666;font-size:13px;margin-bottom:10px;}
+        .kpi-input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;box-sizing:border-box;}
+        .kpi-input:focus{border-color:#0078D7;outline:none;}
+        .submit-btn{background:#0078D7;color:white;border:none;padding:12px 30px;border-radius:4px;
+          font-size:16px;font-weight:600;cursor:pointer;display:block;width:100%;margin-top:20px;}
+        .unit-label{color:#888;font-size:12px;margin-top:5px;}
+        .low-limit-warning{color:#dc3545;font-size:12px;margin-top:5px;font-weight:600;}
+
+        /* ===== Corrective Action Panel ===== */
+        .ca-container{
+          margin-top:16px;
+          background:linear-gradient(135deg,#fff5f5,#fff8f0);
+          border:2px solid #f28b82;
+          border-radius:10px;
+          display:none;
+          overflow:hidden;
+        }
+        .ca-container.visible{display:block;}
+        .ca-header{
+          font-weight:700;color:#c62828;font-size:14px;
+          padding:14px 16px 14px;
+          border-bottom:1px dashed #f28b82;
+          display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+          background:rgba(211,47,47,0.05);
+        }
+        .ca-status-badge{
+          font-size:11px;font-weight:600;padding:3px 10px;border-radius:12px;margin-left:auto;
+        }
+        .ca-status-open{background:#ffebee;color:#c62828;border:1px solid #ef9a9a;}
+        .ca-status-waiting-for-validation{background:#fff3e0;color:#e65100;border:1px solid #ffcc02;}
+
+        /* AI box inside CA panel */
+        .ca-ai-box{margin:14px 14px 0;border:1.5px solid #c4b5fd;border-radius:10px;
+          background:linear-gradient(135deg,#f5f3ff,#ede9fe);overflow:hidden;}
+        .ca-ai-header{display:flex;align-items:center;gap:8px;padding:10px 14px;
+          background:rgba(109,40,217,0.08);border-bottom:1px solid #ddd6fe;}
+        .ca-ai-title{font-size:13px;font-weight:700;color:#5b21b6;flex:1;}
+        .ca-gen-btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;
+          background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;
+          border-radius:18px;font-size:12px;font-weight:600;cursor:pointer;
+          transition:all 0.2s;box-shadow:0 2px 6px rgba(109,40,217,0.35);}
+        .ca-gen-btn:hover:not(:disabled){background:linear-gradient(135deg,#6d28d9,#5b21b6);
+          transform:translateY(-1px);}
+        .ca-gen-btn:disabled{opacity:0.65;cursor:not-allowed;transform:none;}
+        .ca-gen-btn.loading .ca-gen-icon{animation:caGenSpin 1s linear infinite;display:inline-block;}
+        @keyframes caGenSpin{to{transform:rotate(360deg);}}
+        .ca-suggestion-content{padding:12px 14px;}
+        .ca-ai-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+        @media(max-width:600px){.ca-ai-row{grid-template-columns:1fr;}}
+        .ca-ai-card{background:white;border-radius:8px;padding:12px;cursor:pointer;
+          transition:transform 0.15s,box-shadow 0.15s;border:1.5px solid transparent;}
+        .ca-ai-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.1);}
+        .ca-ai-card.applied{border-color:#4ade80!important;background:#f0fdf4;}
+        .ca-rc-card{border-top:3px solid #ef4444;}
+        .ca-sol-card{border-top:3px solid #f59e0b;}
+        .ca-ev-card{border-top:3px solid #3b82f6;}
+        .ca-ai-card-label{font-size:10px;font-weight:700;text-transform:uppercase;
+          letter-spacing:0.5px;margin-bottom:7px;display:flex;align-items:center;gap:5px;}
+        .ca-rc-card .ca-ai-card-label{color:#dc2626;}
+        .ca-sol-card .ca-ai-card-label{color:#d97706;}
+        .ca-ev-card .ca-ai-card-label{color:#2563eb;}
+        .ca-apply-hint{margin-left:auto;font-size:9px;font-weight:500;color:#9ca3af;
+          text-transform:none;letter-spacing:0;}
+        .ca-ai-card-text{font-size:12px;color:#374151;line-height:1.5;}
+        .ca-sugg-error{padding:10px 14px;font-size:12px;color:#92400e;background:#fff7ed;}
+
+        .ca-field{margin-bottom:14px;padding:0 14px;}
+        .ca-field:first-of-type{margin-top:14px;}
+        .ca-field:last-of-type{margin-bottom:14px;}
+        .ca-label{display:block;font-weight:600;font-size:13px;color:#555;margin-bottom:6px;}
+        .ca-required{color:#dc3545;}
+        .ca-textarea{
+          width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:6px;
+          min-height:80px;resize:vertical;font-family:inherit;font-size:13px;
+          background:#fff;box-sizing:border-box;transition:border-color 0.2s;
+        }
+        .ca-textarea:focus{border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.12);}
+        .ca-textarea.error{border-color:#dc3545;background:#fff5f5;}
+        .ca-textarea.highlight{animation:caHighlight 1.8s forwards;}
+        @keyframes caHighlight{0%{background:#dcfce7;border-color:#16a34a;}100%{background:#fff;border-color:#f28b82;}}
+
+        .comment-section{margin-top:15px;}
+        .comment-label{font-weight:600;color:#555;margin-bottom:8px;font-size:13px;}
+        .comment-input{width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;
+          min-height:70px;resize:vertical;font-family:inherit;box-sizing:border-box;}
+        .loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);
+          z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:20px;}
+        .loading-overlay.active{display:flex;}
+        .spinner{width:56px;height:56px;border:6px solid rgba(255,255,255,0.3);
+          border-top-color:#fff;border-radius:50%;animation:spin 0.9s linear infinite;}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .loading-text{color:#fff;font-size:18px;font-weight:600;}
+      </style></head><body>
+      <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div class="loading-text">Submitting KPI Values...</div>
+      </div>
+      <div class="container">
+        <div class="header">
+          <h2 style="color:white;font-size:22px;margin:0;">KPI Submission - ${week}</h2>
+        </div>
+        <div class="form-section">
+          <div class="info-section">
+            <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
+            <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
+            <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
+            <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
+          </div>
+          <div class="kpi-section">
+            <h3 style="color:#0078D7;margin-bottom:20px;border-bottom:2px solid #0078D7;padding-bottom:8px;">KPI Values</h3>
+            <form action="/redirect" method="POST" id="kpiForm" novalidate>
+              <input type="hidden" name="responsible_id" value="${responsible_id}" />
+              <input type="hidden" name="week" value="${week}" />
+              ${kpiCardsHtml}
+              <button type="submit" class="submit-btn">Submit KPI Values</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <script>
+        // ===== FORM AI SUGGESTION FUNCTIONS =====
+        function formApplyField(fieldId, card) {
+          const text  = card.querySelector('.ca-ai-card-text').textContent.trim();
+          const field = document.getElementById(fieldId);
+          if (!field || !text) return;
+          field.value = text;
+          field.classList.remove('highlight');
+          void field.offsetWidth;
+          field.classList.add('highlight');
+          field.scrollIntoView({ behavior:'smooth', block:'center' });
+          card.classList.add('applied');
+          const hint = card.querySelector('.ca-apply-hint');
+          if (hint) hint.textContent = '✓ Applied';
+        }
+
+        async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
+          const btn     = document.getElementById('ca-gen-btn-' + kvId);
+          const suggDiv = document.getElementById('ca-sugg-' + kvId);
+          const errDiv  = document.getElementById('ca-err-' + kvId);
+
+          suggDiv.style.display = 'none';
+          errDiv.style.display  = 'none';
+
+          // Reset applied state
+          suggDiv.querySelectorAll('.ca-ai-card').forEach(c => {
+            c.classList.remove('applied');
+            const hint = c.querySelector('.ca-apply-hint');
+            if (hint) hint.textContent = 'Click to apply ↓';
+          });
+
+          btn.disabled = true;
+          btn.classList.add('loading');
+          btn.querySelector('.ca-gen-icon').textContent = '⏳';
+          btn.querySelector('.ca-gen-text').textContent = 'Generating...';
+
+          try {
+            const res = await fetch(
+              '/generate-ca-suggestion?kpi_id=' + kpiId +
+              '&responsible_id=' + responsibleId +
+              '&week=' + encodeURIComponent(week)
+            );
+            if (!res.ok) throw new Error('Request failed');
+            const data = await res.json();
+            if (data.error || !data.suggestion) throw new Error(data.error || 'No suggestion');
+
+            const s = data.suggestion;
+            document.getElementById('ca-rc-text-'  + kvId).textContent = s.root_cause       || '';
+            document.getElementById('ca-sol-text-' + kvId).textContent = s.immediate_action || '';
+            document.getElementById('ca-ev-text-'  + kvId).textContent = s.evidence         || '';
+            suggDiv.style.display = 'block';
+          } catch (err) {
+            errDiv.style.display = 'block';
+          } finally {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.querySelector('.ca-gen-icon').textContent = '🔄';
+            btn.querySelector('.ca-gen-text').textContent = 'Regenerate';
+          }
+        }
+
+        // Show/hide corrective action panel based on value vs low limit
+        function checkLowLimit(input) {
+          const card = input.closest('.kpi-card');
+          const llStr = card.dataset.lowLimit;
+          let ll = null;
+          if (llStr && llStr !== '' && llStr !== 'null' && !isNaN(parseFloat(llStr))) ll = parseFloat(llStr);
+          const val = parseFloat(input.value);
+          const kvId = input.dataset.kpiValuesId;
+          const caPanel = document.getElementById('ca_container_' + kvId);
+
+          if (caPanel && ll !== null && !isNaN(val)) {
+            const isBelow = val < ll;
+            caPanel.classList.toggle('visible', isBelow);
+
+            // Toggle required on the three textareas
+            ['root_cause_','impl_solution_','evidence_'].forEach(prefix => {
+              const ta = document.getElementById(prefix + kvId);
+              if (ta) ta.required = isBelow;
+            });
+          }
+        }
+
+        document.querySelectorAll('.value-input').forEach(i => {
+          i.addEventListener('input', function(){ checkLowLimit(this); });
+          checkLowLimit(i);
+        });
+
+        document.getElementById('kpiForm').addEventListener('submit', function(e) {
+          let hasError = false;
+
+          // Validate numeric value inputs
+          this.querySelectorAll('input.value-input[required]').forEach(input => {
+            if (!input.value.trim() || isNaN(input.value.trim())) {
+              e.preventDefault(); hasError = true;
+              input.style.borderColor = '#dc3545';
+              const err = input.nextElementSibling;
+              if (err && err.classList.contains('field-error')) err.style.display = 'block';
+            }
+          });
+
+          // Validate corrective action textareas when panel is visible
+          document.querySelectorAll('.ca-container.visible').forEach(panel => {
+            panel.querySelectorAll('.ca-textarea').forEach(ta => {
+              if (!ta.value.trim()) {
+                e.preventDefault(); hasError = true;
+                ta.classList.add('error');
+              } else {
+                ta.classList.remove('error');
+              }
+            });
+          });
+
+          if (!hasError) document.getElementById('loadingOverlay').classList.add('active');
+        });
+
+        // Clear error state on typing
+        document.querySelectorAll('.ca-textarea').forEach(ta => {
+          ta.addEventListener('input', function(){ this.classList.remove('error'); });
+        });
+      </script></body></html>`);
   } catch (err) {
     res.send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
-// ---------- Modern Dashboard by Week ----------
-// ---------- Modern Dashboard by Week ----------
+
+// ---------- Dashboard ----------
 app.get("/dashboard", async (req, res) => {
   try {
     const { responsible_id } = req.query;
-
-    // 1️⃣ Fetch responsible info
     const resResp = await pool.query(
-      `
-      SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1
-      `,
-      [responsible_id]
-    );
-
+      `SELECT r.*, p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`, [responsible_id]);
     const responsible = resResp.rows[0];
     if (!responsible) throw new Error("Responsible not found");
-
-    // 2️⃣ Fetch ALL historical KPI submissions for this responsible, ALL weeks
-    // UPDATED QUERY: Include all KPI fields from the Kpi table
     const kpiRes = await pool.query(
-      `
-      SELECT DISTINCT ON (h.week, h.kpi_id)
-             h.hist_id, h.kpi_values_id, h.new_value as value, h.week, 
-             h.kpi_id, h.updated_at,
-             k.subject, k.indicator_sub_title, k.unit,
-             k.target, k.min, k.max, k.tolerance_type,
-             k.up_tolerance, k.low_tolerance, k.frequency,
-             k.definition, k.calculation_on, k.target_auto_adjustment
-      FROM public.kpi_values_hist26 h
-      JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-      WHERE h.responsible_id = $1
-      ORDER BY h.week DESC, h.kpi_id ASC, h.updated_at DESC
-      `,
-      [responsible_id]
-    );
-
-    // 3️⃣ Group KPIs by week - FIX: Use Map to preserve order and handle duplicates properly
+      `SELECT DISTINCT ON (h.week, h.kpi_id)
+              h.hist_id, h.kpi_values_id, h.new_value as value, h.week,
+              h.kpi_id, h.updated_at,
+              k.subject, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
+              k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency,
+              k.definition, k.calculation_on, k.target_auto_adjustment,
+              k.high_limit, k.low_limit
+       FROM public.kpi_values_hist26 h JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+       WHERE h.responsible_id = $1
+       ORDER BY h.week DESC, h.kpi_id ASC, h.updated_at DESC`, [responsible_id]);
     const weekMap = new Map();
     kpiRes.rows.forEach(kpi => {
-      if (!weekMap.has(kpi.week)) {
-        weekMap.set(kpi.week, []);
-      }
+      if (!weekMap.has(kpi.week)) weekMap.set(kpi.week, []);
       weekMap.get(kpi.week).push(kpi);
     });
-
-    // 4️⃣ Build Dashboard HTML
-    let html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>KPI Dashboard - ${responsible.name}</title>
-        <style>
-          body {   font-family: 'Segoe UI', sans-serif; 
-            background: #f4f6f9;
-            /* Automobile industry background */
-            background-image: url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            background-repeat: no-repeat;
-            padding: 20px; 
-            margin: 0;
-            min-height: 100vh;}
-          .container { max-width: 900px; margin: 0 auto; }
-          .header { background:#0078D7; color:white; padding:20px; text-align:center; border-radius:8px 8px 0 0; }
-          .header h1 { margin:0; font-size:24px; }
-          .content { background:#fff; padding:30px; border-radius:0 0 8px 8px; box-shadow:0 2px 10px rgba(0,0,0,0.1); }
-
-          .info-section { background:#f8f9fa; padding:20px; border-radius:6px; margin-bottom:25px; border-left:4px solid #0078D7; }
-          .info-row { display:flex; margin-bottom:10px; }
-          .info-label { width:120px; font-weight:600; color:#333; }
-          .info-value { flex:1; background:white; padding:8px 12px; border:1px solid #ddd; border-radius:4px; }
-
-          .week-section { margin-bottom:30px; border:1px solid #e1e5e9; border-radius:8px; padding:20px; background:#fafbfc; }
-          .week-title { color:#0078D7; font-size:20px; margin-bottom:15px; font-weight:600; border-bottom:2px solid #0078D7; padding-bottom:8px; }
-
-          .kpi-card { 
-            background:#fff; 
-            border:1px solid #e1e5e9; 
-            border-radius:6px; 
-            padding:15px; 
-            margin-bottom:15px; 
-            box-shadow:0 1px 3px rgba(0,0,0,0.05); 
-          }
-          .kpi-title { 
-            font-weight:600; 
-            color:#333; 
-            margin-bottom:5px; 
-            font-size: 16px;
-          }
-          .kpi-subtitle { 
-            color:#666; 
-            font-size:13px; 
-            margin-bottom:10px; 
-            font-style: italic;
-          }
-          .kpi-value { 
-            font-size:24px; 
-            font-weight:bold; 
-            color:#0078D7; 
-            margin: 10px 0;
-          }
-          .kpi-unit { 
-            color:#888; 
-            font-size:12px; 
-            margin-top:5px; 
-            display: inline-block;
-            background: #f0f7ff;
-            padding: 2px 8px;
-            border-radius: 4px;
-          }
-          .kpi-date { 
-            color:#999; 
-            font-size:11px; 
-            margin-top:3px; 
-            font-style:italic;
-          }
-          .no-data { 
-            color:#999; 
-            font-style:italic; 
-            font-size: 18px;
-          }
-          
-          /* KPI Details Styling */
-          .kpi-details { 
-            margin-top: 15px; 
-            padding: 12px; 
-            background: #f8f9fa; 
-            border-radius: 6px; 
-            font-size: 12px;
-            border-left: 3px solid #6c757d;
-          }
-          .kpi-details div { 
-            margin-bottom: 6px; 
-            display: flex;
-            justify-content: space-between;
-            border-bottom: 1px dashed #e0e0e0;
-            padding-bottom: 4px;
-          }
-          .kpi-details div:last-child { 
-            border-bottom: none;
-            margin-bottom: 0;
-            padding-bottom: 0;
-          }
-          .kpi-details strong { 
-            color: #495057;
-            min-width: 120px;
-          }
-          .kpi-details span { 
-            color: #6c757d;
-            text-align: right;
-            flex-grow: 1;
-          }
-          
-          .summary { 
-            background:#e7f3ff; 
-            padding:15px; 
-            border-radius:6px; 
-            margin-bottom:25px;
-            border-left:4px solid #0078D7;
-          }
-          .summary-text {
-            margin:0;
-            color:#333;
-            font-size:14px;
-          }
-          
-          /* Status indicators */
-          .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 5px;
-          }
-          .status-on-target {
-            background-color: #28a745;
-          }
-          .status-near-target {
-            background-color: #ffc107;
-          }
-          .status-below-target {
-            background-color: #dc3545;
-          }
-          
-          /* Tolerance styling */
-          .tolerance-info {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 8px;
-            border-radius: 4px;
-            margin-top: 8px;
-            font-size: 11px;
-            color: #856404;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>KPI Dashboard - ${responsible.name}</h1>
-          </div>
-          <div class="content">
-            <div class="info-section">
-              <div class="info-row"><div class="info-label">Responsible</div><div class="info-value">${responsible.name}</div></div>
-              <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
-              <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
-            </div>
-            
-    `;
-
-    // 5️⃣ Loop through WEEKS using Map
+    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Dashboard</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;
+        background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
+        background-size:cover;background-position:center;background-attachment:fixed;padding:20px;margin:0;}
+      .container{max-width:900px;margin:0 auto;}
+      .header{background:#0078D7;color:white;padding:20px;text-align:center;border-radius:8px 8px 0 0;}
+      .content{background:#fff;padding:30px;border-radius:0 0 8px 8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}
+      .info-section{background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #0078D7;}
+      .info-row{display:flex;margin-bottom:10px;}
+      .info-label{width:120px;font-weight:600;color:#333;}
+      .info-value{flex:1;background:white;padding:8px 12px;border:1px solid #ddd;border-radius:4px;}
+      .week-section{margin-bottom:30px;border:1px solid #e1e5e9;border-radius:8px;padding:20px;background:#fafbfc;}
+      .week-title{color:#0078D7;font-size:20px;margin-bottom:15px;font-weight:600;
+        border-bottom:2px solid #0078D7;padding-bottom:8px;}
+      .kpi-card{background:#fff;border:1px solid #e1e5e9;border-radius:6px;padding:15px;margin-bottom:15px;}
+      .kpi-title{font-weight:600;color:#333;margin-bottom:5px;font-size:16px;}
+      .kpi-date{color:#999;font-size:11px;margin-top:3px;font-style:italic;}
+      </style></head><body>
+      <div class="container">
+        <div class="header"><h1>KPI Dashboard - ${responsible.name}</h1></div>
+        <div class="content">
+          <div class="info-section">
+            <div class="info-row"><div class="info-label">Responsible</div><div class="info-value">${responsible.name}</div></div>
+            <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
+            <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
+          </div>`;
     if (weekMap.size === 0) {
-      html += `<div class="no-data">No KPI data available yet.</div>`;
+      html += `<div style="color:#999;font-style:italic;">No KPI data available yet.</div>`;
     } else {
       for (const [week, items] of weekMap) {
-        html += `
-          <div class="week-section">
-            <div class="week-title">📅 Week ${week}</div>
-        `;
-
+        html += `<div class="week-section"><div class="week-title">📅 Week ${week}</div>`;
         items.forEach(kpi => {
           const hasValue = kpi.value !== null && kpi.value !== undefined && kpi.value !== '';
-          const submittedDate = kpi.updated_at ? new Date(kpi.updated_at).toLocaleString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-          }) : '';
-
-          // Calculate achievement status if target exists
-          let achievementStatus = '';
-          let statusClass = '';
-          if (kpi.target && hasValue && parseFloat(kpi.target) > 0) {
-            const currentValue = parseFloat(kpi.value);
-            const targetValue = parseFloat(kpi.target);
-            const achievementPercent = (currentValue / targetValue) * 100;
-
-            if (achievementPercent >= 100) {
-              statusClass = 'status-on-target';
-              achievementStatus = `<span class="status-indicator ${statusClass}"></span> On target`;
-            } else if (achievementPercent >= 90) {
-              statusClass = 'status-near-target';
-              achievementStatus = `<span class="status-indicator ${statusClass}"></span> Near target`;
-            } else {
-              statusClass = 'status-below-target';
-              achievementStatus = `<span class="status-indicator ${statusClass}"></span> Below target`;
-            }
-          }
-
-          // Calculate tolerance limits if applicable
-          let toleranceInfo = '';
-          if (kpi.tolerance_type && kpi.target && (kpi.up_tolerance || kpi.low_tolerance)) {
-            const targetNum = parseFloat(kpi.target);
-            let upperLimit = '';
-            let lowerLimit = '';
-
-            if (kpi.tolerance_type === 'Relative') {
-              if (kpi.up_tolerance) {
-                upperLimit = (targetNum * (1 + parseFloat(kpi.up_tolerance))).toFixed(2);
-              }
-              if (kpi.low_tolerance) {
-                lowerLimit = (targetNum * (1 + parseFloat(kpi.low_tolerance))).toFixed(2);
-              }
-            } else if (kpi.tolerance_type === 'Absolute') {
-              if (kpi.up_tolerance) {
-                upperLimit = (targetNum + parseFloat(kpi.up_tolerance)).toFixed(2);
-              }
-              if (kpi.low_tolerance) {
-                lowerLimit = (targetNum + parseFloat(kpi.low_tolerance)).toFixed(2);
-              }
-            }
-
-            if (upperLimit || lowerLimit) {
-              toleranceInfo = `
-                <div class="tolerance-info">
-                  Tolerance Range: ${lowerLimit ? `${lowerLimit} - ` : ''}${targetNum}${upperLimit ? ` - ${upperLimit}` : ''}
-                </div>
-              `;
-            }
-          }
-
-          // Build the KPI card HTML with details
+          const dotColor = hasValue ? getDotColor(kpi.value, kpi.low_limit, kpi.high_limit) : '#6c757d';
+          const submitted = kpi.updated_at
+            ? new Date(kpi.updated_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
           html += `
             <div class="kpi-card">
               <div class="kpi-title">${kpi.subject}</div>
-              ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ""}
-
-              ${achievementStatus ? `<div style="font-size: 12px; color: #6c757d; margin-bottom: 5px;">${achievementStatus}</div>` : ''}
-               <!-- Value Display -->
-             <div class="kpi-value ${!hasValue ? 'no-data' : ''}">
-              <!-- Target Display - NOW ABOVE the value -->
-              <!-- Target and Actual Value in same row with space between -->
-              ${kpi.target ? `
-             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-             <div style="display: flex; align-items: center; gap: 10px;">
-             <span style="font-weight: 600; color: #495057; font-size: 20px;">Target:</span>
-            <span style="font-weight: 600; color: #28a745; font-size: 18px;">
-            ${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}
-            </span>
-           </div>
-    
-           <div style="display: flex; align-items: center; gap: 10px;">
-           <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
-          <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 20px;">${hasValue ? kpi.value : "Not filled yet"}</span>
-         ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
-           </div>
-          </div>
-           ` : `
-           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-             <span style="font-weight: 600; color: #495057; font-size: 20px;">Actual Value:</span>
-            <span class="kpi-value ${!hasValue ? 'no-data' : ''}" style="font-size: 14px;">${hasValue ? kpi.value : "Not filled yet"}</span>
-             ${kpi.unit ? `<span style="color: #888; font-size: 14px;">${kpi.unit}</span>` : ''}
-             </div>
-             `}
-              
-              <!-- KPI details section -->
-              <div class="kpi-details">
-                ${kpi.target ? `<div><strong>target:</strong> <span>${kpi.target}</span></div>` : ''}
-                ${kpi.min ? `<div><strong>Minimum:</strong> <span>${kpi.min}</span></div>` : ''}
-                ${kpi.max ? `<div><strong>Maximum:</strong> <span>${kpi.max}</span></div>` : ''}
-                ${kpi.up_tolerance ? `<div><strong>Upper Tolerance:</strong> <span>${(parseFloat(kpi.up_tolerance) * 100).toFixed(0)}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
-                ${kpi.low_tolerance ? `<div><strong>Lower Tolerance:</strong> <span>${(parseFloat(kpi.low_tolerance) * 100).toFixed(0)}${kpi.tolerance_type === 'Relative' ? '%' : ''}</span></div>` : ''}
-                ${kpi.calculation_on ? `<div><strong>Calculation Basis:</strong> <span>${kpi.calculation_on}</span></div>` : ''}
-                ${kpi.target_auto_adjustment ? `<div><strong>Auto Adjustment:</strong> <span>${kpi.target_auto_adjustment}</span></div>` : ''}
+              ${kpi.indicator_sub_title ? `<div style="color:#666;font-size:13px;font-style:italic;">${kpi.indicator_sub_title}</div>` : ''}
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;">
+                ${kpi.target ? `<div><span style="font-weight:600;color:#495057;">Target: </span>
+                  <span style="color:#28a745;font-weight:700;">${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}</span></div>` : ''}
+                <div><span style="font-weight:600;color:#495057;">Actual: </span>
+                  <span style="font-size:20px;font-weight:700;color:${dotColor};">
+                    ${hasValue ? kpi.value : 'Not filled'} ${kpi.unit || ''}</span></div>
               </div>
-              
-              ${toleranceInfo}
-              
-              ${kpi.definition ? `<div style="margin-top: 10px; padding: 8px; background: #e9ecef; border-radius: 4px; font-size: 11px; color: #495057;"><strong>Definition:</strong> ${kpi.definition}</div>` : ''}
-              
-              ${submittedDate ? `<div class="kpi-date">Last updated: ${submittedDate}</div>` : ""}
-            </div>
-          `;
+              ${kpi.high_limit ? `<div style="font-size:12px;color:#ff9800;">🔺 High Limit: ${kpi.high_limit} ${kpi.unit || ''}</div>` : ''}
+              ${kpi.low_limit ? `<div style="font-size:12px;color:#dc3545;">🔻 Low Limit: ${kpi.low_limit} ${kpi.unit || ''}</div>` : ''}
+              ${submitted ? `<div class="kpi-date">Last updated: ${submitted}</div>` : ''}
+            </div>`;
         });
-
         html += `</div>`;
       }
     }
-
-    html += `
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
+    html += `</div></div></body></html>`;
     res.send(html);
-
   } catch (err) {
-    console.error("Dashboard error:", err);
     res.status(500).send(`<h2 style="color:red;">Error: ${err.message}</h2>`);
   }
 });
 
-
 app.get("/dashboard-history", async (req, res) => {
   try {
-    const { responsible_id, week } = req.query;
-
+    const { responsible_id } = req.query;
     const histRes = await pool.query(
-      `
-      SELECT h.hist_id, h.kpi_id, h.week, h.old_value, h.new_value, h.updated_at,
-             k.subject, k.indicator_sub_title, k.unit
-      FROM public.kpi_values_hist26 h
-      JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-      WHERE h.responsible_id = $1
-      ORDER BY h.updated_at DESC
-      `,
-      [responsible_id]
-    );
-
+      `SELECT h.hist_id, h.kpi_id, h.week, h.old_value, h.new_value, h.updated_at,
+              k.subject, k.indicator_sub_title, k.unit
+       FROM public.kpi_values_hist26 h JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+       WHERE h.responsible_id = $1 ORDER BY h.updated_at DESC`, [responsible_id]);
     const rows = histRes.rows;
-
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>KPI History Dashboard</title>
-        <style>
-          body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f4f6f9;
-            padding: 20px;
-            margin: 0;
-          }
-          .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            background: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          }
-          h1 {
-            text-align: center;
-            color: #0078D7;
-            margin-bottom: 30px;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-          }
-          th, td {
-            padding: 10px 12px;
-            border: 1px solid #ddd;
-            text-align: center;
-          }
-          th {
-            background: #0078D7;
-            color: white;
-            font-weight: 600;
-          }
-          tr:nth-child(even) {
-            background: #f8f9fa;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>KPI Value History</h1>
-          <table>
-            <thead>
-              <tr>
-                <th>Indicator</th>
-                <th>Sub Title</th>
-                <th>Week</th>
-                <th>Old Value</th>
-                <th>New Value</th>
-                <th>Unit</th>
-                <th>Updated At</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows
-        .map(
-          (r) => `
-                  <tr>
-                    <td>${r.subject}</td>
-                    <td>${r.indicator_sub_title || "-"}</td>
-                    <td>${r.week}</td>
-                    <td>${r.old_value ?? "—"}</td>
-                    <td>${r.new_value ?? "—"}</td>
-                    <td>${r.unit || ""}</td>
-                    <td>${new Date(r.updated_at).toLocaleString()}</td>
-                  </tr>`
-        )
-        .join("")}
-            </tbody>
-          </table>
-        </div>
-      </body>
-      </html>
-    `);
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI History</title>
+      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;padding:20px}
+      .container{max-width:1000px;margin:0 auto;background:#fff;padding:30px;border-radius:8px}
+      h1{color:#0078D7}table{width:100%;border-collapse:collapse;margin-top:20px}
+      th,td{padding:10px 12px;border:1px solid #ddd;text-align:center}
+      th{background:#0078D7;color:white}tr:nth-child(even){background:#f8f9fa}</style></head><body>
+      <div class="container"><h1>KPI Value History</h1>
+      <table><thead><tr><th>Indicator</th><th>Sub Title</th><th>Week</th>
+        <th>Old Value</th><th>New Value</th><th>Unit</th><th>Updated At</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${r.subject}</td><td>${r.indicator_sub_title || '-'}</td><td>${r.week}</td>
+        <td>${r.old_value ?? '—'}</td><td>${r.new_value ?? '—'}</td>
+        <td>${r.unit || ''}</td><td>${new Date(r.updated_at).toLocaleString()}</td>
+      </tr>`).join('')}</tbody></table></div></body></html>`);
   } catch (err) {
-    console.error("❌ Error loading dashboard-history:", err.message);
     res.send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
-
 
 // ---------- Send KPI email ----------
 const sendKPIEmail = async (responsibleId, week) => {
@@ -2006,580 +1597,450 @@ const sendKPIEmail = async (responsibleId, week) => {
     const { responsible } = await getResponsibleWithKPIs(responsibleId, week);
     const html = generateEmailHtml({ responsible, week });
     const transporter = createTransporter();
-    const info = await transporter.sendMail({
+    await transporter.sendMail({
       from: '"Administration STS" <administration.STS@avocarbon.com>',
       to: responsible.email,
       subject: `KPI Form for ${responsible.name} - ${week}`,
       html,
     });
-    console.log(`✅ Email sent to ${responsible.email}: ${info.messageId}`);
+    console.log(`✅ Email sent to ${responsible.email}`);
   } catch (err) {
     console.error(`❌ Failed to send email to responsible ID ${responsibleId}:`, err.message);
   }
 };
 
-// ✅ HELPER: Format numbers - remove .00 for whole numbers
 const formatNumber = (num) => {
-  const numValue = parseFloat(num);
-
-  // Check if it's a whole number (no decimal part)
-  if (Number.isInteger(numValue)) {
-    return numValue.toString();
-  }
-
-  // Check if it's effectively a whole number (like 3.00, 900.00)
-  if (Math.abs(numValue - Math.round(numValue)) < 0.0001) {
-    return Math.round(numValue).toString();
-  }
-
-  // For numbers with actual decimal values, show 1 decimal place
-  return numValue.toFixed(1);
+  const n = parseFloat(num);
+  if (Number.isInteger(n)) return n.toString();
+  if (Math.abs(n - Math.round(n)) < 0.0001) return Math.round(n).toString();
+  return n.toFixed(1);
 };
-// ---------- Generate HTML/CSS Charts ----------
-// Complete corrected generateVerticalBarChart function with proper target line positioning
-// Complete corrected generateVerticalBarChart function with proper x-axis label positioning
-// Complete corrected generateVerticalBarChart function with proper x-axis label positioning
+
+// ============================================================
+// generateVerticalBarChart — DOTS + HIGH/LOW LIMIT LINES
+// ============================================================
 const generateVerticalBarChart = (chartData) => {
   const {
-    title,
-    subtitle,
-    unit,
-    data,
-    weekLabels,
-    currentWeek,
-    stats,
-    target,
-    min,
-    max,
-    tolerance_type,
-    up_tolerance,
-    low_tolerance,
-    upper_tolerance_limit,
-    lower_tolerance_limit,
-    frequency,
-    definition
+    title, subtitle, unit, data, weekLabels, currentWeek,
+    stats, target, low_limit, high_limit,
+    tolerance_type, up_tolerance, low_tolerance,
+    frequency, definition, comments = [],
+    correctiveActions = []
   } = chartData;
 
-  // ✅ Clean values - handle "None" strings from database
-  const cleantarget = target && target !== 'None' && target !== '' && !isNaN(parseFloat(target)) ? parseFloat(target) : null;
-  const cleanMin = min && min !== 'None' && min !== '' && !isNaN(parseFloat(min)) ? parseFloat(min) : null;
-  const cleanMax = max && max !== 'None' && max !== '' && !isNaN(parseFloat(max)) ? parseFloat(max) : null;
+  const cleanHigh = (high_limit && high_limit !== 'None' && high_limit !== '' && !isNaN(parseFloat(high_limit)))
+    ? parseFloat(high_limit) : null;
+  const cleanLow = (low_limit && low_limit !== 'None' && low_limit !== '' && !isNaN(parseFloat(low_limit)))
+    ? parseFloat(low_limit) : null;
+  const cleanTarget = (target && target !== 'None' && target !== '' && !isNaN(parseFloat(target)))
+    ? parseFloat(target) : null;
 
-  if (!data || data.length === 0 || data.every(val => val <= 0)) {
-    return `
-      <table border="0" cellpadding="20" cellspacing="0" width="100%" style="margin: 20px 0; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
-        <tr><td>
-          <h3 style="margin: 0; color: #333; font-size: 16px; font-weight: 600;">${title}</h3>
-          ${subtitle ? `<p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">${subtitle}</p>` : ''}
-          ${definition ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px; font-style: italic;">${definition}</p>` : ''}
-          <p style="margin: 15px 0; color: #999; font-size: 14px;">No data available</p>
-        </td></tr>
-      </table>
-    `;
+  if (!data || data.length === 0 || data.every(v => v <= 0)) {
+    return `<table border="0" cellpadding="20" cellspacing="0" width="100%"
+              style="margin:20px 0;background:white;border-radius:8px;border:1px solid #e0e0e0;">
+      <tr><td>
+        <h3 style="margin:0;color:#333;font-size:16px;">${title}</h3>
+        ${subtitle ? `<p style="margin:5px 0 0;color:#666;font-size:14px;">${subtitle}</p>` : ''}
+        <p style="margin:15px 0;color:#999;font-size:14px;">No data available</p>
+      </td></tr></table>`;
   }
 
-  // ✅ FIX: Define validData here so it's available everywhere in this function
   const validData = data.filter(v => v > 0 && !isNaN(v));
+  const values = data.slice(0, 12).reverse();
 
-  // ✅ Check if value is extremely small compared to target
-  const currentValue = data[data.length - 1] || 0;
-  const valueVsTargetRatio = cleantarget ? currentValue / cleantarget : 0;
-  const isValueExtremelySmall = valueVsTargetRatio < 0.01;
+  const labels =
+    (weekLabels || data.map((_, i) => `W${i + 1}`))
+      .slice(0, 12)
+      .reverse();
 
-  // ✅ HELPER: Format large numbers for display
-  const formatLargeNumber = (num) => {
+  const fmt = (num) => {
     if (num === null || num === undefined || isNaN(num)) return '0';
-    const isWhole = Math.abs(num - Math.round(num)) < 0.0001;
-    if (num >= 1000000) return (num / 1000000).toFixed(isWhole ? 0 : 1) + 'M';
-    if (num >= 1000) return (num / 1000).toFixed(isWhole ? 0 : 1) + 'k';
-    if (isWhole) return Math.round(num).toString();
+    const w = Math.abs(num - Math.round(num)) < 0.0001;
+    if (num >= 1e6) return (num / 1e6).toFixed(w ? 0 : 1) + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(w ? 0 : 1) + 'k';
+    if (w) return Math.round(num).toString();
     if (num < 1) return num.toFixed(2);
-    if (num < 10) return num.toFixed(1);
     return num.toFixed(1);
   };
 
-  // ✅ Calculate Y-axis scaling - now uses validData correctly
-  const calculateYAxisScaling = () => {
-    const allValues = [...validData];
-    if (cleantarget !== null && cleantarget > 0) allValues.push(cleantarget);
-    if (cleanMin !== null && cleanMin > 0) allValues.push(cleanMin);
-    if (cleanMax !== null && cleanMax > 0) allValues.push(cleanMax);
+  // Dot color helper (assumes you already have getDotColor defined)
+  const pointColors = values.map(v => getDotColor(v, cleanLow, cleanHigh));
 
-    if (allValues.length === 0) {
-      return { maxValue: 10, interval: 2, numSteps: 5, useDualScale: false };
-    }
+  const allVals = [...validData];
+  if (cleanHigh !== null) allVals.push(cleanHigh);
+  if (cleanLow !== null) allVals.push(cleanLow);
+  if (cleanTarget !== null) allVals.push(cleanTarget);
 
-    const dataMax = Math.max(...allValues);
+  const dataMax = Math.max(...allVals, 1);
+  const rawInt = dataMax / 10;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawInt || 1)));
+  const norm = rawInt / mag;
+  let interval;
+  if (norm <= 1) interval = 1 * mag;
+  else if (norm <= 2) interval = 2 * mag;
+  else if (norm <= 2.5) interval = 2.5 * mag;
+  else if (norm <= 5) interval = 5 * mag;
+  else interval = 10 * mag;
 
-    // Dual scale for extremely small values vs large target
-    if (isValueExtremelySmall && cleantarget && cleantarget > 0) {
-      const valueBasedMax = Math.max(Math.max(...validData) * 4, 10);
-      const numSteps = 10;
-      return {
-        maxValue: valueBasedMax,
-        interval: valueBasedMax / numSteps,
-        numSteps,
-        useDualScale: true,
-        targetValue: cleantarget
-      };
-    }
-
-    // Nice-interval scaling giving ~10 steps for accurate line placement
-    const rawInterval = dataMax / 10;
-    const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval || 1)));
-    const normalized = rawInterval / magnitude;
-    let niceInterval;
-    if (normalized <= 1) niceInterval = 1 * magnitude;
-    else if (normalized <= 2) niceInterval = 2 * magnitude;
-    else if (normalized <= 2.5) niceInterval = 2.5 * magnitude;
-    else if (normalized <= 5) niceInterval = 5 * magnitude;
-    else niceInterval = 10 * magnitude;
-
-    const maxValue = Math.ceil(dataMax / niceInterval) * niceInterval + niceInterval;
-    const numSteps = Math.round(maxValue / niceInterval);
-    return { maxValue, interval: niceInterval, numSteps, useDualScale: false };
-  };
-
-  // Calculate scaling
-  const scaling = calculateYAxisScaling();
-  const { maxValue, interval, numSteps, useDualScale } = scaling;
+  const maxValue = Math.ceil(dataMax / interval) * interval + interval;
+  const numSteps = Math.round(maxValue / interval);
   const chartHeight = 180;
   const segmentHeight = chartHeight / numSteps;
 
-  // ✅ Generate Y-axis
-  const generateYAxis = () => {
-    let yAxis = '';
-
+  const yAxis = () => {
+    let h = '';
     for (let i = numSteps; i >= 0; i--) {
-      const value = i * interval;
-      let displayValue = formatLargeNumber(value);
-
-      if (useDualScale && i === numSteps && cleantarget) {
-        displayValue += ` (T:${formatLargeNumber(cleantarget)})`;
-      }
-
-      const tolerance = interval / 2;
-      let indicators = '';
-
-      if (cleantarget && Math.abs(value - cleantarget) < tolerance) indicators += ' 🎯';
-      if (cleanMax && Math.abs(value - cleanMax) < tolerance) indicators += ' 📈';
-      if (cleanMin && Math.abs(value - cleanMin) < tolerance) indicators += ' 📉';
-
-      // Bottom row (i === 0) should align with x-axis
-      const verticalAlign = i === 0 ? 'bottom' : 'top';
-
-      yAxis += `
-        <tr>
-          <td height="${segmentHeight}" 
-              valign="${verticalAlign}" 
-              align="right"
-              style="font-size: 10px; 
-                     color: #666; 
-                     padding-right: 8px; 
-                     white-space: nowrap;
-                     ${i === 0 ? 'padding-bottom: 4px;' : ''}">
-            ${displayValue}${indicators}
-          </td>
-        </tr>
-      `;
+      const val = i * interval;
+      let ind = '';
+      if (cleanHigh !== null && Math.abs(val - cleanHigh) < interval / 2) ind += ' 🔺';
+      if (cleanLow !== null && Math.abs(val - cleanLow) < interval / 2) ind += ' 🔻';
+      h += `<tr><td height="${segmentHeight}" valign="top" align="right"
+              style="font-size:10px;color:#666;padding-right:8px;white-space:nowrap;">
+              ${fmt(val)}${ind}</td></tr>`;
     }
-
-    if (useDualScale) {
-      yAxis += `
-        <tr>
-          <td height="20" valign="top" align="right"
-              style="font-size: 8px; color: #ff9800; padding-right: 8px; font-style: italic;">
-            * Value scale ≠ target scale
-          </td>
-        </tr>
-      `;
-    }
-
-    return yAxis;
+    return h;
   };
 
-  // ✅ Calculate segment positions
-  const getSegmentForValue = (value) => {
-    if (value === null || value === undefined || isNaN(value) || value < 0) return -1;
-    return Math.round((parseFloat(value) / maxValue) * numSteps);
-  };
+  const currentValue = data[data.length - 1] || 0;
 
-  const targetSegment = getSegmentForValue(cleantarget);
-  const maxSegment = cleanMax !== null && cleanMax > 0 ? getSegmentForValue(cleanMax) : -1;
-  const minSegment = cleanMin !== null && cleanMin >= 0 ? getSegmentForValue(cleanMin) : -1;
+  // STATS BOX - 3 columns (CURRENT, AVERAGE, TREND)
+  const statsBox = `
+  <table border="0" cellpadding="0" cellspacing="0" width="100%"
+         style="background:white;border-radius:12px;border:1px solid #e0e0e0;margin-bottom:20px;">
+    <tr>
+      <td style="padding:20px;">
+        <table border="0" cellpadding="0" cellspacing="0" align="center"
+               style="margin:0 auto;text-align:center;">
+          <tr>
+            <!-- CURRENT -->
+            <td valign="top" style="padding-right:20px;text-align:center;">
+              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">
+                CURRENT
+              </div>
+              <div style="font-size:32px;font-weight:700;color:${getDotColor(currentValue, cleanLow, cleanHigh)};line-height:36px;">
+                ${stats.current}
+              </div>
+              ${currentWeek ? `
+                <div style="font-size:11px;color:#999;margin-top:2px;">
+                  ${String(currentWeek).replace('2026-Week', 'Week ')}
+                </div>
+              ` : ''}
+            </td>
 
-  // ✅ Bar heights using data array
-  const barSegmentHeights = data.map(value => {
-    if (!value || value <= 0 || isNaN(value)) return 0;
+            <!-- spacer -->
+            <td width="20" style="font-size:0;line-height:0;">&nbsp;</td>
 
-    let segmentHeightRatio = (value / maxValue) * numSteps;
 
-    if (segmentHeightRatio < 0.5 && value > 0) {
-      segmentHeightRatio = 0.5;
+
+            <!-- spacer -->
+            <td width="20" style="font-size:0;line-height:0;">&nbsp;</td>
+
+            <!-- AVERAGE -->
+            <td valign="top" style="padding-left:20px;text-align:center;">
+              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">
+                AVERAGE
+              </div>
+              <div style="font-size:32px;font-weight:700;color:#0078D7;line-height:36px;">
+                ${stats.average}
+              </div>
+              <div style="font-size:11px;color:#999;margin-top:2px;">
+                ${stats.dataPoints || data.length} periods
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+`;
+
+  // QuickChart datasets
+  const datasets = [
+    {
+      label: subtitle || title,
+      data: values,
+      borderColor: '#94a3b8',
+      borderWidth: 2,
+      lineTension: 0,
+      fill: false,
+      pointBackgroundColor: pointColors,
+      pointBorderColor: '#ffffff',
+      pointBorderWidth: 2,
+      pointRadius: 6
     }
+  ];
 
-    return Math.max(1, Math.round(segmentHeightRatio));
-  });
-
-  // ✅ Bar color logic
-  const getBarColor = (value) => {
-    if (cleantarget && cleantarget > 0) {
-      if (upper_tolerance_limit && lower_tolerance_limit) {
-        if (value >= lower_tolerance_limit && value <= upper_tolerance_limit) return '#28a745';
-        if (value < lower_tolerance_limit) return '#dc3545';
-        return '#ff9800';
-      }
-      if (value >= cleantarget) return '#28a745';
-      if (value >= cleantarget * 0.9) return '#ffc107';
-      return '#dc3545';
-    }
-    return '#2196F3';
-  };
-
-  // ✅ Generate chart rows
-  const generateChart = () => {
-    let chart = '';
-
-    // Create rows from top to bottom
-    for (let seg = numSteps; seg >= 0; seg--) {
-      const hasTarget = seg === targetSegment;
-      const hasMax = cleanMax !== null && seg === maxSegment && cleanMax !== cleantarget;
-      const hasMin = seg === minSegment;
-      const hasLine = hasTarget || hasMax || hasMin;
-
-      let lineColor = '';
-      let lineLabel = '';
-      let lineLabelColor = '';
-
-      if (hasTarget) {
-        lineColor = '#28a745';
-        lineLabelColor = '#28a745';
-        lineLabel = 'Target';
-      } else if (hasMax) {
-        lineColor = '#ff9800';
-        lineLabelColor = '#ff9800';
-        lineLabel = 'Max';
-      } else if (hasMin) {
-        lineColor = '#dc3545';
-        lineLabelColor = '#dc3545';
-        lineLabel = 'Min';
-      }
-
-      chart += '<tr>';
-
-      data.forEach((value, idx) => {
-        const barHeight = barSegmentHeights[idx];
-        const barColor = getBarColor(value);
-        const isExtremelySmall = value > 0 && value < (maxValue * 0.01);
-
-        let cellContent = '';
-        let cellBorder = '';
-
-        // Add target/max/min line if this segment has one
-        if (hasLine) {
-          cellBorder = `border-top: 2px dashed ${lineColor};`;
-        }
-
-        // Value label - show above the bar
-        if (seg === barHeight && barHeight > 0) {
-          const displayVal = value >= 1000
-            ? formatLargeNumber(value)
-            : value.toFixed(value % 1 === 0 ? 0 : 1);
-
-          cellContent = `
-            <div style="
-              position: relative;
-              width: 100%;
-              text-align: center;
-              margin-top: -20px;
-              font-size: 10px;
-              font-weight: bold;
-              color: #333;
-              background: rgba(255,255,255,0.8);
-              padding: 2px 0;
-              border-radius: 4px;
-            ">
-              ${displayVal}
-            </div>
-          `;
-        }
-
-        // Bar segment
-        if (seg <= barHeight && barHeight > 0) {
-          cellContent += `
-            <div style="
-              width: 40px;
-              height: ${segmentHeight}px;
-              background-color: ${barColor};
-              margin: 0 auto;
-              ${isExtremelySmall ? 'border: 1px solid #ff9800;' : ''}
-              border-radius: ${seg === barHeight ? '4px 4px 0 0' : '0'};
-            "></div>
-          `;
-        }
-
-        chart += `
-          <td align="center" 
-              width="${100 / data.length}%"
-              style="
-                padding: 0;
-                vertical-align: bottom;
-                ${cellBorder}
-                height: ${segmentHeight}px;
-                line-height: 0;
-              ">
-            ${cellContent}
-          </td>
-        `;
-      });
-
-      chart += '</tr>';
-    }
-
-    // Add a spacer row for x-axis line
-    chart += '<tr><td colspan="' + data.length + '" style="height: 2px; background: #ccc;"></td></tr>';
-
-    // Add x-axis labels row
-    chart += '<tr>';
-    data.forEach((value, idx) => {
-      const w = weekLabels[idx] || `W${idx + 1}`;
-      const isCurrent = idx === data.length - 1;
-
-      chart += `
-        <td align="center" 
-            width="${100 / data.length}%"
-            style="
-              padding-top: 8px;
-              font-size: 11px;
-              font-weight: ${isCurrent ? 'bold' : 'normal'};
-              color: ${isCurrent ? '#0078D7' : '#666'};
-              border-top: 1px solid #999;
-            ">
-          ${w}
-        </td>
-      `;
+  if (cleanHigh !== null) {
+    datasets.push({
+      label: `High Limit (${fmt(cleanHigh)})`,
+      data: new Array(values.length).fill(cleanHigh),
+      borderColor: '#ff9800',
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      fill: false
     });
-    chart += '</tr>';
+  }
 
-    return chart;
+  if (cleanLow !== null) {
+    datasets.push({
+      label: `Low Limit (${fmt(cleanLow)})`,
+      data: new Array(values.length).fill(cleanLow),
+      borderColor: '#dc3545',
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      fill: false
+    });
+  }
+
+  if (cleanTarget !== null) {
+    datasets.push({
+      label: `Target (${fmt(cleanTarget)})`,
+      data: new Array(values.length).fill(cleanTarget),
+      borderColor: '#16a34a',
+      borderWidth: 2,
+      borderDash: [3, 3],
+      pointRadius: 0,
+      fill: false
+    });
+  }
+
+  const chartConfig = {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      legend: { display: false },
+      scales: {
+        xAxes: [{
+          ticks: { fontSize: 10 },
+          gridLines: { color: 'rgba(0,0,0,0.05)' }
+        }],
+        yAxes: [{
+          ticks: { fontSize: 10, beginAtZero: false },
+          gridLines: { color: 'rgba(0,0,0,0.05)' }
+        }]
+      }
+    }
   };
 
-  // ✅ Calculate target achievement
-  let targetAchievement = 'N/A';
-  let achievementColor = '#dfc54dff';
-  if (cleantarget !== null && cleantarget > 0) {
-    const achievementPercent = ((currentValue / cleantarget) * 100).toFixed(1);
-    targetAchievement = `${achievementPercent}%`;
+  const chartUrl =
+    `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}` +
+    `&w=500&h=260&bkg=white`;
 
-    if (upper_tolerance_limit && lower_tolerance_limit) {
-      if (currentValue >= lower_tolerance_limit && currentValue <= upper_tolerance_limit) {
-        achievementColor = '#28a745';
-      } else if (currentValue < lower_tolerance_limit) {
-        achievementColor = '#dc3545';
-      } else {
-        achievementColor = '#ff9800';
-      }
-    } else {
-      if (parseFloat(achievementPercent) >= 100) achievementColor = '#28a745';
-      else if (parseFloat(achievementPercent) >= 90) achievementColor = '#ffc107';
-      else achievementColor = '#dc3545';
-    }
-  }
-
-  // Warning for extremely small values
-  let smallValueWarning = '';
-  if (isValueExtremelySmall && cleantarget) {
-    smallValueWarning = `
-      <div style="margin: 10px 0; padding: 10px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107;">
-        <div style="font-size: 12px; color: #856404; font-weight: 600; margin-bottom: 5px;">
-          ⚠️ Note: Current value (${formatLargeNumber(currentValue)}) is very small compared to target (${formatLargeNumber(cleantarget)})
+  const commentsHtml = comments.length > 0 ? `
+    <div style="margin-bottom:20px;">
+      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">💬 Comments</h4>
+      ${comments.map(c => `
+        <div style="margin-bottom:12px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #0078D7;">
+          <div style="font-size:11px;font-weight:600;color:#0078D7;margin-bottom:6px;">
+           ${weekToMonthLabel(c.week || '') || (c.week || '').replace('2026-Week', 'Week ')}
+          </div>
+          <div style="font-size:13px;color:#2c3e50;">${c.text}</div>
         </div>
-        <div style="font-size: 11px; color: #856404;">
-          Bar height exaggerated for visibility. Achievement: ${targetAchievement}
+      `).join('')}
+    </div>` : '';
+
+  const correctiveActionsHtml = correctiveActions.length > 0 ? `
+    <div style="margin-bottom:20px;">
+      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">⚠️ Corrective Actions</h4>
+      ${correctiveActions.map(ca => `
+        <div style="margin-bottom:15px;padding:15px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;">
+          <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
+            Week ${ca.week ? String(ca.week).replace('2026-Week', '') : 'N/A'}
+            ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
+          </div>
+          ${ca.root_cause ? `
+            <div style="margin-bottom:8px;">
+              <div style="font-size:11px;font-weight:700;color:#dc3545;">🔍 Root Cause</div>
+              <div style="font-size:12px;color:#374151;">${ca.root_cause}</div>
+            </div>
+          ` : ''}
+          ${ca.implemented_solution ? `
+            <div style="margin-bottom:8px;">
+              <div style="font-size:11px;font-weight:700;color:#d97706;">⚡ Implemented Solution</div>
+              <div style="font-size:12px;color:#374151;">${ca.implemented_solution}</div>
+            </div>
+          ` : ''}
+          ${ca.evidence ? `
+            <div>
+              <div style="font-size:11px;font-weight:700;color:#2563eb;">📊 Evidence</div>
+              <div style="font-size:12px;color:#374151;">${ca.evidence}</div>
+            </div>
+          ` : ''}
         </div>
-      </div>
-    `;
-  }
+      `).join('')}
+    </div>
+  ` : '';
 
-  // Tolerance info display
-  const formatTolerance = (value) => value ? `${(parseFloat(value) * 100).toFixed(0)}%` : '';
-
-  let toleranceInfo = '';
-  if (tolerance_type && (up_tolerance || low_tolerance)) {
-    toleranceInfo = `
-      <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #6c757d;">
-        <div style="font-size: 12px; color: #495057; font-weight: 600; margin-bottom: 5px;">
-          Tolerance Settings: ${tolerance_type}
-        </div>
-        <table border="0" cellpadding="2" cellspacing="2" style="font-size: 11px; color: #6c757d;">
-          <tr>
-            ${up_tolerance ? `<td>Upper: ${formatTolerance(up_tolerance)}</td>` : ''}
-            ${low_tolerance ? `<td>Lower: ${formatTolerance(low_tolerance)}</td>` : ''}
-          </tr>
-        </table>
-      </div>
-    `;
-  }
-
-  // ✅ Return full chart HTML with proper structure
-  return `
-    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 20px 0; background: white; border-radius: 8px; border: 1px solid #e0e0e0; font-family: Arial, sans-serif;">
-      <tr><td style="padding: 20px;">
-
-        <!-- Header -->
-        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 20px;">
-          <tr><td>
-            <h3 style="margin: 0; color: #333; font-size: 16px; font-weight: 600;">${title}</h3>
-            ${subtitle ? `<p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">${subtitle}</p>` : ''}
-            ${definition ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px; font-style: italic;">${definition}</p>` : ''}
-            ${unit ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px;">Unit: ${unit}</p>` : ''}
-            ${frequency ? `<p style="margin: 5px 0 0 0; color: #888; font-size: 12px;">Frequency: ${frequency}</p>` : ''}
-
-            ${smallValueWarning}
-            ${toleranceInfo}
-
-            <table border="0" cellpadding="0" cellspacing="0" style="margin-top: 8px;">
-              <tr>
-                ${cleantarget !== null ? `<td style="color: #28a745; font-size: 12px; font-weight: 600; padding-right: 15px;">🎯 Target: ${formatLargeNumber(cleantarget)}</td>` : ''}
-                ${cleanMax !== null ? `<td style="color: #ff9800; font-size: 12px; font-weight: 600; padding-right: 15px;">📈 Max: ${formatLargeNumber(cleanMax)}</td>` : ''}
-                ${cleanMin !== null ? `<td style="color: #dc3545; font-size: 12px; font-weight: 600;">📉 Min: ${formatLargeNumber(cleanMin)}</td>` : ''}
-              </tr>
-            </table>
-          </td></tr>
-        </table>
-
-        <!-- Chart Area -->
-        <table border="0" cellpadding="0" cellspacing="0" width="100%">
-          <tr>
-            <!-- Y-axis -->
-            <td width="60" valign="top" style="border-right: 2px solid #ccc; padding-right: 5px;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="height: ${chartHeight}px;">
-                ${generateYAxis()}
-              </table>
-            </td>
-            
-            <!-- Chart and X-axis -->
-            <td valign="top" style="padding-left: 5px;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                ${generateChart()}
-              </table>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Stats -->
-        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f8f9fa; border-radius: 6px; margin-top: 20px;">
-          <tr>
-            <td width="33%" align="center" style="border-right: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">CURRENT</div>
-              <div style="font-size: 20px; font-weight: 700; color: #0078D7;">${formatNumber(stats.current)}</div>
-              <div style="font-size: 10px; color: #999;">${currentWeek.replace('2026-Week', 'Week ')}</div>
-            </td>
-            <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">AVERAGE</div>
-              <div style="font-size: 20px; font-weight: 700; color: #0078D7;">${formatNumber(stats.average)}</div>
-              <div style="font-size: 10px; color: #999;">${stats.dataPoints || data.length} periods</div>
-            </td>
-            <td width="33%" align="center" style="border-left: 1px solid #e0e0e0; padding: 10px;">
-              <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">TREND</div>
-              <div style="font-size: 20px; font-weight: 700; color: ${stats.trend.startsWith('-') ? '#F44336' : '#4CAF50'};">${stats.trend}</div>
-              <div style="font-size: 10px; color: #999;">Week over week</div>
-            </td>
-          </tr>
-        </table>
-
-        <!-- Legend -->
-        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #f0f0f0;">
-          <tr><td align="center">
-            <table border="0" cellpadding="8" cellspacing="0">
-              <tr>
-                ${cleantarget !== null ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="20" height="12" style="border-top: 2px dashed #28a745;"></td>
-                    <td style="font-size: 11px; color: #666;">Target</td>
-                  </tr></table></td>
-                ` : ''}
-                ${cleanMax !== null ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="20" height="12" style="border-top: 2px dashed #ff9800;"></td>
-                    <td style="font-size: 11px; color: #666;">Max</td>
-                  </tr></table></td>
-                ` : ''}
-                ${cleanMin !== null ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="20" height="12" style="border-top: 2px dashed #dc3545;"></td>
-                    <td style="font-size: 11px; color: #666;">Min</td>
-                  </tr></table></td>
-                ` : ''}
-                ${isValueExtremelySmall ? `
-                  <td><table border="0" cellpadding="0" cellspacing="5"><tr>
-                    <td width="12" height="12" style="background-color: #ff9800; border: 1px solid #ff9800;"></td>
-                    <td style="font-size: 11px; color: #666;">Exaggerated for visibility</td>
-                  </tr></table></td>
-                ` : ''}
-              </tr>
-            </table>
-          </td></tr>
-        </table>
-
+  // ✅ EMAIL-SAFE LIMITS (High + Low side-by-side using table)
+  const limitsRowHtml = (() => {
+    const highBox = cleanHigh !== null ? `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+           style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
+      <tr><td style="padding:15px;">
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">🔺 HIGH LIMIT</div>
+        <div style="font-size:28px;font-weight:700;color:#ff9800;">${fmt(cleanHigh)}</div>
+        <div style="font-size:11px;color:#999;">${unit || ''}</div>
       </td></tr>
     </table>
+  ` : '';
+
+    const targetBox = cleanTarget !== null ? `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+           style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
+      <tr><td style="padding:15px;">
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">🎯 TARGET</div>
+        <div style="font-size:28px;font-weight:700;color:#16a34a;">${fmt(cleanTarget)}</div>
+        <div style="font-size:11px;color:#999;">${unit || ''}</div>
+      </td></tr>
+    </table>
+  ` : '';
+
+    const lowBox = cleanLow !== null ? `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+           style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
+      <tr><td style="padding:15px;">
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">🔻 LOW LIMIT</div>
+        <div style="font-size:28px;font-weight:700;color:#dc3545;">${fmt(cleanLow)}</div>
+        <div style="font-size:11px;color:#999;">${unit || ''}</div>
+      </td></tr>
+    </table>
+  ` : '';
+
+    const boxes = [];
+    if (highBox) boxes.push(highBox);
+    if (targetBox) boxes.push(targetBox);
+    if (lowBox) boxes.push(lowBox);
+
+    if (boxes.length === 0) {
+      return `
+      <div style="margin-top:20px;background:#f8f9fa;border-radius:12px;padding:30px;
+                  text-align:center;border:1px dashed #e0e0e0;">
+        <span style="font-size:24px;display:block;margin-bottom:10px;">📊</span>
+        <p style="margin:0;color:#999;font-size:13px;">No limits defined</p>
+      </div>
+    `;
+    }
+
+    const colWidth = Math.floor(100 / boxes.length);
+
+    return `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:20px;">
+      <tr>
+        ${boxes.map((box, i) => `
+          <td width="${colWidth}%" valign="top"
+              style="${i !== boxes.length - 1 ? 'padding-right:8px;' : ''}">
+            ${box}
+          </td>
+        `).join('')}
+      </tr>
+    </table>
   `;
+  })();
+
+  return `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+           style="margin:20px 0;background:white;border-radius:12px;
+                  border:1px solid #e0e0e0;font-family:Arial,sans-serif;">
+      <tr><td style="padding:20px;">
+        <div style="margin-bottom:20px;">
+          <h3 style="margin:0;color:#333;font-size:18px;font-weight:600;">${title}</h3>
+          ${subtitle ? `<p style="margin:5px 0 0;color:#666;font-size:14px;">${subtitle}</p>` : ''}
+          ${unit ? `<p style="margin:5px 0 0;color:#888;font-size:12px;">Unit: ${unit} • Frequency: ${frequency || 'Monthly'}</p>` : ''}
+        </div>
+
+        ${statsBox}
+
+        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td width="60%" valign="top" style="padding-right:20px;">
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+  
+                  <td valign="top" style="padding-left:5px;">
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="text-align:center;">
+                      <tr>
+                        <td align="center">
+                          <img src="${chartUrl}"
+                               width="500"
+                               height="260"
+                               alt="KPI Trend Chart"
+                               style="max-width:100%;
+                                      border-radius:8px;
+                                      border:1px solid #f0f0f0;
+                                      display:block;
+                                      margin:auto;" />
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- ✅ High/Low limits beside each other -->
+              ${limitsRowHtml}
+            </td>
+
+            <td width="40%" valign="top" style="padding-left:20px;border-left:2px solid #f0f0f0;">
+              ${correctiveActionsHtml}
+              ${commentsHtml}
+
+              ${comments.length === 0 && correctiveActions.length === 0 ? `
+                <div style="background:#f8f9fa;border-radius:12px;padding:30px;
+                            text-align:center;border:1px dashed #e0e0e0;">
+                  <span style="font-size:32px;display:block;margin-bottom:10px;">📝</span>
+                  <p style="margin:0;color:#999;font-size:13px;">No additional data</p>
+                </div>` : ''}
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>`;
 };
-
-//parse the new target and previous target 
-
-
-
+// ============================================================
+// generateWeeklyReportData
+// ============================================================
+// ============================================================
+// generateWeeklyReportData (updated to include corrective actions)
+// ============================================================
 const generateWeeklyReportData = async (responsibleId, reportWeek) => {
   try {
-    // Get historical data from kpi_values_hist26 table with all KPI fields
     const histRes = await pool.query(
-      `
-      WITH KpiHistory AS (
-        SELECT 
-          h.kpi_id,
-          h.week,
-          h.new_value,
-          h.updated_at,
-          k.subject,
-          k.indicator_sub_title,
-          k.unit,
-          k.target,
-          k.min,
-          k.max,
-          k.tolerance_type,
-          k.up_tolerance,
-          k.low_tolerance,
-          k.frequency,
-          k.definition,
-          ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
+      `WITH KpiHistory AS (
+        SELECT h.kpi_id, h.week, h.new_value, h.updated_at, h.comment,
+               k.subject, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
+               k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency, k.definition,
+               k.low_limit, k.high_limit,
+               ca.corrective_action_id,
+               ca.root_cause,
+               ca.implemented_solution,
+               ca.evidence,
+               ca.status as ca_status,
+               ca.created_date as ca_created_date,
+               ca.updated_date as ca_updated_date,
+               ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
         FROM public.kpi_values_hist26 h
         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+        LEFT JOIN public.corrective_actions ca
+               ON ca.kpi_id = h.kpi_id
+              AND ca.responsible_id = h.responsible_id
+              AND ca.week = h.week
         WHERE h.responsible_id = $1
-          AND h.new_value IS NOT NULL
-          AND h.new_value != ''
-          AND h.new_value != '0'
+          AND h.new_value IS NOT NULL AND h.new_value != '' AND h.new_value != '0'
       )
-      SELECT * FROM KpiHistory 
-      WHERE rn = 1
-      ORDER BY kpi_id, week ASC
-      `,
+      SELECT * FROM KpiHistory WHERE rn = 1
+      ORDER BY kpi_id, week ASC`,
       [responsibleId]
     );
 
-    if (!histRes.rows.length) {
-      console.log(`No historical data found for responsible ${responsibleId}`);
-      return null;
-    }
+    if (!histRes.rows.length) return null;
 
-    // Group by KPI
     const kpisData = {};
-    const weekLabelsSet = new Set();
 
+    // ── Pass 1: build kpisData entries and accumulate into monthly maps ──────
     histRes.rows.forEach(row => {
       const kpiId = row.kpi_id;
-
       if (!kpisData[kpiId]) {
         kpisData[kpiId] = {
           title: row.subject,
@@ -2588,182 +2049,120 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
           target: row.target,
           min: row.min,
           max: row.max,
+          low_limit: row.low_limit,
+          high_limit: row.high_limit,
           tolerance_type: row.tolerance_type,
           up_tolerance: row.up_tolerance,
           low_tolerance: row.low_tolerance,
           frequency: row.frequency,
           definition: row.definition,
-          weeklyData: new Map()
+          _monthlyMap: {},   // { "Feb 2026": { sum, count } }
+          comments: [],
+          correctiveActions: []
         };
       }
 
-      // Parse value
       const value = parseFloat(row.new_value);
       if (!isNaN(value) && value > 0) {
-        kpisData[kpiId].weeklyData.set(row.week, value);
-        weekLabelsSet.add(row.week);
+        const month = weekToMonthLabel(row.week); // e.g. "Feb 2026"
+        const mm = kpisData[kpiId]._monthlyMap;
+        if (!mm[month]) mm[month] = { sum: 0, count: 0 };
+        mm[month].sum += value;
+        mm[month].count += 1;
       }
-    });
 
-    // Convert week labels set to sorted array
-    const weekLabels = Array.from(weekLabelsSet).sort((a, b) => {
-      const [yearA, weekA] = a.includes('Week')
-        ? [parseInt(a.split('-Week')[0]), parseInt(a.split('-Week')[1])]
-        : [0, parseInt(a.replace('Week', ''))];
+      if (row.comment && row.comment.trim())
+        kpisData[kpiId].comments.push({ week: row.week, text: row.comment, date: row.updated_at });
 
-      const [yearB, weekB] = b.includes('Week')
-        ? [parseInt(b.split('-Week')[0]), parseInt(b.split('-Week')[1])]
-        : [0, parseInt(b.replace('Week', ''))];
-
-      if (yearA !== yearB) return yearA - yearB;
-      return weekA - weekB;
-    });
-
-    if (weekLabels.length === 0) {
-      console.log(`No valid week data found for responsible ${responsibleId}`);
-      return null;
-    }
-
-    const charts = [];
-
-    // Process each KPI
-    for (const [kpiId, kpiData] of Object.entries(kpisData)) {
-      // Prepare data array for all weeks
-      const dataPoints = [];
-
-      weekLabels.forEach(week => {
-        if (kpiData.weeklyData.has(week)) {
-          dataPoints.push(kpiData.weeklyData.get(week));
-        } else {
-          dataPoints.push(0);
+      if (row.root_cause || row.implemented_solution || row.evidence) {
+        const existingCA = kpisData[kpiId].correctiveActions.find(ca => ca.week === row.week);
+        if (!existingCA) {
+          kpisData[kpiId].correctiveActions.push({
+            week: row.week,
+            root_cause: row.root_cause,
+            implemented_solution: row.implemented_solution,
+            evidence: row.evidence,
+            status: row.ca_status || 'Open',
+            created_date: row.ca_created_date,
+            updated_date: row.ca_updated_date
+          });
         }
-      });
-
-      // Skip if all values are zero
-      const hasData = dataPoints.some(val => val > 0);
-      if (!hasData) {
-        continue;
       }
+    });
 
-      // Find current week (latest with data)
-      let currentWeek = null;
-      let currentValue = 0;
-      let previousValue = 0;
+    // ── Pass 2: convert monthly maps → sorted month labels + averaged values ─
+    const monthLabelsSet = new Set();
+    Object.values(kpisData).forEach(kpi => {
+      const mm = kpi._monthlyMap;
+      const sortedMonths = Object.keys(mm).sort((a, b) => new Date(a) - new Date(b));
+      kpi.weeklyData = new Map();
+      sortedMonths.forEach(m => {
+        kpi.weeklyData.set(m, mm[m].sum / mm[m].count);
+        monthLabelsSet.add(m);
+      });
+      delete kpi._monthlyMap;
+    });
 
+    // ── Sorted month labels for all KPIs ──────────────────────────────────────
+    const weekLabels = Array.from(monthLabelsSet).sort((a, b) => new Date(a) - new Date(b));
+    if (weekLabels.length === 0) return null;
+
+    // ── Build chart objects ───────────────────────────────────────────────────
+    const charts = [];
+    for (const [kpiId, kpiData] of Object.entries(kpisData)) {
+      const dataPoints = weekLabels.map(w => kpiData.weeklyData.get(w) || 0);
+      if (!dataPoints.some(v => v > 0)) continue;
+
+      let currentWeek = null, currentValue = 0, previousValue = 0;
       for (let i = weekLabels.length - 1; i >= 0; i--) {
         if (dataPoints[i] > 0) {
-          currentWeek = weekLabels[i];
-          currentValue = dataPoints[i];
-
-          // Find previous non-zero value for trend calculation
-          for (let j = i - 1; j >= 0; j--) {
-            if (dataPoints[j] > 0) {
-              previousValue = dataPoints[j];
-              break;
-            }
-          }
+          currentWeek = weekLabels[i]; currentValue = dataPoints[i];
+          for (let j = i - 1; j >= 0; j--) { if (dataPoints[j] > 0) { previousValue = dataPoints[j]; break; } }
           break;
         }
       }
+      if (!currentWeek) continue;
 
-      if (!currentWeek) {
-        continue;
-      }
-
-      // Calculate statistics
-      const nonZeroData = dataPoints.filter(val => val > 0);
-
-      if (nonZeroData.length === 0) {
-        continue;
-      }
-
-      const avg = nonZeroData.reduce((sum, val) => sum + val, 0) / nonZeroData.length;
-      const max = Math.max(...nonZeroData);
-      const min = Math.min(...nonZeroData);
-
-      // Calculate trend (week-over-week change)
+      const nonZero = dataPoints.filter(v => v > 0);
+      const avg = nonZero.reduce((s, v) => s + v, 0) / nonZero.length;
       let trend = '0.0%';
       if (previousValue > 0 && currentValue > 0) {
-        const trendValue = ((currentValue - previousValue) / previousValue) * 100;
-        trend = (trendValue >= 0 ? '+' : '') + trendValue.toFixed(1) + '%';
+        const tv = ((currentValue - previousValue) / previousValue) * 100;
+        trend = (tv >= 0 ? '+' : '') + tv.toFixed(1) + '%';
       }
 
-      // Calculate target achievement
-      let targetAchievement = 'N/A';
-      let achievementColor = '#dfc54dff';
-      if (kpiData.target !== null && kpiData.target > 0) {
-        const achievementPercent = ((currentValue / kpiData.target) * 100).toFixed(1);
-        targetAchievement = `${achievementPercent}%`;
-
-        if (parseFloat(achievementPercent) >= 100) {
-          achievementColor = '#28a745';
-        } else if (parseFloat(achievementPercent) >= 90) {
-          achievementColor = '#ffc107';
-        } else {
-          achievementColor = '#dc3545';
-        }
-      }
-
-      // Calculate tolerance ranges
-      let upperToleranceLimit = null;
-      let lowerToleranceLimit = null;
-
-      if (kpiData.tolerance_type === 'Relative' && kpiData.target) {
-        const targetNum = parseFloat(kpiData.target);
-        if (kpiData.up_tolerance) {
-          upperToleranceLimit = targetNum * (1 + parseFloat(kpiData.up_tolerance));
-        }
-        if (kpiData.low_tolerance) {
-          lowerToleranceLimit = targetNum * (1 + parseFloat(kpiData.low_tolerance));
-        }
-      } else if (kpiData.tolerance_type === 'Absolute' && kpiData.target) {
-        const targetNum = parseFloat(kpiData.target);
-        if (kpiData.up_tolerance) {
-          upperToleranceLimit = targetNum + parseFloat(kpiData.up_tolerance);
-        }
-        if (kpiData.low_tolerance) {
-          lowerToleranceLimit = targetNum + parseFloat(kpiData.low_tolerance);
-        }
-      }
-
-      const displayWeekLabels = weekLabels.map(week => {
-        if (week.includes('2026-Week')) {
-          return `W${week.split('-Week')[1]}`;
-        } else if (week.includes('Week')) {
-          return `W${week.replace('Week', '')}`;
-        }
-        return week;
-      });
+      // Labels are already "Jan 2026", "Feb 2026" etc — pass through as-is
+      const displayWeekLabels = weekLabels;
 
       charts.push({
-        kpiId: kpiId,
+        kpiId,
         title: kpiData.title,
         subtitle: kpiData.subtitle,
         unit: kpiData.unit,
         target: kpiData.target,
         min: kpiData.min,
         max: kpiData.max,
+        low_limit: kpiData.low_limit,
+        high_limit: kpiData.high_limit,
         tolerance_type: kpiData.tolerance_type,
         up_tolerance: kpiData.up_tolerance,
         low_tolerance: kpiData.low_tolerance,
         frequency: kpiData.frequency,
         definition: kpiData.definition,
-        upper_tolerance_limit: upperToleranceLimit,
-        lower_tolerance_limit: lowerToleranceLimit,
-        target_achievement: targetAchievement,
-        achievement_color: achievementColor,
         data: dataPoints,
         weekLabels: displayWeekLabels,
         fullWeeks: weekLabels,
-        currentWeek: currentWeek,
+        currentWeek,
+        comments: kpiData.comments.sort((a, b) => new Date(b.date) - new Date(a.date)),
+        correctiveActions: kpiData.correctiveActions.sort((a, b) =>
+          new Date(b.updated_date || b.created_date) - new Date(a.updated_date || a.created_date)
+        ),
         stats: {
           current: currentValue.toFixed(kpiData.unit === '%' ? 1 : 2),
           previous: previousValue > 0 ? previousValue.toFixed(kpiData.unit === '%' ? 1 : 2) : 'N/A',
           average: avg.toFixed(kpiData.unit === '%' ? 1 : 2),
-          max: max.toFixed(kpiData.unit === '%' ? 1 : 2),
-          min: min > 0 ? min.toFixed(kpiData.unit === '%' ? 1 : 2) : 'N/A',
-          trend: trend,
-          dataPoints: nonZeroData.length,
+          trend,
+          dataPoints: nonZero.length,
           totalWeeks: weekLabels.length
         }
       });
@@ -2771,2546 +2170,1131 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
 
     console.log(`Generated ${charts.length} KPI charts for responsible ${responsibleId}`);
     return charts;
-
   } catch (error) {
     console.error('Error generating weekly report data:', error);
     return null;
   }
 };
 
-
-// Add this helper function before the generateWeeklyReportEmail function
 function getCurrentWeek() {
   const now = new Date();
   const year = now.getFullYear();
-
-  // ISO week number calculation
   const startDate = new Date(year, 0, 1);
   const days = Math.floor((now - startDate) / (24 * 60 * 60 * 1000));
   const weekNumber = Math.ceil((days + startDate.getDay() + 1) / 7);
-
   return `${year}-Week${weekNumber}`;
 }
 
 const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
   try {
-    // Get responsible info
     const resResp = await pool.query(
-      `
-      SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1
-      `,
-      [responsibleId]
-    );
-
+      `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
+              p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`, [responsibleId]);
     const responsible = resResp.rows[0];
     if (!responsible) throw new Error(`Responsible ${responsibleId} not found`);
 
-    console.log(`Generating report for ${responsible.name}, week: ${reportWeek}`);
-
-    // Generate charts data with multiple weeks
     const chartsData = await generateWeeklyReportData(responsibleId, reportWeek);
-
     let chartsHtml = '';
     let hasData = false;
-    let toleranceTypes = new Set();
-    let frequencies = new Set();
 
     if (chartsData && chartsData.length > 0) {
       hasData = true;
-      chartsData.forEach(chart => {
-        chartsHtml += generateVerticalBarChart(chart);
-        if (chart.tolerance_type) toleranceTypes.add(chart.tolerance_type);
-        if (chart.frequency) frequencies.add(chart.frequency);
-      });
+      chartsData.forEach(chart => { chartsHtml += generateVerticalBarChart(chart); });
     } else {
-      // Check if there's any data at all
-      const checkRes = await pool.query(
-        `SELECT COUNT(*) FROM public.kpi_values_hist26 WHERE responsible_id = $1`,
-        [responsibleId]
-      );
-
-      if (parseInt(checkRes.rows[0].count) === 0) {
-        chartsHtml = `
-          <div style="text-align: center; padding: 60px; background: #f8f9fa; border-radius: 12px; margin-bottom: 20px; border: 2px dashed #dee2e6;">
-            <div style="font-size: 48px; color: #adb5bd; margin-bottom: 20px;">📊</div>
-            <p style="color: #495057; margin: 0; font-size: 18px; font-weight: 500;">No KPI Data Available</p>
-            <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
-              Start filling your KPI forms to track your performance over time.
-            </p>
-            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
-               style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
-                      background: #28a745; color: white; text-decoration: none; 
-                      border-radius: 6px; font-weight: 600; font-size: 14px;">
-              ✏️ Start Tracking KPIs
-            </a>
-          </div>
-        `;
-      } else {
-        chartsHtml = `
-          <div style="text-align: center; padding: 60px; background: #f8f9fa; border-radius: 12px; margin-bottom: 20px; border: 2px dashed #dee2e6;">
-            <div style="font-size: 48px; color: #adb5bd; margin-bottom: 20px;">📈</div>
-            <p style="color: #495057; margin: 0; font-size: 18px; font-weight: 500;">Insufficient Data</p>
-            <p style="color: #6c757d; margin: 10px 0 0 0; font-size: 14px;">
-              Fill your KPI form for week ${reportWeek} to generate performance charts.
-            </p>
-            <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${reportWeek}"
-               style="display: inline-block; margin-top: 20px; padding: 12px 24px; 
-                      background: #0078D7; color: white; text-decoration: none; 
-                      border-radius: 6px; font-weight: 600; font-size: 14px;">
-              ✏️ Fill KPI Form
-            </a>
-          </div>
-        `;
-      }
+      chartsHtml = `<div style="text-align:center;padding:60px;background:#f8f9fa;border-radius:12px;">
+        <div style="font-size:48px;color:#adb5bd;margin-bottom:20px;">📊</div>
+        <p style="color:#495057;margin:0;font-size:18px;">No KPI Data Available</p></div>`;
     }
 
-    // Determine frequency and tolerance types for the email
-    const frequencyDisplay = frequencies.size > 0 ?
-      Array.from(frequencies).join(', ') : 'Monthly';
+    const emailHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f4f6f9;">
+      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#f4f6f9;">
+        <tr><td align="center" style="padding:20px;">
+          <table border="0" cellpadding="0" cellspacing="0" width="100%">
+            <tr><td style="background:#0078D7;padding:30px;text-align:center;border-radius:8px 8px 0 0;">
+              <h1 style="margin:0;color:white;font-size:24px;">📊 KPI Performance Report</h1>
+              <p style="margin:10px 0 20px;color:rgba(255,255,255,0.9);">
+                ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}</p>
+              <table border="0" cellpadding="0" cellspacing="0" align="center"><tr>
+                <td style="padding:0 8px;">
+                  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
+                     style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
+                            text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
+                    📈 View KPI Graphics</a></td>
+                <td style="padding:0 8px;">
+                  <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
+                     style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
+                            text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
+                    📊 View Dashboard</a></td>
+              </tr></table>
+            </td></tr>
 
-    const toleranceDisplay = toleranceTypes.size > 0 ?
-      Array.from(toleranceTypes).join(', ') : 'N/A';
+            <!-- ── Recommendations note ───────────────────────────── -->
+            <tr><td style="padding:20px 30px 0;">
+              <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:14px 18px;">
+                <span style="font-size:14px;color:#5f4200;">
+                  📎 <strong>AI Recommendations PDF is attached</strong> — open it for root-cause analysis,
+                  action plans and improvement roadmaps for each KPI.
+                </span>
+              </div>
+            </td></tr>
+            <!-- ───────────────────────────────────────────────────── -->
 
-    const emailHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KPI Codir Report</title>
-  <style>
-    @media only screen and (max-width: 600px) {
-      .header-buttons {
-        flex-direction: column;
-        gap: 10px !important;
+            <tr><td style="padding:30px;">${chartsHtml}</td></tr>
+            <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
+                            text-align:center;font-size:12px;color:#666;">
+              AVOCarbon KPI System • Generated ${new Date().toLocaleDateString('en-GB')}
+            </td></tr>
+          </table>
+        </td></tr>
+      </table>
+    </body></html>`;
+
+    // ── Generate recommendations PDF to attach ────────────────────────────────
+    let pdfAttachment = null;
+    try {
+      console.log(`📄 Generating recommendations PDF for ${responsible.name}…`);
+      const pdfBuffer = await generateKPIRecommendationsPDFBuffer(pool, responsibleId, reportWeek);
+      if (pdfBuffer) {
+        const weekLabel = reportWeek.replace('2026-Week', 'Week_');
+        pdfAttachment = {
+          filename: `KPI_Recommendations_${responsible.name.replace(/ /g, '_')}_${weekLabel}.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        };
+        console.log(`📄 PDF ready — ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
       }
-      .view-history-btn {
-        width: 100% !important;
-        text-align: center !important;
-      }
+    } catch (pdfErr) {
+      // Don't block the main email if PDF generation fails
+      console.error(`⚠️ Could not generate recommendations PDF for ${responsible.name}:`, pdfErr.message);
     }
-  </style>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background: #f4f6f9; line-height: 1.4;">
-  <!-- Simple container for Outlook -->
-  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: #f4f6f9;">
-    <tr>
-      <td align="center" style="padding: 20px;">
-        <table border="0" cellpadding="0" cellspacing="0" width="100%">
 
-          <!-- ✅ HEADER with buttons inside -->
-          <tr>
-            <td style="background: #0078D7; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
-              <h1 style="margin: 0; color: white; font-size: 24px; font-weight: 600;">📊 KPI Performance Report</h1>
-              <p style="margin: 10px 0 20px 0; color: rgba(255,255,255,0.9); font-size: 16px;">
-                ${reportWeek.replace('2026-Week', 'Week ')} • ${frequencyDisplay} View
-              </p>
-
-              <!-- Buttons inside the header -->
-              <table border="0" cellpadding="0" cellspacing="0" align="center">
-                <tr>
-                  <td style="padding: 0 8px;">
-                    <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
-                      class="view-history-btn"
-                      style="
-                        display: inline-block;
-                        padding: 12px 24px;
-                        background-color: #38bdf8;
-                        color: white;
-                        text-decoration: none;
-                        border-radius: 8px;
-                        font-weight: 600;
-                        font-size: 14px;
-                      ">
-                      📈 View KPI Graphics
-                    </a>
-                  </td>
-                  <td style="padding: 0 8px;">
-                    <!-- ✅ Fixed href -->
-                    <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
-                      class="view-history-btn"
-                      style="
-                        display: inline-block;
-                        padding: 12px 24px;
-                        background-color: #38bdf8;
-                        color: white;
-                        text-decoration: none;
-                        border-radius: 8px;
-                        font-weight: 600;
-                        font-size: 14px;
-                      ">
-                      📊 View Dashboard
-                    </a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Responsible Info -->
-          <tr>
-            <td style="padding: 25px 30px; border-bottom: 1px solid #e9ecef;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td width="33%" align="center" style="padding: 10px;">
-                    <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Responsible</div>
-                    <div style="font-size: 16px; font-weight: 600; color: #333;">${responsible.name}</div>
-                  </td>
-                  <td width="34%" align="center" style="padding: 10px; border-left: 1px solid #e9ecef; border-right: 1px solid #e9ecef;">
-                    <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Group</div>
-                    <div style="font-size: 16px; font-weight: 600; color: #333;">${responsible.plant_name}</div>
-                  </td>
-                  <td width="33%" align="center" style="padding: 10px;">
-                    <div style="font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Department</div>
-                    <div style="font-size: 16px; font-weight: 600; color: #333;">${responsible.department_name}</div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- KPI Summary Info -->
-          ${hasData ? `
-          <tr>
-            <td style="padding: 20px 30px; background: #f8f9fa; border-bottom: 1px solid #e9ecef;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td align="center" style="color: #666; font-size: 12px;">
-                    <p style="margin: 0 0 5px 0;">
-                      <strong>${chartsData ? chartsData.length : 0} KPIs Tracked</strong> | 
-                      Tolerance Monitoring: ${toleranceDisplay} |
-                      Frequency: ${frequencyDisplay}
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          ` : ''}
-
-          <!-- Charts Section -->
-          <tr>
-            <td style="padding: 30px;">
-              ${chartsHtml}
-            </td>
-          </tr>
-
-          <!-- Action Section -->
-          <tr>
-            <td style="padding: 20px 30px; background: #f8f9fa; border-top: 1px solid #e9ecef;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td align="center">
-                    <p style="margin: 15px 0 0 0; color: #666; font-size: 12px; text-align: center;">
-                      Click any button above to access different views of your KPI performance
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="padding: 20px 30px; background: #f8f9fa; border-top: 1px solid #e9ecef; border-radius: 0 0 8px 8px;">
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td align="center" style="color: #666; font-size: 12px;">
-                    <p style="margin: 0 0 5px 0;">
-                      <strong>AVOCarbon KPI System</strong> | Automated Performance Report
-                    </p>
-                    <p style="margin: 0; font-size: 11px; color: #999;">
-                      Generated on ${new Date().toLocaleDateString('en-GB', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })} • 
-                      Contact: <a href="mailto:administration.STS@avocarbon.com" 
-                                style="color: #0078D7; text-decoration: none;">administration.STS@avocarbon.com</a>
-                    </p>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-`;
-    // Send email
+    // ── Send the single combined email ────────────────────────────────────────
     const transporter = createTransporter();
     const mailOptions = {
       from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
       to: responsible.email,
       subject: `📊 KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
-      html: emailHtml
+      html: emailHtml,
+      attachments: pdfAttachment ? [pdfAttachment] : [],
     };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Weekly report sent to ${responsible.email} for week ${reportWeek}`);
-
-    return info;
+    await transporter.sendMail(mailOptions);
+    console.log(`✅ Weekly report + recommendations PDF sent to ${responsible.email}`);
 
   } catch (error) {
-    console.error(`❌ Failed to send weekly report to responsible ID ${responsibleId}:`, error.message);
+    console.error(`❌ Failed to send weekly report to ${responsibleId}:`, error.message);
     throw error;
   }
 };
+// ---------- Cron: weekly KPI submission email ----------
+let cronRunning = false;
+cron.schedule("01 12 * * *", async () => {
+  const lockId = "send_kpi_weekly_email_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (cronRunning) return;
+    cronRunning = true;
+    const now = new Date();
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
+    const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
+    const targetWeek = currentWeek - 1;
+    const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
+    const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
+    const resps = await pool.query(
+      `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
+       JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
+      [forcedWeek]
+    );
+    for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
+    console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
+  } catch (err) {
+    console.error("❌ Scheduled email error:", err.message);
+  } finally {
+    cronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
+// ---------- Cron: weekly reports ----------
+let reportCronRunning = false;
+cron.schedule("52 09 * * *", async () => {
+  const lockId = "weekly_kpi_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (reportCronRunning) return;
+    reportCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const previousWeek = `${year}-Week${weekNumber - 1}`;
+    const resps = await pool.query(
+      `SELECT DISTINCT r.responsible_id, r.email, r.name
+       FROM public."Responsible" r JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
+       WHERE r.email IS NOT NULL AND r.email != ''
+       GROUP BY r.responsible_id, r.email, r.name HAVING COUNT(h.hist_id) > 0`
+    );
+    for (const [index, resp] of resps.rows.entries()) {
+      try {
+        await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`Failed for ${resp.name}:`, err.message);
+      }
+    }
+    console.log(`✅ Weekly reports sent`);
+  } catch (error) {
+    console.error("❌ Report cron error:", error.message);
+  } finally {
+    reportCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
-// ---------- Schedule weekly email to submit kpi----------
-// let cronRunning = false;
-// cron.schedule(
-//   "48 13 * * *",
-//   async () => {
-//     const lockId = "send_kpi_weekly_email_job";
-
-//     // Try to acquire distributed lock
-//     const lock = await acquireJobLock(lockId);
-
-//     if (!lock.acquired) {
-//       return; // Another instance is running it
-//     }
-
-//     try {
-//       if (cronRunning) {
-//         console.log("⏭️ Cron already running locally, skip...");
-//         return;
-//       }
-
-//       cronRunning = true;
-
-//       const now = new Date();
-//       const startOfYear = new Date(now.getFullYear(), 0, 1);
-//       const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
-//       const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-//       const targetWeek = currentWeek - 1;
-//       const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
-//       const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
-
-//       const resps = await pool.query(
-//         `
-//         SELECT DISTINCT r.responsible_id
-//         FROM public."Responsible" r
-//         JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id
-//         WHERE kv.week = $1
-//       `,
-//         [forcedWeek]
-//       );
-
-//       for (let r of resps.rows) {
-//         await sendKPIEmail(r.responsible_id, forcedWeek);
-//       }
-
-//       console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
-
-//     } catch (err) {
-//       console.error("❌ Error sending scheduled emails:", err.message);
-//     } finally {
-//       cronRunning = false;
-
-//       // Always release advisory lock
-//       await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//     }
-//   },
-//   { scheduled: true, timezone: "Africa/Tunis" }
-// );
-
-// ---------- Schedule Weekly Reports  to send it for each responsible  ----------
-// let reportCronRunning = false;
-// cron.schedule(
-//   "00 09 * * *", // Every Monday at 14:49 Africa/Tunis
-//   async () => {
-
-//     const lockId = "weekly_kpi_report_job";
-
-//     // 🔐 Try to acquire distributed lock
-//     const lock = await acquireJobLock(lockId);
-
-//     if (!lock.acquired) {
-//       return; // Another instance is already running it
-//     }
-
-//     try {
-
-//       if (reportCronRunning) {
-//         console.log("⏭️ Weekly report cron already running locally, skipping...");
-//         return;
-//       }
-
-//       reportCronRunning = true;
-
-//       // ===== WEEK CALCULATION =====
-//       const now = new Date();
-//       const year = now.getFullYear();
-
-//       const getWeekNumber = (date) => {
-//         const d = new Date(date);
-//         d.setHours(0, 0, 0, 0);
-//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//         const yearStart = new Date(d.getFullYear(), 0, 1);
-//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//       };
-
-//       const weekNumber = getWeekNumber(now);
-//       const previousWeek = `${year}-Week${weekNumber - 1}`;
-
-//       console.log(`📊 Sending weekly reports for ${previousWeek}...`);
-
-//       // ===== FETCH RESPONSIBLES =====
-//       const resps = await pool.query(`
-//         SELECT DISTINCT r.responsible_id, r.email, r.name
-//         FROM public."Responsible" r
-//         JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
-//         WHERE r.email IS NOT NULL
-//           AND r.email != ''
-//         GROUP BY r.responsible_id, r.email, r.name
-//         HAVING COUNT(h.hist_id) > 0
-//         ORDER BY r.responsible_id
-//       `);
-
-//       const results = [];
-
-//       for (const [index, resp] of resps.rows.entries()) {
-//         try {
-//           await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
-
-//           console.log(
-//             `  [${index + 1}/${resps.rows.length}] Sent to ${resp.name} (${resp.email})`
-//           );
-
-//           results.push({ responsible_id: resp.responsible_id, status: "success" });
-
-//           // Prevent email rate limiting
-//           await new Promise(resolve => setTimeout(resolve, 1500));
-
-//         } catch (err) {
-//           console.error(
-//             `  [${index + 1}/${resps.rows.length}] Failed for ${resp.name}:`,
-//             err.message
-//           );
-
-//           results.push({
-//             responsible_id: resp.responsible_id,
-//             status: "error",
-//             message: err.message
-//           });
-//         }
-//       }
-
-//       const succeeded = results.filter(r => r.status === "success").length;
-
-//       console.log(`✅ Weekly reports completed. Sent: ${succeeded}/${results.length}`);
-
-//     } catch (error) {
-//       console.error("❌ Error in weekly report cron job:", error.message);
-//     } finally {
-
-//       reportCronRunning = false;
-
-//       // 🔓 Always release advisory lock
-//       await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//     }
-//   },
-//   {
-//     scheduled: true,
-//     timezone: "Africa/Tunis"
-//   }
-// );
-
-// ========== UPDATED QUERY TO GET WEEKLY DATA ==========
-
-
-// ========== UPDATED CHART FUNCTION WITH WEEKLY BAR CHART ==========
-// ========== CORRECTED CHART FUNCTION - HANDLES NULL MAX ==========
+// ============================================================
+// createIndividualKPIChart
+// ============================================================
 const createIndividualKPIChart = (kpi) => {
-  const color = getDepartmentColor(kpi.department);
+  const target = kpi.target && kpi.target !== 'None' ? Number(kpi.target) : null;
+  const high_limit = kpi.high_limit && kpi.high_limit !== 'None' ? Number(kpi.high_limit) : null;
+  const low_limit = kpi.low_limit && kpi.low_limit !== 'None' ? Number(kpi.low_limit) : null;
 
-  /* ===================== THRESHOLDS - HANDLE "None" STRING ===================== */
-  const target = kpi.target && kpi.target !== 'None' && kpi.target !== '' && !isNaN(Number(kpi.target)) ? Number(kpi.target) : null;
-  const min = kpi.min && kpi.min !== 'None' && kpi.min !== '' && !isNaN(Number(kpi.min)) ? Number(kpi.min) : null;
-  const max = kpi.max && kpi.max !== 'None' && kpi.max !== '' && !isNaN(Number(kpi.max)) ? Number(kpi.max) : null;
-
-  /* ===================== DATA ===================== */
   const weeklyData = kpi.weeklyData || { weeks: [], values: [] };
   const weeks = weeklyData.weeks.slice(0, 12).reverse();
   const values = weeklyData.values.slice(0, 12).reverse();
 
   if (!values || values.length === 0 || values.every(v => v <= 0)) {
-    return `
-      <table border="0" cellpadding="15" cellspacing="0" width="100%" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px">
-        <tr><td style="text-align:center;color:#999;font-size:14px;">
-          <div style="padding:20px;">
-            <div style="font-size:48px;opacity:0.3;">📊</div>
-            <div>No data available for ${kpi.subtitle || kpi.title}</div>
-          </div>
-        </td></tr>
-      </table>
-    `;
+    return `<table border="0" cellpadding="15" cellspacing="0" width="100%"
+              style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px;">
+      <tr><td style="text-align:center;color:#999;font-size:14px;padding:20px;">
+        <div style="font-size:32px;opacity:0.3;">📊</div>
+        <div>No data for ${kpi.subtitle || kpi.title}</div>
+      </td></tr></table>`;
   }
 
-  console.log(`KPI: ${kpi.subtitle}, Values: ${values.join(', ')}, Target: ${target}, Min: ${min}, Max: ${max}`);
-
-  /* ===================== TREND ===================== */
-  let trendArrow = '→';
-  let trendColor = '#f59e0b';
-
-  if (values.length >= 2) {
-    const diff = values[values.length - 1] - values[values.length - 2];
-    if (diff > 0) {
-      trendArrow = '↗';
-      trendColor = '#16a34a';
-    } else if (diff < 0) {
-      trendArrow = '↘';
-      trendColor = '#dc2626';
-    }
-  }
-
-  /* ===================== STATISTICS ===================== */
-  const avg = values.reduce((a, b) => a + b, 0) / values.length;
-  const currentValue = values[values.length - 1];
-  const formattedAverage = avg.toFixed(kpi.unit === '%' ? 1 : 2);
-
-  /* ===================== SCALE ===================== */
-  const allValues = [...values.filter(val => val > 0)];
-  if (target !== null && target > 0) allValues.push(target);
-  if (min !== null && min > 0) allValues.push(min);
-  if (max !== null && max > 0) allValues.push(max);
-
-  const dataMax = Math.max(...allValues, 1);
-
-  const rawInterval = dataMax / 10;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval || 1)));
-  const normalized = rawInterval / magnitude;
-  let interval;
-  if (normalized <= 1) interval = 1 * magnitude;
-  else if (normalized <= 2) interval = 2 * magnitude;
-  else if (normalized <= 2.5) interval = 2.5 * magnitude;
-  else if (normalized <= 5) interval = 5 * magnitude;
-  else interval = 10 * magnitude;
-
-  const maxValue = Math.ceil(dataMax / interval) * interval + interval;
-
-  const chartHeight = 180;
-  const numSteps = Math.round(maxValue / interval);
-  const segmentHeight = chartHeight / numSteps;
-
-  console.log(`Chart scale - MaxValue: ${maxValue}, Interval: ${interval}, NumSteps: ${numSteps}, SegmentHeight: ${segmentHeight}`);
-
-  /* ===================== CALCULATE SEGMENT POSITIONS ===================== */
-  const getSegmentForValue = (value) => {
-    if (value === null || value === undefined || isNaN(value) || value < 0) return -1;
-    return Math.round((parseFloat(value) / maxValue) * numSteps);
-  };
-
-  const targetSegment = getSegmentForValue(target);
-  const maxSegment = max !== null && max > 0 ? getSegmentForValue(max) : -1;
-  const minSegment = min !== null && min >= 0 ? getSegmentForValue(min) : -1;
-
-
-  // ✅ FIX: Avoid line collisions
-  if (maxSegment !== -1 && maxSegment === targetSegment && max !== target) {
-    maxSegment = Math.min(maxSegment + 1, numSteps + 1);
-  }
-  if (minSegment !== -1 && minSegment === targetSegment) {
-    minSegment = Math.max(1, minSegment - 1);
-  }
-  if (minSegment !== -1 && minSegment === maxSegment) {
-    minSegment = Math.max(1, minSegment - 1);
-  }
-
-  // ✅ FIX: Use values (not data) for bar segment heights
-  const barSegmentHeights = values.map(value => {
-    if (!value || value <= 0 || isNaN(value)) return 0;
-
-    let segmentHeightRatio = (value / maxValue) * numSteps;
-
-    if (segmentHeightRatio < 0.5 && value > 0) {
-      segmentHeightRatio = 0.5;
-    }
-
-    return Math.max(1, Math.round(segmentHeightRatio));
-  });
-
-  console.log(`Bar heights (segments): ${barSegmentHeights.join(', ')}`);
-  console.log(`Reference lines - Target: ${targetSegment}, Max: ${maxSegment}, Min: ${minSegment}`);
-
-  /* ===================== HELPER: FORMAT NUMBERS ===================== */
-  const formatLargeNumber = (num) => {
+  const fmt = (num) => {
     if (num === null || num === undefined || isNaN(num)) return '0';
-    const isWhole = Math.abs(num - Math.round(num)) < 0.0001;
-    if (num >= 1000000) return (num / 1000000).toFixed(isWhole ? 0 : 1) + 'M';
-    if (num >= 1000) return (num / 1000).toFixed(isWhole ? 0 : 1) + 'k';
-    if (isWhole) return Math.round(num).toString();
+    const w = Math.abs(num - Math.round(num)) < 0.0001;
+    if (num >= 1e6) return (num / 1e6).toFixed(w ? 0 : 1) + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(w ? 0 : 1) + 'k';
+    if (w) return Math.round(num).toString();
     if (num < 1) return num.toFixed(2);
-    if (num < 10) return num.toFixed(1);
     return num.toFixed(1);
   };
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  const currentValue = values[values.length - 1];
 
-  /* ===================== GENERATE Y-AXIS ===================== */
-  const generateYAxis = () => {
-    const stepHeight = chartHeight / numSteps;
-    let yAxis = '';
-
-    for (let i = numSteps; i >= 0; i--) {
-      const value = i * interval;
-      const tolerance = interval / 2;
-      let indicators = '';
-
-      if (target !== null && Math.abs(value - target) < tolerance) indicators += ' 🎯';
-      if (max !== null && Math.abs(value - max) < tolerance) indicators += ' 📈';
-      if (min !== null && Math.abs(value - min) < tolerance) indicators += ' 📉';
-
-      yAxis += `
-        <tr>
-          <td height="${stepHeight}" valign="top" align="right" style="font-size: 9px; color: #666; padding-right: 8px; white-space: nowrap;">
-            ${formatLargeNumber(value)}${indicators}
-          </td>
-        </tr>
-      `;
+  // Arrow DIRECTION = value movement (up/down/flat)
+  // Arrow DIRECTION = based on color status (green=up, red=down, orange=flat)
+  const trendColor = (() => {
+    if (low_limit !== null) {
+      if (currentValue < low_limit) return '#dc2626';
+      if (currentValue < low_limit * 1.10) return '#f97316';
     }
-    return yAxis;
-  };
+    if (high_limit !== null && currentValue > high_limit) return '#f97316';
+    return '#22c55e';
+  })();
 
-  /* ===================== GENERATE CHART ===================== */
-  const generateChart = () => {
-    let chart = '';
+  const trendArrow = trendColor === '#22c55e' ? '↗'
+    : trendColor === '#dc2626' ? '↘'
+      : '→';
 
-    for (let seg = numSteps + 1; seg >= 0; seg--) {
-      const hasTarget = seg === targetSegment;
-      const hasMax = max !== null && seg === maxSegment && max !== target;
-      const hasMin = min !== null && seg === minSegment;
-      const hasLine = hasTarget || hasMax || hasMin;
 
-      let lineColor = '';
-      let lineLabel = '';
-      let lineLabelColor = '';
 
-      if (hasTarget) {
-        lineColor = '#16a34a';
-        lineLabelColor = '#16a34a';
-        lineLabel = 'Target';
-      } else if (hasMax) {
-        lineColor = '#f97316';
-        lineLabelColor = '#f97316';
-        lineLabel = 'Max';
-      } else if (hasMin) {
-        lineColor = '#dc2626';
-        lineLabelColor = '#dc2626';
-        lineLabel = 'Min';
+  const pointColors = values.map(v => {
+    if (low_limit !== null) {
+      if (v < low_limit) return '#dc2626';
+      if (v < low_limit * 1.10) return '#f97316';
+    }
+    return '#22c55e';
+  });
+
+  const weekLabels = weeks.map(w =>
+    typeof w === 'string' && w.includes('-Week')
+      ? `W${w.split('-Week')[1]}`
+      : w   // already a month label like "Feb 2026"
+  );
+
+
+  const datasets = [
+    {
+      label: (kpi.subtitle || kpi.title || '').substring(0, 40),
+      data: values,
+      borderColor: '#94a3b8',
+      borderWidth: 2,
+      lineTension: 0,
+      pointBackgroundColor: pointColors,
+      pointBorderColor: '#ffffff',
+      pointBorderWidth: 2,
+      pointRadius: 7,
+      fill: false
+    }
+  ];
+
+  if (high_limit !== null) {
+    datasets.push({
+      label: `High Limit (${fmt(high_limit)})`,
+      data: new Array(values.length).fill(high_limit),
+      borderColor: '#f97316', borderWidth: 2, borderDash: [6, 4],
+      lineTension: 0, pointRadius: 0, fill: false
+    });
+  }
+
+  if (low_limit !== null) {
+    datasets.push({
+      label: `Low Limit (${fmt(low_limit)})`,
+      data: new Array(values.length).fill(low_limit),
+      borderColor: '#dc2626', borderWidth: 2, borderDash: [6, 4],
+      lineTension: 0, pointRadius: 0, fill: false
+    });
+  }
+
+  const chartConfig = {
+    type: 'line',
+    data: { labels: weekLabels, datasets },
+    options: {
+      legend: { display: false },
+      scales: {
+        xAxes: [{ ticks: { fontSize: 10 }, gridLines: { color: 'rgba(0,0,0,0.05)' } }],
+        yAxes: [{ ticks: { fontSize: 10, beginAtZero: false }, gridLines: { color: 'rgba(0,0,0,0.05)' } }]
       }
-
-      chart += '<tr>';
-
-      values.forEach((value, idx) => {
-        const barHeight = barSegmentHeights[idx];
-        const isCurrent = idx === values.length - 1;
-
-        // ✅ FIX: Define barColor inside the forEach scope
-        let barColor;
-        if (target !== null && target > 0) {
-          if (value >= target) {
-            barColor = '#16a34a';         // green - at or above target
-          } else if (value >= target * 0.9) {
-            barColor = '#f59e0b';         // amber - near target
-          } else {
-            barColor = '#dc2626';         // red - below target
-          }
-        } else {
-          barColor = color || '#2196F3';  // fallback to department color
-        }
-
-        let cellContent = '';
-        let cellBorder = '';
-
-        if (hasLine) {
-          cellBorder = `border-top: 2px dashed ${lineColor};`;
-        }
-
-        // Value label row (just above the bar)
-        if (seg === barHeight + 1 && barHeight > 0) {
-          const displayVal = value >= 1000
-            ? formatLargeNumber(value)
-            : value >= 100
-              ? value.toFixed(0)
-              : value.toFixed(kpi.unit === '%' ? 1 : 2);
-
-          cellContent = `
-            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-              <tr>
-                <td align="center" style="font-size: 10px; font-weight: bold; color: #333; padding-bottom: 4px;">
-                  ${displayVal}
-                </td>
-              </tr>
-            </table>
-          `;
-        }
-
-        // Bar body rows
-        if (seg > 0 && seg <= barHeight) {
-          cellContent += `
-            <table border="0" cellpadding="0" cellspacing="0" width="60" align="center">
-              <tr>
-                <td height="${segmentHeight}"
-                    style="background-color: ${barColor};
-                           border: none;
-                           padding: 0;
-                           margin: 0;
-                           font-size: 1px;
-                           line-height: ${segmentHeight}px;">
-                  &nbsp;
-                </td>
-              </tr>
-            </table>
-          `;
-        }
-
-        // X-axis label row
-        if (seg === 0) {
-          const w = weeks[idx]?.replace('2026-Week', '') || (idx + 1);
-          cellContent = `
-            <table border="0" cellpadding="2" cellspacing="0" width="100%">
-              <tr>
-                <td align="center" style="font-size: 10px; color: #666; padding-top: 6px;">W${w}</td>
-              </tr>
-              ${isCurrent
-              ? '<tr><td align="center" style="padding-top:2px;"><div style="width:8px;height:8px;background:#16a34a;border-radius:50%;margin:0 auto;"></div></td></tr>'
-              : ''}
-            </table>
-          `;
-        }
-
-        // Line label on the last column
-        if (hasLine && idx === values.length - 1) {
-          cellContent += `
-            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-              <tr>
-                <td align="right" style="font-size: 9px; color: ${lineLabelColor}; font-weight: 600; white-space: nowrap; padding-left: 8px;">
-                  ${lineLabel}
-                </td>
-              </tr>
-            </table>
-          `;
-        }
-
-        chart += `
-          <td align="center" width="${100 / values.length}%"
-              style="padding: 0 4px;
-                     vertical-align: middle;
-                     ${cellBorder}
-                     height: ${seg >= 0 ? segmentHeight : 'auto'}px;
-                     line-height: 0;
-                     font-size: 0;">
-            ${cellContent}
-          </td>
-        `;
-      });
-
-      chart += '</tr>';
     }
-
-    return chart;
   };
 
-  /* ===================== THRESHOLD BADGES ===================== */
-  const thresholdBadges = `
-    <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px">
+  const chartUrl =
+    `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}` +
+    `&w=320&h=170&bkg=white`;
+
+  const badges = `
+    <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px;">
       <tr>
-        <td align="center" width="33%">
-          ${target !== null && target > 0
+        <td align="center" width="33%">${target !== null
       ? `<div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">🎯 Target: ${target}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🎯 N/A</div>`
-    }
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🎯 N/A</div>`}</td>
+        <td align="center" width="33%">${high_limit !== null
+      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">🔺 High Limit: ${high_limit}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🔺 N/A</div>`}</td>
+        <td align="center" width="33%">${low_limit !== null
+      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">🔻 Low Limit: ${low_limit}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">🔻 N/A</div>`}</td>
+      </tr>
+    </table>`;
+
+  const hasComments = kpi.comments && kpi.comments.length > 0;
+  const hasCA = kpi.correctiveAction && (
+    kpi.correctiveAction.rootCause ||
+    kpi.correctiveAction.implementedSolution ||
+    kpi.correctiveAction.evidence
+  );
+  const hasSide = hasComments || hasCA;
+  const leftWidth = hasSide ? '52%' : '100%';
+  const rightWidth = hasSide ? '48%' : '0%';
+
+  const caStatusBadge = hasCA && kpi.correctiveAction.status ? `
+    <span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;
+                 border-radius:10px;margin-left:6px;
+                 background:${kpi.correctiveAction.status === 'Waiting for validation' ? '#fff3e0' : '#ffebee'};
+                 color:${kpi.correctiveAction.status === 'Waiting for validation' ? '#e65100' : '#c62828'};
+                 border:1px solid ${kpi.correctiveAction.status === 'Waiting for validation' ? '#ffcc80' : '#ef9a9a'};">
+      ${kpi.correctiveAction.status}
+    </span>` : '';
+
+  const rightColumn = hasSide ? `
+    <td width="${rightWidth}" valign="top"
+        style="padding:18px 16px 18px 20px;
+               border-left:3px solid #e2e8f0;
+               background:#f8fafc;
+               border-radius:0 8px 8px 0;">
+
+      ${hasComments ? `
+      <div style="margin-bottom:${hasCA ? '14px' : '0'};">
+        <div style="font-size:11px;font-weight:700;color:#0078D7;
+                    margin-bottom:10px;padding-bottom:6px;
+                    border-bottom:1px solid #bfdbfe;letter-spacing:0.4px;">
+          💬 COMMENTS
+        </div>
+        ${kpi.comments.map(c => `
+          <table border="0" cellpadding="10" cellspacing="0" width="100%"
+                 style="background:#eff6ff;border-radius:8px;
+                        border-left:4px solid #3b82f6;margin-bottom:8px;">
+            <tr><td style="font-size:10px;font-weight:800;color:#1d4ed8;
+                           text-transform:uppercase;letter-spacing:0.5px;
+                           padding-bottom:4px;">
+              ${weekToMonthLabel(c.week || '') || (c.week || '').replace('2026-Week', 'Week ')}
+            </td></tr>
+            <tr><td style="font-size:12px;color:#1e3a5f;line-height:1.5;">${c.text}</td></tr>
+          </table>`).join('')}
+      </div>` : ''}
+
+      ${hasCA ? `
+      <div>
+        <div style="font-size:11px;font-weight:700;color:#c62828;
+                    margin-bottom:10px;padding-bottom:6px;
+                    border-bottom:1px solid #fecaca;letter-spacing:0.4px;
+                    display:flex;align-items:center;">
+          ⚠️ CORRECTIVE ACTION ${caStatusBadge}
+        </div>
+
+        ${kpi.correctiveAction.rootCause ? `
+        <table border="0" cellpadding="0" cellspacing="0" width="100%"
+               style="margin-bottom:8px;">
+          <tr><td style="padding:8px 10px;background:#fff5f5;border-radius:6px;
+                         border-left:3px solid #ef4444;">
+            <div style="font-size:9px;font-weight:800;color:#dc2626;
+                        text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
+              🔍 Root Cause
+            </div>
+            <div style="font-size:11px;color:#374151;line-height:1.5;">
+              ${kpi.correctiveAction.rootCause}
+            </div>
+          </td></tr>
+        </table>` : ''}
+
+        ${kpi.correctiveAction.implementedSolution ? `
+        <table border="0" cellpadding="0" cellspacing="0" width="100%"
+               style="margin-bottom:8px;">
+          <tr><td style="padding:8px 10px;background:#fffbeb;border-radius:6px;
+                         border-left:3px solid #f59e0b;">
+            <div style="font-size:9px;font-weight:800;color:#d97706;
+                        text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
+              ⚡ Implemented Solution
+            </div>
+            <div style="font-size:11px;color:#374151;line-height:1.5;">
+              ${kpi.correctiveAction.implementedSolution}
+            </div>
+          </td></tr>
+        </table>` : ''}
+
+        ${kpi.correctiveAction.evidence ? `
+        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+          <tr><td style="padding:8px 10px;background:#f0f9ff;border-radius:6px;
+                         border-left:3px solid #3b82f6;">
+            <div style="font-size:9px;font-weight:800;color:#2563eb;
+                        text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
+              📊 Evidence
+            </div>
+            <div style="font-size:11px;color:#374151;line-height:1.5;">
+              ${kpi.correctiveAction.evidence}
+            </div>
+          </td></tr>
+        </table>` : ''}
+      </div>` : ''}
+
+    </td>` : '';
+
+  return `
+<table border="0" cellpadding="0" cellspacing="0" width="100%"
+       style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;
+              margin-bottom:15px;box-sizing:border-box;">
+  <tr><td style="padding:18px 20px;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:8px;">
+      <tr>
+        <td style="font-weight:700;font-size:13px;color:#333;padding-right:10px;">
+          ${kpi.subtitle || kpi.title}
         </td>
-        <td align="center" width="33%">
-          ${max !== null && max > 0
-      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">📈 Max: ${max}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📈 N/A</div>`
-    }
+        <td align="center" valign="middle" style="padding:0 8px;">
+          <div style="background:#f1f5f9;border:1px solid #e2e8f0;padding:4px 10px;
+                      border-radius:8px;display:inline-block;">
+            <span style="font-size:11px;color:#475569;font-weight:600;">${kpi.responsible || 'N/A'}</span>
+          </div>
         </td>
-        <td align="center" width="33%">
-          ${min !== null && min > 0
-      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">📉 Min: ${min}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">📉 N/A</div>`
-    }
+        <td align="right" width="36">
+          <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;
+                      font-weight:700;font-size:12px;display:inline-block;">${trendArrow}</div>
         </td>
       </tr>
     </table>
-  `;
-
-  /* ===================== RETURN FINAL HTML ===================== */
-  return `
-<table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px">
-  <tr>
-    <td style="padding:16px">
-      <!-- KPI Header Row -->
-      <table border="0" cellpadding="0" cellspacing="0" width="100%">
-        <tr>
-          <td style="font-weight:700;font-size:14px;color:#333;padding-right:15px;">
-            ${kpi.subtitle || kpi.title}
-          </td>
-          <td align="center" valign="middle" style="padding:0 15px;">
-            <div style="display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;padding:6px 12px;border-radius:8px;">
-              <span style="font-size:11px;color:#475569;font-weight:600;">${kpi.responsible || 'N/A'}</span>
-            </div>
-          </td>
-          <td align="right" width="50" style="padding-left:15px;">
-            <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;font-weight:700;font-size:12px;display:inline-block;">
-              ${trendArrow}
-            </div>
-          </td>
-        </tr>
-      </table>
-
-      <!-- Current Value Badge -->
-      <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin:10px 0">
-        <tr>
-          <td align="center">
-            <span style="background:#8b5cf6;color:white;padding:6px 14px;border-radius:20px;font-size:13px;font-weight:700;display:inline-block;">
-              Current: ${currentValue.toFixed(kpi.unit === '%' ? 1 : 2)} ${kpi.unit || ''} | Avg: ${formattedAverage} ${kpi.unit || ''}
-            </span>
-          </td>
-        </tr>
-      </table>
-
-      <!-- Threshold Badges -->
-      ${thresholdBadges}
-
-      <!-- Chart -->
-      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:15px">
-        <tr>
-          <td width="45" valign="top" style="border-right: 2px solid #e5e7eb; padding-right: 8px;">
-            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="height: ${chartHeight}px;">
-              ${generateYAxis()}
-            </table>
-          </td>
-          <td valign="top" style="padding-left: 8px; border-bottom: 2px solid #e5e7eb;">
-            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-              ${generateChart()}
-            </table>
-          </td>
-        </tr>
-      </table>
-
-      <!-- Legend -->
-      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #f0f0f0;">
-        <tr><td align="center">
-          <table border="0" cellpadding="6" cellspacing="0">
-            <tr>
-              ${target !== null ? `
-                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
-                  <td width="20" height="10" style="border-top: 2px dashed #16a34a;"></td>
-                  <td style="font-size: 10px; color: #666;">Target</td>
-                </tr></table></td>
-              ` : ''}
-              ${max !== null ? `
-                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
-                  <td width="20" height="10" style="border-top: 2px dashed #f97316;"></td>
-                  <td style="font-size: 10px; color: #666;">Max</td>
-                </tr></table></td>
-              ` : ''}
-              ${min !== null ? `
-                <td><table border="0" cellpadding="0" cellspacing="4"><tr>
-                  <td width="20" height="10" style="border-top: 2px dashed #dc2626;"></td>
-                  <td style="font-size: 10px; color: #666;">Min</td>
-                </tr></table></td>
-              ` : ''}
-            </tr>
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:14px;">
+      <tr><td align="center">
+        <span style="background:#8b5cf6;color:white;padding:5px 12px;border-radius:20px;
+                     font-size:12px;font-weight:700;display:inline-block;">
+          Current: ${currentValue.toFixed(kpi.unit === '%' ? 1 : 2)} ${kpi.unit || ''}
+          &nbsp;|&nbsp;
+          Avg: ${avg.toFixed(kpi.unit === '%' ? 1 : 2)} ${kpi.unit || ''}
+        </span>
+      </td></tr>
+    </table>
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+      <tr>
+        <td width="${leftWidth}" valign="top"
+            style="padding-right:${hasSide ? '20px' : '0'};">
+          ${badges}
+          <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:10px;">
+            <tr><td align="center">
+              <img src="${chartUrl}" width="320" height="170" alt="KPI trend chart"
+                   style="display:block;width:100%;max-width:320px;
+                          border:1px solid #f0f0f0;border-radius:6px;" />
+            </td></tr>
           </table>
-        </td></tr>
-      </table>
-    </td>
-  </tr>
-</table>
-`;
+          <table border="0" cellpadding="3" cellspacing="0" width="100%"
+                 style="margin-top:8px;border-top:1px solid #f0f0f0;">
+            <tr><td align="center">
+              <table border="0" cellpadding="0" cellspacing="6"><tr>
+                <td><table border="0" cellpadding="0" cellspacing="3"><tr>
+                  <td width="10" height="10" style="background:#22c55e;border-radius:50%;font-size:0;">&nbsp;</td>
+                  <td style="font-size:10px;color:#666;">Good direction</td>
+                </tr></table></td>
+                <td><table border="0" cellpadding="0" cellspacing="3"><tr>
+                  <td width="10" height="10" style="background:#f97316;border-radius:50%;font-size:0;">&nbsp;</td>
+                  <td style="font-size:10px;color:#666;">Near low</td>
+                </tr></table></td>
+                <td><table border="0" cellpadding="0" cellspacing="3"><tr>
+                  <td width="10" height="10" style="background:#dc2626;border-radius:50%;font-size:0;">&nbsp;</td>
+                  <td style="font-size:10px;color:#666;">Below low</td>
+                </tr></table></td>
+              </tr></table>
+            </td></tr>
+          </table>
+        </td>
+        ${rightColumn}
+      </tr>
+    </table>
+  </td></tr>
+</table>`;
 };
-// ========== UPDATED HTML GENERATION ==========
+
+// ============================================================
+// generateManagerReportHtml
+// ============================================================
 const generateManagerReportHtml = (reportData) => {
   const { plant, week, kpisByDepartment, stats } = reportData;
-
-  // Create KPI sections by department
   let kpiSections = '';
-
-  // Get departments sorted alphabetically
   const departments = Object.keys(kpisByDepartment).sort();
-
   departments.forEach(department => {
     const kpis = kpisByDepartment[department];
     if (kpis.length === 0) return;
-
     const color = getDepartmentColor(department);
-
+    function createKPIRows(kpis) {
+      let rows = '';
+      for (let i = 0; i < kpis.length; i += 2) {
+        const rowKPIs = kpis.slice(i, i + 2);
+        rows += '<tr>';
+        rowKPIs.forEach(kpi => { rows += `<td width="50%" valign="top" style="padding:12px;">${createIndividualKPIChart(kpi)}</td>`; });
+        const empty = 2 - rowKPIs.length;
+        for (let j = 0; j < empty; j++) rows += '<td width="50%" style="padding:12px;"></td>';
+        rows += '</tr>';
+      }
+      return rows;
+    }
     kpiSections += `
-      <!-- Department Section -->
-      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 40px;">
-        <tr>
-          <td>
-            <!-- Department Header -->
-            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="
-              margin-bottom: 20px;
-              padding-bottom: 10px;
-              border-bottom: 3px solid ${color};
-            ">
-              <tr>
-                <td style="padding: 5px 0;">
-                  <table border="0" cellpadding="0" cellspacing="0">
-                    <tr>
-                      <td style="padding: 5px 0;">
-                        <table border="0" cellpadding="0" cellspacing="0">
-                          <tr>
-                            <td style="
-                              width: 21px;
-                              height: 14px;
-                              background: ${color};
-                              border-radius: 50%;
-                            "></td>
-                            <td width="10" style="width: 10px;"></td>
-                            <td style="
-                              font-size: 20px;
-                              font-weight: 700;
-                              color: #2c3e50;
-                              text-transform: uppercase;
-                              letter-spacing: 0.5px;
-                              padding-right: 10px;
-                            ">${department}</td>
-                            <td style="
-                              font-size: 12px;
-                              color: #6c757d;
-                              background: #f8f9fa;
-                              padding: 5px 14px;
-                              border-radius: 12px;
-                              font-weight: 600;
-                            ">${kpis.length} KPIs</td>
-                          </tr>
-                        </table>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-            </table>
-            
-            <!-- KPI Cards Grid: 3 per row using table -->
-            <table border="0" cellpadding="10" cellspacing="0" width="100%">
-              ${createKPIRows(kpis)}
-            </table>
-          </td>
-        </tr>
-      </table>
-    `;
+      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:40px;">
+        <tr><td>
+          <table border="0" cellpadding="0" cellspacing="0" width="100%"
+                 style="margin-bottom:20px;padding-bottom:10px;border-bottom:3px solid ${color};">
+            <tr><td style="padding:5px 0;">
+              <span style="font-size:20px;font-weight:700;color:#2c3e50;
+                           text-transform:uppercase;">${department}</span>
+              <span style="font-size:12px;color:#6c757d;background:#f8f9fa;
+                           padding:5px 14px;border-radius:12px;margin-left:10px;">${kpis.length} KPIs</span>
+            </td></tr>
+          </table>
+          <table border="0" cellpadding="10" cellspacing="0" width="100%">
+            ${createKPIRows(kpis)}
+          </table>
+        </td></tr>
+      </table>`;
   });
-
-  // Helper function to create KPI rows with 3 cards each
-  function createKPIRows(kpis) {
-    let rows = '';
-    for (let i = 0; i < kpis.length; i += 3) {
-      const rowKPIs = kpis.slice(i, i + 3);
-      rows += '<tr>';
-
-      rowKPIs.forEach(kpi => {
-        rows += `<td width="33%" valign="top" style="padding: 10px;">${createIndividualKPIChart(kpi)}</td>`;
-      });
-
-      // Fill empty cells if less than 3 KPIs in row
-      const emptyCells = 3 - rowKPIs.length;
-      for (let j = 0; j < emptyCells; j++) {
-        rows += '<td width="33%" style="padding: 10px;"></td>';
-      }
-
-      rows += '</tr>';
-    }
-    return rows;
-  }
-
-  // Return complete HTML
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Plant Weekly KPI Dashboard - ${plant.plant_name}</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-    
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: 'Inter', Arial, sans-serif;
-      background: #f8f9fa;
-    }
-    
-    /* Responsive grid for smaller screens */
-    @media (max-width: 1200px) {
-      .kpi-grid {
-        grid-template-columns: repeat(2, 1fr) !important;
-      }
-    }
-    
-    @media (max-width: 768px) {
-      .kpi-grid {
-        grid-template-columns: 1fr !important;
-      }
-    }
-  </style>
-</head>
+  return `<!DOCTYPE html><html>
+<head><meta charset="utf-8"><title>Plant Weekly KPI Dashboard</title>
+<style>body{margin:0;padding:0;font-family:Arial,sans-serif;background:#f8f9fa;}</style></head>
 <body>
-  <div style="padding: 30px 20px; max-width: 1400px; margin: 0 auto;">
-    <!-- Header -->
-    <div style="
-      background: white;
-      border-radius: 12px;
-      padding: 30px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-      margin-bottom: 30px;
-    ">
-      <div style="
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 20px;
-      ">
-        <div>
-          <h1 style="
-            margin: 0 0 8px 0;
-            font-size: 28px;
-            font-weight: 800;
-            color: #2c3e50;
-            letter-spacing: -0.5px;
-          ">
-            📊 CEO  KPI  KODIR DASHBOARD
-          </h1>
-          <div style="font-size: 14px; color: #6c757d;">
-            <strong style="color: #495057;">${plant.plant_name}</strong> • 
-            Week: <strong style="color: #495057;">${week.replace('2026-Week', 'W')}</strong> • 
-            Manager: <strong style="color: #495057;">${plant.manager || 'N/A'}</strong>
-          </div>
-        </div>
-        
-        <div style="text-align: right;">
-          <div style="font-size: 13px; color: #6c757d; margin-bottom: 5px;">Updated</div>
-          <div style="font-size: 14px; font-weight: 600; color: #495057;">
-            ${new Date().toLocaleDateString('en-GB', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  })}
-          </div>
-        </div>
-      </div>
-      
-      <!-- Summary Stats -->
-      <div style="
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 15px;
-        background: #f8f9fa;
-        padding: 20px;
-        border-radius: 8px;
-      ">
-        <div style="text-align: center;">
-          <div style="
-            font-size: 28px;
-            font-weight: 800;
-            color: #0078D7;
-            margin-bottom: 5px;
-          ">${stats.totalDepartments}</div>
-          <div style="font-size: 12px; color: #6c757d; font-weight: 500;">Departments</div>
-        </div>
-        
-        <div style="text-align: center;">
-          <div style="
-            font-size: 28px;
-            font-weight: 800;
-            color: #28a745;
-            margin-bottom: 5px;
-          ">${stats.totalKPIs}</div>
-          <div style="font-size: 12px; color: #6c757d; font-weight: 500;">Total KPIs</div>
-        </div>
-        
-        <div style="text-align: center;">
-          <div style="
-            font-size: 28px;
-            font-weight: 800;
-            color: #6f42c1;
-            margin-bottom: 5px;
-          ">${week.replace('2026-Week', 'W')}</div>
-          <div style="font-size: 12px; color: #6c757d; font-weight: 500;">Current Week</div>
-        </div>
+  <div style="padding:30px 20px;max-width:1400px;margin:0 auto;">
+    <div style="background:white;border-radius:12px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:30px;">
+      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">📊 CEO KPI CODIR DASHBOARD</h1>
+      <div style="font-size:14px;color:#6c757d;">
+        <strong>${plant.plant_name}</strong> • Week: <strong>${week.replace('2026-Week', 'W')}</strong>
+        • Manager: <strong>${plant.manager || 'N/A'}</strong></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;
+                  background:#f8f9fa;padding:20px;border-radius:8px;margin-top:20px;">
+        <div style="text-align:center;">
+          <div style="font-size:28px;font-weight:800;color:#0078D7;">${stats.totalDepartments}</div>
+          <div style="font-size:12px;color:#6c757d;">Departments</div></div>
+        <div style="text-align:center;">
+          <div style="font-size:28px;font-weight:800;color:#28a745;">${stats.totalKPIs}</div>
+          <div style="font-size:12px;color:#6c757d;">Total KPIs</div></div>
+        <div style="text-align:center;">
+          <div style="font-size:28px;font-weight:800;color:#6f42c1;">${week.replace('2026-Week', 'W')}</div>
+          <div style="font-size:12px;color:#6c757d;">Current Week</div></div>
       </div>
     </div>
-    
-    <!-- KPI Sections by Department -->
-    <div style="
-      background: white;
-      padding: 30px;
-      border-radius: 12px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-    ">
-      ${kpiSections || '<div style="text-align: center; padding: 60px; color: #6c757d;">No KPI data available</div>'}
+    <div style="background:white;padding:30px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+      ${kpiSections || '<div style="text-align:center;padding:60px;color:#6c757d;">No KPI data available</div>'}
     </div>
-    
-    <!-- Footer -->
-    <div style="
-      background: #2c3e50;
-      color: white;
-      padding: 25px;
-      border-radius: 12px;
-      text-align: center;
-      margin-top: 30px;
-    ">
-      <div style="margin-bottom: 20px;">
-        <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">
-          AVOCarbon Plant Analytics
-        </div>
-        <div style="font-size: 13px; opacity: 0.8;">
-          Weekly KPI Performance Monitoring
-        </div>
-      </div>
-      
-      <div style="
-        display: flex;
-        justify-content: center;
-        gap: 30px;
-        flex-wrap: wrap;
-        border-top: 1px solid rgba(255,255,255,0.1);
-        padding-top: 20px;
-      ">
-        <div>
-          <div style="font-size: 11px; opacity: 0.6; margin-bottom: 5px;">Contact</div>
-          <div style="font-size: 13px;">
-            <a href="mailto:${plant.manager_email}" 
-               style="color: #4facfe; text-decoration: none;">${plant.manager_email}</a>
-          </div>
-        </div>
-        
-        <div>
-          <div style="font-size: 11px; opacity: 0.6; margin-bottom: 5px;">Week</div>
-          <div style="font-size: 13px; font-weight: 500;">
-            ${week.replace('2026-Week', 'Week ')}
-          </div>
-        </div>
-      </div>
+    <div style="background:#2c3e50;color:white;padding:25px;border-radius:12px;text-align:center;margin-top:30px;">
+      <div style="font-size:16px;font-weight:600;margin-bottom:10px;">AVOCarbon Plant Analytics</div>
+      <div style="font-size:13px;opacity:0.8;">Weekly KPI Performance Monitoring</div>
     </div>
   </div>
-</body>
-</html>
-  `;
+</body></html>`;
 };
 
-// Helper function for department colors (unchanged)
 const getDepartmentColor = (departmentName) => {
-  // First, handle the extracted department names
-  if (departmentName.includes('Sales')) return '#667eea'; // Blue
-  if (departmentName.includes('Production')) return '#4facfe'; // Light Blue
-  if (departmentName.includes('Quality')) return '#43e97b'; // Green
-  if (departmentName.includes('VOH')) return '#909d6fff'; // Pink
-  if (departmentName.includes('Engineering')) return '#36a07bff'; // Pink
-  if (departmentName.includes('Human resources')) return '#78d69aff'; // Pink
-  if (departmentName.includes('Stocks')) return '#6a772aff'; // Pink
-  if (departmentName.includes('AR/AP')) return '#96ce25ff'; // Pink
-  if (departmentName.includes('Cash')) return '#54591bff'; // Pink
-  // Fallback to original mapping
+  if (!departmentName) return '#6c757d';
+  if (departmentName.includes('Sales')) return '#667eea';
+  if (departmentName.includes('Production')) return '#4facfe';
+  if (departmentName.includes('Quality')) return '#43e97b';
+  if (departmentName.includes('VOH')) return '#909d6f';
+  if (departmentName.includes('Engineering')) return '#36a07b';
+  if (departmentName.includes('Human resources')) return '#78d69a';
+  if (departmentName.includes('Stocks')) return '#6a772a';
+  if (departmentName.includes('AR/AP')) return '#96ce25';
+  if (departmentName.includes('Cash')) return '#54591b';
   const colorMap = {
-    'Production': '#667eea',
-    'Quality': '#f093fb',
-    'Maintenance': '#4facfe',
-    'Safety': '#43e97b',
-    'Operations': '#fa709a',
-    'Engineering': '#30cfd0',
-    'Supply-chain': '#f6d365',
-    'Administration': '#a8edea',
-    'Finance': '#f093fb',
-    'HR': '#4facfe',
-    'IT': '#667eea',
-    'Sales': '#43e97b',
-    'Other': '#6c757d'
+    'Production': '#667eea', 'Quality': '#f093fb', 'Maintenance': '#4facfe',
+    'Safety': '#43e97b', 'Operations': '#fa709a', 'Engineering': '#30cfd0',
+    'Supply-chain': '#f6d365', 'Administration': '#a8edea', 'Finance': '#f093fb',
+    'HR': '#4facfe', 'IT': '#667eea', 'Sales': '#43e97b', 'Other': '#6c757d'
   };
-
   return colorMap[departmentName] || '#6c757d';
 };
-// ---------- Modern KPI Trends Dashboard with Charts ----------
+
+// ---------- KPI Trends page ----------
 app.get("/kpi-trends", async (req, res) => {
   try {
     const { responsible_id } = req.query;
-
-    // 1️⃣ Fetch responsible info
     const resResp = await pool.query(
-      `
-      SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-             p.name AS plant_name, d.name AS department_name
-      FROM public."Responsible" r
-      JOIN public."Plant" p ON r.plant_id = p.plant_id
-      JOIN public."Department" d ON r.department_id = d.department_id
-      WHERE r.responsible_id = $1
-      `,
-      [responsible_id]
-    );
-
+      `SELECT r.*, p.name AS plant_name, d.name AS department_name
+       FROM public."Responsible" r JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`, [responsible_id]);
     const responsible = resResp.rows[0];
     if (!responsible) throw new Error("Responsible not found");
 
-    // 2️⃣ Fetch ALL historical KPI data with target information
     const historyRes = await pool.query(
-      `
-      WITH KPIHistory AS (
-        SELECT 
-          h.kpi_id,
-          h.week,
-          h.new_value,
-          h.updated_at,
-          k.subject,
-          k.indicator_sub_title,
-          k.unit,
-          k.target,
-          k.min,
-          k.max,
-          k.tolerance_type,
-          k.up_tolerance,
-          k.low_tolerance,
-          k.frequency,
-          k.definition,
-          k.calculation_on,
-          ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
-        FROM public.kpi_values_hist26 h
-        JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-        WHERE h.responsible_id = $1
-          AND h.new_value IS NOT NULL
-          AND h.new_value != ''
-          AND h.new_value ~ '^[0-9.]+$'
-      )
-      SELECT * FROM KPIHistory WHERE rn = 1
-      ORDER BY kpi_id, 
-               CAST(SPLIT_PART(week, 'Week', 2) AS INTEGER)
-      `,
+      `WITH KPIHistory AS (
+         SELECT h.kpi_id, h.week, h.new_value, h.updated_at, h.comment,
+                k.subject, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
+                k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency, k.definition,
+                k.calculation_on, k.high_limit, k.low_limit,
+                ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
+         FROM public.kpi_values_hist26 h JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+         WHERE h.responsible_id = $1
+           AND h.new_value IS NOT NULL AND h.new_value != ''
+           AND h.new_value ~ '^[0-9.]+$'
+       )
+       SELECT * FROM KPIHistory WHERE rn = 1
+       ORDER BY kpi_id, CAST(SPLIT_PART(week, 'Week', 2) AS INTEGER)`,
       [responsible_id]
     );
 
     if (!historyRes.rows.length) {
-      return res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <title>KPI Trends - ${responsible.name}</title>
-          <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-            
-            * {
-              margin: 0;
-              padding: 0;
-              box-sizing: border-box;
-            }
-            
-            body {
-              font-family: 'Inter', sans-serif;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              min-height: 100vh;
-              display: flex;
-              justify-content: center;
-              align-items: center;
-              padding: 20px;
-            }
-            
-            .empty-container {
-              background: rgba(255, 255, 255, 0.95);
-              backdrop-filter: blur(10px);
-              border-radius: 24px;
-              padding: 60px 40px;
-              text-align: center;
-              max-width: 500px;
-              box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-              border: 1px solid rgba(255, 255, 255, 0.2);
-            }
-            
-            .empty-icon {
-              font-size: 72px;
-              margin-bottom: 30px;
-              color: #667eea;
-              animation: pulse 2s infinite;
-            }
-            
-            @keyframes pulse {
-              0%, 100% { transform: scale(1); }
-              50% { transform: scale(1.05); }
-            }
-            
-            h1 {
-              color: #2c3e50;
-              font-size: 28px;
-              font-weight: 700;
-              margin-bottom: 15px;
-              background: linear-gradient(135deg, #667eea, #764ba2);
-              -webkit-background-clip: text;
-              -webkit-text-fill-color: transparent;
-            }
-            
-            p {
-              color: #666;
-              font-size: 16px;
-              line-height: 1.6;
-              margin-bottom: 30px;
-            }
-            
-            .btn {
-              display: inline-flex;
-              align-items: center;
-              gap: 10px;
-              padding: 15px 30px;
-              background: linear-gradient(135deg, #667eea, #764ba2);
-              color: white;
-              text-decoration: none;
-              border-radius: 12px;
-              font-weight: 600;
-              font-size: 16px;
-              transition: all 0.3s ease;
-              box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
-            }
-            
-            .btn:hover {
-              transform: translateY(-3px);
-              box-shadow: 0 15px 30px rgba(102, 126, 234, 0.4);
-            }
-          </style>
-        </head>
-        <body>
-          <div class="empty-container">
-            <div class="empty-icon">📊</div>
-            <h1>No KPI Trends Available</h1>
-            <p>Start filling your KPI forms to see beautiful trend visualizations and performance charts.</p>
-            <a href="/form?responsible_id=${responsible_id}&week=${getCurrentWeek()}" class="btn">
-              ✏️ Start Filling KPIs
-            </a>
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+        <body style="font-family:'Inter',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);
+          min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px;margin:0;">
+          <div style="background:rgba(255,255,255,0.95);border-radius:24px;padding:60px 40px;
+                      text-align:center;max-width:500px;">
+            <div style="font-size:72px;margin-bottom:30px;">📊</div>
+            <h1 style="color:#2c3e50;font-size:28px;">No KPI Trends Available</h1>
+            <p style="color:#666;font-size:16px;">Start filling KPI forms to see trend charts.</p>
+            <a href="/form?responsible_id=${responsible_id}&week=${getCurrentWeek()}"
+               style="display:inline-block;margin-top:20px;padding:15px 30px;
+                      background:linear-gradient(135deg,#667eea,#764ba2);color:white;
+                      text-decoration:none;border-radius:12px;font-weight:600;">
+              ✏️ Start Filling KPIs</a>
           </div>
-        </body>
-        </html>
-      `);
+        </body></html>`);
     }
 
-    // 3️⃣ Process data for charts
     const kpiData = processKPIChartData(historyRes.rows);
-
-    // 4️⃣ Generate HTML with beautiful charts
     const html = generateTrendsDashboardHTML(responsible, kpiData);
-
     res.send(html);
-
   } catch (err) {
     console.error("KPI Trends error:", err);
     res.status(500).send(createErrorHTML(err.message));
   }
 });
 
-// Helper function to process KPI data for charts
 function processKPIChartData(rows) {
   const kpis = new Map();
   const weeksSet = new Set();
 
-  // Group by KPI
   rows.forEach(row => {
     const kpiId = row.kpi_id;
     if (!kpis.has(kpiId)) {
       kpis.set(kpiId, {
-        id: kpiId,
-        subject: row.subject,
-        subtitle: row.indicator_sub_title,
+        id: kpiId, subject: row.subject, subtitle: row.indicator_sub_title,
         unit: row.unit || '',
         target: row.target && row.target !== 'None' ? parseFloat(row.target) : null,
         min: row.min && row.min !== 'None' ? parseFloat(row.min) : null,
         max: row.max && row.max !== 'None' ? parseFloat(row.max) : null,
-        definition: row.definition,
-        tolerance_type: row.tolerance_type,
-        up_tolerance: row.up_tolerance,
-        low_tolerance: row.low_tolerance,
-        values: [],
-        weeks: [],
-        colors: []
+        high_limit: row.high_limit && row.high_limit !== 'None' ? parseFloat(row.high_limit) : null,
+        low_limit: row.low_limit && row.low_limit !== 'None' ? parseFloat(row.low_limit) : null,
+        definition: row.definition, tolerance_type: row.tolerance_type,
+        up_tolerance: row.up_tolerance, low_tolerance: row.low_tolerance,
+        values: [], weeks: [], colors: [], comments: []
       });
     }
-
     const value = parseFloat(row.new_value);
-    kpis.get(kpiId).values.push(value);
-    kpis.get(kpiId).weeks.push(row.week);
-
-    // Determine color based on value
     const kpi = kpis.get(kpiId);
-    let color = '#667eea'; // Default blue
-
-    if (kpi.target !== null) {
-      const achievement = (value / kpi.target) * 100;
-      if (achievement >= 100) {
-        color = '#10b981'; // Green for above target
-      } else if (achievement >= 90) {
-        color = '#f59e0b'; // Amber for near target
-      } else {
-        color = '#ef4444'; // Red for below target
-      }
-    }
-
-    kpis.get(kpiId).colors.push(color);
+    kpi.values.push(value);
+    kpi.weeks.push(row.week);
+    if (row.comment && row.comment.trim()) kpi.comments.push({ week: row.week, text: row.comment, date: row.updated_at });
+    kpi.colors.push(getDotColor(value, kpi.low_limit, kpi.high_limit));
     weeksSet.add(row.week);
   });
 
-  // Sort weeks
   const allWeeks = Array.from(weeksSet).sort((a, b) => {
-    const [yearA, weekA] = a.includes('Week')
-      ? [parseInt(a.split('-Week')[0]), parseInt(a.split('-Week')[1])]
-      : [0, parseInt(a.replace('Week', ''))];
-
-    const [yearB, weekB] = b.includes('Week')
-      ? [parseInt(b.split('-Week')[0]), parseInt(b.split('-Week')[1])]
-      : [0, parseInt(b.replace('Week', ''))];
-
-    if (yearA !== yearB) return yearA - yearB;
-    return weekA - weekB;
+    const [ya, wa] = a.includes('Week') ? [parseInt(a.split('-Week')[0]), parseInt(a.split('-Week')[1])] : [0, parseInt(a.replace('Week', ''))];
+    const [yb, wb] = b.includes('Week') ? [parseInt(b.split('-Week')[0]), parseInt(b.split('-Week')[1])] : [0, parseInt(b.replace('Week', ''))];
+    return ya !== yb ? ya - yb : wa - wb;
   });
 
-  // Calculate statistics for each KPI
-  for (const [kpiId, kpi] of kpis) {
-    const values = kpi.values;
-
-    // Basic statistics
-    kpi.average = values.reduce((a, b) => a + b, 0) / values.length;
-    kpi.maxValue = Math.max(...values);
-    kpi.minValue = Math.min(...values);
-
-    // Trend calculation
-    if (values.length >= 2) {
-      const current = values[values.length - 1];
-      const previous = values[values.length - 2];
-      kpi.trend = ((current - previous) / previous) * 100;
-      kpi.trendIcon = current > previous ? '↗' : current < previous ? '↘' : '→';
-      kpi.trendColor = current > previous ? '#10b981' : current < previous ? '#ef4444' : '#6b7280';
-    } else {
-      kpi.trend = 0;
-      kpi.trendIcon = '→';
-      kpi.trendColor = '#6b7280';
-    }
-
-    // target achievement
-    if (kpi.target !== null) {
-      const latestValue = values[values.length - 1];
-      kpi.achievement = (latestValue / kpi.target) * 100;
-      kpi.achievementColor = kpi.achievement >= 100 ? '#10b981' :
-        kpi.achievement >= 90 ? '#f59e0b' : '#ef4444';
+  for (const [, kpi] of kpis) {
+    const vals = kpi.values.filter(v => !isNaN(v) && v > 0);
+    if (vals.length === 0) continue;
+    kpi.average = vals.reduce((a, b) => a + b, 0) / vals.length;
+    kpi.maxValue = Math.max(...vals);
+    kpi.minValue = Math.min(...vals);
+    if (vals.length >= 2) {
+      const cur = vals[vals.length - 1], prev = vals[vals.length - 2];
+      kpi.trend = ((cur - prev) / prev) * 100;
+      kpi.trendIcon = cur > prev ? '↗' : cur < prev ? '↘' : '→';
+      kpi.trendColor = cur > prev ? '#10b981' : cur < prev ? '#ef4444' : '#6b7280';
+    } else { kpi.trend = 0; kpi.trendIcon = '→'; kpi.trendColor = '#6b7280'; }
+    if (kpi.low_limit !== null) {
+      const latest = vals[vals.length - 1];
+      kpi.achievementVsLimit = latest >= kpi.low_limit;
+      kpi.achievementColor = getDotColor(latest, kpi.low_limit, kpi.high_limit);
     }
   }
 
-  return {
-    kpis: Array.from(kpis.values()),
-    allWeeks: allWeeks,
-    totalKPIs: kpis.size,
-    totalWeeks: allWeeks.length
-  };
+  return { kpis: Array.from(kpis.values()), allWeeks, totalKPIs: kpis.size, totalWeeks: allWeeks.length };
 }
 
-// Generate beautiful HTML dashboard
 function generateTrendsDashboardHTML(responsible, kpiData) {
   const { kpis, allWeeks, totalKPIs, totalWeeks } = kpiData;
-
-  return `
-<!DOCTYPE html>
-<html>
+  return `<!DOCTYPE html><html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KPI Trends Dashboard - ${responsible.name}</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>KPI Trends - ${responsible.name}</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    
-    :root {
-      --primary: #667eea;
-      --primary-dark: #5a67d8;
-      --secondary: #764ba2;
-      --success: #10b981;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --gray-50: #f9fafb;
-      --gray-100: #f3f4f6;
-      --gray-200: #e5e7eb;
-      --gray-300: #d1d5db;
-      --gray-400: #9ca3af;
-      --gray-500: #6b7280;
-      --gray-600: #4b5563;
-      --gray-700: #374151;
-      --gray-800: #1f2937;
-      --gray-900: #111827;
-    }
-    
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    
-    body {
-      font-family: 'Inter', sans-serif;
-      background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
-      color: var(--gray-800);
-      min-height: 100vh;
-      line-height: 1.6;
-    }
-    
-    /* Container */
-    .container {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-    
-    /* Header */
-    .dashboard-header {
-      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-      color: white;
-      border-radius: 24px;
-      padding: 40px;
-      margin-bottom: 30px;
-      box-shadow: 0 20px 40px rgba(102, 126, 234, 0.15);
-      position: relative;
-      overflow: hidden;
-    }
-    
-    .dashboard-header::before {
-      content: '';
-      position: absolute;
-      top: -50%;
-      right: -50%;
-      width: 300px;
-      height: 300px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 50%;
-    }
-    
-    .header-content {
-      position: relative;
-      z-index: 2;
-    }
-    
-    .header-content h1 {
-      font-size: 36px;
-      font-weight: 800;
-      margin-bottom: 10px;
-      display: flex;
-      align-items: center;
-      gap: 15px;
-    }
-    
-    .header-content .subtitle {
-      font-size: 18px;
-      opacity: 0.9;
-      margin-bottom: 25px;
-    }
-    
-    /* Stats Grid */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 20px;
-      margin-top: 30px;
-    }
-    
-    .stat-card {
-      background: rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(10px);
-      border-radius: 16px;
-      padding: 20px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-    
-    .stat-value {
-      font-size: 32px;
-      font-weight: 700;
-      margin-bottom: 5px;
-    }
-    
-    .stat-label {
-      font-size: 14px;
-      opacity: 0.8;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    /* KPI Grid */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
-      gap: 30px;
-      margin-bottom: 40px;
-    }
-    
-    @media (max-width: 1300px) {
-      .kpi-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-    
-    /* KPI Card */
-    .kpi-card {
-      background: white;
-      border-radius: 20px;
-      padding: 30px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
-      transition: all 0.3s ease;
-      border: 1px solid var(--gray-200);
-    }
-    
-    .kpi-card:hover {
-      transform: translateY(-5px);
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-    }
-    
-    .kpi-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 25px;
-    }
-    
-    .kpi-title-section h3 {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--gray-900);
-      margin-bottom: 5px;
-    }
-    
-    .kpi-subtitle {
-      font-size: 14px;
-      color: var(--gray-500);
-      margin-bottom: 10px;
-    }
-    
-    .kpi-meta {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    
-    .meta-badge {
-      padding: 6px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 600;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-    }
-    
-    .badge-unit {
-      background: var(--gray-100);
-      color: var(--gray-700);
-    }
-    
-    .badge-trend {
-      background: var(--gray-100);
-      color: var(--gray-700);
-    }
-    
-    /* Chart Container */
-    .chart-container {
-      height: 300px;
-      margin: 25px 0;
-      position: relative;
-    }
-    
-    /* Stats Row */
-    .stats-row {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 15px;
-      margin-top: 25px;
-    }
-    
-    .stat-box {
-      background: var(--gray-50);
-      border-radius: 12px;
-      padding: 15px;
-      text-align: center;
-      border: 1px solid var(--gray-200);
-    }
-    
-    .stat-box .label {
-      font-size: 12px;
-      color: var(--gray-500);
-      margin-bottom: 5px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    
-    .stat-box .value {
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--gray-900);
-    }
-    
-    .stat-box.target .value {
-      color: var(--success);
-    }
-    
-    .stat-box.average .value {
-      color: var(--primary);
-    }
-    
-    .stat-box.trend .value {
-      color: var(--warning);
-    }
-    
-    .stat-box.achievement .value {
-      color: var(--danger);
-    }
-    
-    /* target Indicators */
-    .target-indicators {
-      display: flex;
-      gap: 15px;
-      margin-top: 20px;
-      flex-wrap: wrap;
-    }
-    
-    .target-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 14px;
-      color: var(--gray-600);
-    }
-    
-    .target-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
-    
-    .target-dot.target {
-      background: var(--success);
-    }
-    
-    .target-dot.min {
-      background: var(--danger);
-    }
-    
-    .target-dot.max {
-      background: var(--warning);
-    }
-    
-    /* Progress Bar */
-    .progress-container {
-      margin-top: 20px;
-    }
-    
-    .progress-label {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      font-size: 14px;
-    }
-    
-    .progress-bar {
-      height: 10px;
-      background: var(--gray-200);
-      border-radius: 5px;
-      overflow: hidden;
-    }
-    
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--primary), var(--secondary));
-      border-radius: 5px;
-      transition: width 1s ease;
-    }
-    
-    /* Navigation */
-    .navigation {
-      display: flex;
-      gap: 15px;
-      justify-content: center;
-      margin-top: 40px;
-      flex-wrap: wrap;
-    }
-    
-    .nav-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 15px 30px;
-      background: white;
-      color: var(--gray-700);
-      text-decoration: none;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 16px;
-      transition: all 0.3s ease;
-      border: 2px solid var(--gray-200);
-    }
-    
-    .nav-btn.primary {
-      background: linear-gradient(135deg, var(--primary), var(--secondary));
-      color: white;
-      border: none;
-      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.2);
-    }
-    
-    .nav-btn:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
-    }
-    
-    /* Footer */
-    .footer {
-      text-align: center;
-      margin-top: 50px;
-      padding: 30px;
-      color: var(--gray-500);
-      font-size: 14px;
-      border-top: 1px solid var(--gray-200);
-    }
-    
-    /* Animations */
-    @keyframes fadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(20px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-    
-    .animate-fadeIn {
-      animation: fadeIn 0.6s ease-out;
-    }
-    
-    /* Responsive */
-    @media (max-width: 768px) {
-      .dashboard-header {
-        padding: 25px;
-      }
-      
-      .header-content h1 {
-        font-size: 28px;
-      }
-      
-      .kpi-grid {
-        grid-template-columns: 1fr;
-      }
-      
-      .kpi-card {
-        padding: 20px;
-      }
-      
-      .stats-row {
-        grid-template-columns: repeat(2, 1fr);
-      }
-      
-      .navigation {
-        flex-direction: column;
-      }
-      
-      .nav-btn {
-        justify-content: center;
-      }
-    }
-    
-    /* Custom Scrollbar */
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
-    }
-    
-    ::-webkit-scrollbar-track {
-      background: var(--gray-100);
-      border-radius: 4px;
-    }
-    
-    ::-webkit-scrollbar-thumb {
-      background: var(--primary);
-      border-radius: 4px;
-    }
-    
-    ::-webkit-scrollbar-thumb:hover {
-      background: var(--primary-dark);
-    }
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'Segoe UI',sans-serif;background:linear-gradient(rgba(0,0,0,0.7),rgba(0,0,0,0.7)),
+      url('https://images.unsplash.com/photo-1542744095-fcf48d80b0fd?w=1920') center/cover fixed;
+      color:#fff;min-height:100vh;}
+    .container{max-width:1400px;margin:0 auto;padding:20px;}
+    .dashboard-header{background:rgba(31,41,55,0.95);border:1px solid rgba(255,255,255,0.1);
+      backdrop-filter:blur(10px);border-radius:24px;padding:40px;margin-bottom:30px;}
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-top:30px;}
+    .stat-card{background:rgba(255,255,255,0.1);border-radius:16px;padding:20px;border:1px solid rgba(255,255,255,0.2);}
+    .stat-value{font-size:32px;font-weight:700;margin-bottom:5px;}
+    .stat-label{font-size:14px;opacity:0.8;text-transform:uppercase;letter-spacing:0.5px;}
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(600px,1fr));gap:30px;margin-bottom:40px;}
+    @media(max-width:1300px){.kpi-grid{grid-template-columns:1fr;}}
+    .kpi-card{background:rgba(255,255,255,0.95);color:#1f2937;border-radius:20px;padding:30px;
+      border:1px solid rgba(255,255,255,0.2);transition:all 0.3s ease;}
+    .kpi-card:hover{transform:translateY(-5px);box-shadow:0 20px 40px rgba(0,0,0,0.3);}
+    .kpi-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:25px;}
+    .chart-container{height:300px;margin:25px 0;position:relative;}
+    .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-top:25px;}
+    .stat-box{background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;}
+    .stat-box .label{font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;}
+    .stat-box .value{font-size:20px;font-weight:700;color:#111827;}
+    .footer{text-align:center;margin-top:50px;padding:30px;border-top:1px solid rgba(255,255,255,0.1);}
+    @media(max-width:768px){.kpi-grid{grid-template-columns:1fr;}.stats-row{grid-template-columns:repeat(2,1fr);}}
   </style>
 </head>
-<body style="margin: 0; padding: 0; min-height: 100vh; background: 
-    linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)),
-    url('https://images.unsplash.com/photo-1542744095-fcf48d80b0fd?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1920&q=80')
-    center/cover fixed no-repeat;
-    font-family: 'Inter', sans-serif; color: #ffffff;">
-  
-  <!-- Semi-transparent overlay for better readability -->
-  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; 
-              background: linear-gradient(135deg, rgba(31, 41, 55, 0.9) 0%, rgba(17, 24, 39, 0.9) 100%);
-              z-index: -1;"></div>
-
-  <div class="container animate-fadeIn">
-    <!-- Dashboard Header -->
-    <header class="dashboard-header" style="background: linear-gradient(135deg, 
-        rgba(31, 41, 55, 0.95) 0%, 
-        rgba(17, 24, 39, 0.95) 100%); 
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);">
-      <div class="header-content">
-        <h1 style="color: #ffffff;">
-          <i class="fas fa-industry"></i>
-          KPI Trends & Analytics
-        </h1>
-        <p class="subtitle" style="color: rgba(255, 255, 255, 0.8);">
-          Visualize your industrial performance metrics across all production weeks
-        </p>
-        
-        <!-- User Info -->
-        <div style="display: flex; gap: 30px; margin-top: 20px; flex-wrap: wrap;">
-          <div>
-            <div style="font-size: 12px; color: rgba(255, 255, 255, 0.6); margin-bottom: 5px;">OPERATOR</div>
-            <div style="font-size: 18px; font-weight: 600; color: #ffffff;">${responsible.name}</div>
-          </div>
-          <div>
-            <div style="font-size: 12px; color: rgba(255, 255, 255, 0.6); margin-bottom: 5px;">FACTORY</div>
-            <div style="font-size: 18px; font-weight: 600; color: #ffffff;">${responsible.plant_name}</div>
-          </div>
-          <div>
-            <div style="font-size: 12px; color: rgba(255, 255, 255, 0.6); margin-bottom: 5px;">DEPARTMENT</div>
-            <div style="font-size: 18px; font-weight: 600; color: #ffffff;">${responsible.department_name}</div>
-          </div>
-        </div>
-        
-        <!-- Stats Grid -->
-        <div class="stats-grid">
-          <div class="stat-card" style="background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);">
-            <div class="stat-value" style="color: #60a5fa;">${totalKPIs}</div>
-            <div class="stat-label" style="color: rgba(255, 255, 255, 0.7);">Active KPIs</div>
-          </div>
-          <div class="stat-card" style="background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);">
-            <div class="stat-value" style="color: #34d399;">${totalWeeks}</div>
-            <div class="stat-label" style="color: rgba(255, 255, 255, 0.7);">Production Weeks</div>
-          </div>
-          <div class="stat-card" style="background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);">
-            <div class="stat-value" style="color: #fbbf24;">${kpis.reduce((acc, kpi) => acc + kpi.values.length, 0)}</div>
-            <div class="stat-label" style="color: rgba(255, 255, 255, 0.7);">Data Points</div>
-          </div>
-          <div class="stat-card" style="background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);">
-            <div class="stat-value" style="color: #f87171;">
-              ${kpis.filter(k => k.target !== null).length}
-            </div>
-            <div class="stat-label" style="color: rgba(255, 255, 255, 0.7);">target KPIs</div>
-          </div>
-        </div>
+<body>
+  <div class="container">
+    <header class="dashboard-header">
+      <h1 style="font-size:36px;font-weight:800;color:#fff;margin-bottom:10px;">📊 KPI Trends & Analytics</h1>
+      <p style="font-size:18px;opacity:0.9;margin-bottom:25px;">Performance metrics across all production weeks</p>
+      <div style="display:flex;gap:30px;flex-wrap:wrap;">
+        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">OPERATOR</div>
+          <div style="font-size:18px;font-weight:600;">${responsible.name}</div></div>
+        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">FACTORY</div>
+          <div style="font-size:18px;font-weight:600;">${responsible.plant_name}</div></div>
+        <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">DEPARTMENT</div>
+          <div style="font-size:18px;font-weight:600;">${responsible.department_name}</div></div>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-value" style="color:#60a5fa;">${totalKPIs}</div>
+          <div class="stat-label">Active KPIs</div></div>
+        <div class="stat-card"><div class="stat-value" style="color:#34d399;">${totalWeeks}</div>
+          <div class="stat-label">Production Weeks</div></div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:#fbbf24;">${kpis.reduce((acc, k) => acc + k.values.length, 0)}</div>
+          <div class="stat-label">Data Points</div></div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:#f87171;">${kpis.filter(k => k.low_limit !== null).length}</div>
+          <div class="stat-label">KPIs with Limits</div></div>
       </div>
     </header>
-    
-    <!-- KPI Charts Grid -->
     <main>
       <div class="kpi-grid">
         ${kpis.map((kpi, index) => generateKPIChartHTML(kpi, index)).join('')}
       </div>
     </main>
-    
-    <!-- Footer -->
-    <footer class="footer" style="background: rgba(0, 0, 0, 0.5); 
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);">
-      <p style="color: rgba(255, 255, 255, 0.8);">
-        <i class="fas fa-industry"></i> AVOCarbon Industrial Analytics • ${new Date().getFullYear()}
-      </p>
-      <p style="margin-top: 10px; font-size: 12px; color: rgba(255, 255, 255, 0.6);">
-        <i class="fas fa-cogs"></i> Real-time production monitoring • 
-        <i class="fas fa-chart-line"></i> Industrial performance analytics
-      </p>
+    <footer class="footer">
+      <p style="color:rgba(255,255,255,0.8);">AVOCarbon Industrial Analytics • ${new Date().getFullYear()}</p>
     </footer>
   </div>
-  
   <script>
-    // Initialize all charts
     document.addEventListener('DOMContentLoaded', function() {
-      ${kpis.map((kpi, index) => initializeChartJS(kpi, index)).join('')}
-      
-      // Add hover effects
-      const kpiCards = document.querySelectorAll('.kpi-card');
-      kpiCards.forEach(card => {
-        card.addEventListener('mouseenter', function() {
-          this.style.transform = 'translateY(-8px)';
-          this.style.boxShadow = '0 20px 40px rgba(0, 0, 0, 0.3)';
-        });
-        
-        card.addEventListener('mouseleave', function() {
-          this.style.transform = 'translateY(0)';
-          this.style.boxShadow = '0 10px 30px rgba(0, 0, 0, 0.2)';
-        });
-      });
-      
-      // Add industrial sound effect on button clicks
-      const buttons = document.querySelectorAll('.nav-btn');
-      buttons.forEach(button => {
-        button.addEventListener('click', function(e) {
-          // Optional: Add click sound effect
-          console.log('Navigation clicked:', this.innerText);
-        });
-      });
-      
-      // Add subtle animation to stats cards
-      const statCards = document.querySelectorAll('.stat-card');
-      statCards.forEach((card, index) => {
-        setTimeout(() => {
-          card.style.transform = 'translateY(0)';
-          card.style.opacity = '1';
-        }, index * 100);
-      });
+      ${kpis.map((kpi, index) => initializeChartJS(kpi, index)).join('\n')}
     });
   </script>
-</body>
-</html>
-  `;
+</body></html>`;
 }
 
-// Generate individual KPI chart HTML
 function generateKPIChartHTML(kpi, index) {
-  const weekLabels = kpi.weeks.map(w =>
-    w.includes('Week') ? `Week${w.split('-Week')[1] || w.replace('Week', '')}` : w
-  );
-
   const chartId = `chart-${index}`;
-  const achievement = kpi.achievement ? Math.min(kpi.achievement, 100) : 0;
-
   return `
     <div class="kpi-card">
       <div class="kpi-header">
-        <div class="kpi-title-section">
-          <h3>${kpi.subject}</h3>
-          ${kpi.subtitle ? `<p class="kpi-subtitle">${kpi.subtitle}</p>` : ''}
+        <div>
+          <h3 style="font-size:20px;font-weight:700;color:#111827;margin-bottom:5px;">${kpi.subject}</h3>
+          ${kpi.subtitle ? `<p style="font-size:14px;color:#6b7280;">${kpi.subtitle}</p>` : ''}
         </div>
-        <div class="kpi-meta">
-          ${kpi.unit ? `
-            <span class="meta-badge badge-unit">
-              <i class="fas fa-ruler"></i> ${kpi.unit}
-            </span>
-          ` : ''}
-          <span class="meta-badge badge-trend" style="color: ${kpi.trendColor}; background: ${kpi.trendColor}15;">
-            ${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%
-          </span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${kpi.unit ? `<span style="padding:6px 12px;border-radius:20px;font-size:12px;
+            font-weight:600;background:#f3f4f6;color:#374151;">📏 ${kpi.unit}</span>` : ''}
+          <span style="padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;
+            background:${kpi.trendColor}20;color:${kpi.trendColor};">
+            ${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%</span>
         </div>
       </div>
+      <div class="chart-container"><canvas id="${chartId}"></canvas></div>
       
-      <!-- Chart -->
-      <div class="chart-container">
-        <canvas id="${chartId}"></canvas>
-      </div>
-      
-      <!-- Stats -->
-      <div class="stats-row">
-        ${kpi.target !== null ? `
-          <div class="stat-box target">
-            <div class="label">target</div>
-            <div class="value">${kpi.target.toFixed(2)}</div>
+      <!-- Three key metrics side by side - Target, High Limit, Low Limit -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:25px 0;">
+        <!-- Target Box -->
+        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+            <span>🎯</span> Target
           </div>
-        ` : `
-          <div class="stat-box target">
-            <div class="label">target</div>
-            <div class="value">N/A</div>
+          <div style="font-size:24px;font-weight:700;color:#f97316;">
+            ${kpi.target !== null ? kpi.target.toFixed(2) : 'N/A'}
           </div>
-        `}
+        </div>
         
-        <div class="stat-box average">
+        <!-- High Limit Box -->
+        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+            <span>🔺</span> High Limit
+          </div>
+          <div style="font-size:24px;font-weight:700;color:#f97316;">
+            ${kpi.high_limit !== null ? kpi.high_limit.toFixed(2) : 'N/A'}
+          </div>
+        </div>
+        
+        <!-- Low Limit Box -->
+        <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
+          <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
+            <span>🔻</span> Low Limit
+          </div>
+          <div style="font-size:24px;font-weight:700;color:#ef4444;">
+            ${kpi.low_limit !== null ? kpi.low_limit.toFixed(2) : 'N/A'}
+          </div>
+        </div>
+      </div>
+      
+      <!-- Secondary stats row (Average and Trend) -->
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:15px;margin-bottom:25px;">
+        <div class="stat-box">
           <div class="label">Average</div>
-          <div class="value">${kpi.average.toFixed(2)}</div>
+          <div class="value" style="color:#3b82f6;">${kpi.average ? kpi.average.toFixed(2) : 'N/A'}</div>
         </div>
-        
-        <div class="stat-box trend">
+        <div class="stat-box">
           <div class="label">Trend</div>
-          <div class="value" style="color: ${kpi.trendColor};">${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%</div>
+          <div class="value" style="color:${kpi.trendColor};">${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%</div>
         </div>
-        
-        ${kpi.achievement !== undefined ? `
-          <div class="stat-box achievement">
-            <div class="label">Achievement</div>
-            <div class="value" style="color: ${kpi.achievementColor};">${kpi.achievement.toFixed(1)}%</div>
-          </div>
-        ` : `
-          <div class="stat-box achievement">
-            <div class="label">Achievement</div>
-            <div class="value">N/A</div>
-          </div>
-        `}
       </div>
       
-      <!-- target Indicators -->
-      ${kpi.target !== null || kpi.min !== null || kpi.max !== null ? `
-        <div class="target-indicators">
-          ${kpi.target !== null ? `
-            <div class="target-item">
-              <div class="target-dot target"></div>
-              <span>target: ${kpi.target.toFixed(2)}</span>
-            </div>
-          ` : ''}
-          
-          ${kpi.min !== null ? `
-            <div class="target-item">
-              <div class="target-dot min"></div>
-              <span>Min: ${kpi.min.toFixed(2)}</span>
-            </div>
-          ` : ''}
-          
-          ${kpi.max !== null ? `
-            <div class="target-item">
-              <div class="target-dot max"></div>
-              <span>Max: ${kpi.max.toFixed(2)}</span>
-            </div>
-          ` : ''}
-        </div>
-      ` : ''}
-      
-      <!-- Progress Bar for Achievement -->
-      ${kpi.achievement !== undefined ? `
-        <div class="progress-container">
-          <div class="progress-label">
-            <span>target Achievement</span>
-            <span>${kpi.achievement.toFixed(1)}%</span>
-          </div>
-          <div class="progress-bar">
-            <div class="progress-fill" style="width: ${achievement}%; background: ${kpi.achievementColor};"></div>
-          </div>
-        </div>
-      ` : ''}
-      
-      <!-- KPI Definition -->
+      <div style="display:flex;gap:15px;margin-top:15px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#22c55e;"></div>
+          <span style="font-size:12px;color:#6b7280;">Above low limit</span></div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#f97316;"></div>
+          <span style="font-size:12px;color:#6b7280;">Near low limit (≤10%)</span></div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#ef4444;"></div>
+          <span style="font-size:12px;color:#6b7280;">Below low limit</span></div>
+      </div>
       ${kpi.definition ? `
-        <div style="margin-top: 20px; padding: 15px; background: #f8fafc; border-radius: 12px; border-left: 4px solid #667eea;">
-          <div style="font-size: 12px; color: #64748b; margin-bottom: 5px;">
-            <i class="fas fa-info-circle"></i> Definition
-          </div>
-          <div style="font-size: 14px; color: #475569;">${kpi.definition}</div>
-        </div>
-      ` : ''}
-    </div>
-  `;
+        <div style="margin-top:20px;padding:15px;background:#f8fafc;border-radius:12px;border-left:4px solid #667eea;">
+          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">ℹ️ Definition</div>
+          <div style="font-size:14px;color:#475569;">${kpi.definition}</div>
+        </div>` : ''}
+    </div>`;
 }
 
-// Initialize Chart.js for each KPI
 function initializeChartJS(kpi, index) {
   const chartId = `chart-${index}`;
   const weekLabels = kpi.weeks.map(w =>
     w.includes('Week') ? `W${w.split('-Week')[1] || w.replace('Week', '')}` : w
   );
+  const lowLimit = kpi.low_limit != null ? parseFloat(kpi.low_limit) : null;
+  const highLimit = kpi.high_limit != null ? parseFloat(kpi.high_limit) : null;
 
-  // Create gradient for chart
-  const gradient = `linear-gradient(135deg, ${kpi.colors[0] || '#667eea'}, ${kpi.colors[kpi.colors.length - 1] || '#764ba2'})`;
+  const pointColors = JSON.stringify(kpi.values.map(v => {
+    const val = parseFloat(v);
+    if (isNaN(val)) return '#6b7280';
+    if (lowLimit !== null) {
+      if (val < lowLimit) return '#ef4444';
+      if (val < lowLimit * 1.10) return '#f97316';
+    }
+    return '#22c55e';
+  }));
 
-  return `
-    // Chart ${index}
+  const extraDatasets = [];
+  if (highLimit !== null) {
+    extraDatasets.push(`{
+      label: 'High Limit',
+      data: Array(${kpi.values.length}).fill(${highLimit}),
+      type: 'line', borderColor: '#f97316',
+      borderDash: [6,4], borderWidth: 2,
+      pointRadius: 0, fill: false, tension: 0, order: 1
+    }`);
+  }
+  if (lowLimit !== null) {
+    extraDatasets.push(`{
+      label: 'Low Limit',
+      data: Array(${kpi.values.length}).fill(${lowLimit}),
+      type: 'line', borderColor: '#ef4444',
+      borderDash: [6,4], borderWidth: 2,
+      pointRadius: 0, fill: false, tension: 0, order: 1
+    }`);
+  }
+
+  return `(function(){
     const ctx${index} = document.getElementById('${chartId}').getContext('2d');
-    
-    // Create gradient
-    const gradient${index} = ctx${index}.createLinearGradient(0, 0, 0, 300);
-    gradient${index}.addColorStop(0, '${kpi.colors[0] || '#667eea'}80');
-    gradient${index}.addColorStop(1, '${kpi.colors[0] || '#667eea'}20');
-    
-   new Chart(ctx${index}, {
-      type: ${kpi.values.length === 1 ? "'bar'" : "'line'"},
+    const pc${index}  = ${pointColors};
+    new Chart(ctx${index}, {
+      type: 'line',
       data: {
         labels: ${JSON.stringify(weekLabels)},
-        datasets: [{
-          label: '${kpi.subject}',
-          data: ${JSON.stringify(kpi.values)},
-          borderColor: '${kpi.colors[0] || '#667eea'}',
-          backgroundColor: ${kpi.values.length === 1
-      ? `'${kpi.colors[0] || '#667eea'}'`
-      : `gradient${index}`},
-          borderWidth: 3,
-          fill: true,
-          tension: 0.4,
-          pointBackgroundColor: function(context) {
-            const index = context.dataIndex;
-            return '${kpi.colors[index] || '#667eea'}';
-          },
-          pointBorderColor: '#ffffff',
-          pointBorderWidth: 2,
-          pointRadius: ${kpi.values.length === 1 ? 0 : 6},
-          pointHoverRadius: ${kpi.values.length === 1 ? 0 : 8},
-          borderRadius: ${kpi.values.length === 1 ? 6 : 0}
-        }]
+        datasets: [
+          {
+            label: '${kpi.subject}',
+            data: ${JSON.stringify(kpi.values)},
+            borderColor: '#94a3b8',
+            borderWidth: 2,
+            backgroundColor: pc${index},
+            pointBackgroundColor: pc${index},
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 2,
+            pointRadius: 9,
+            pointHoverRadius: 12,
+            showLine: true,
+            tension: 0,
+            fill: false,
+            order: 2
+          }
+          ${extraDatasets.length ? ',' + extraDatasets.join(',') : ''}
+        ]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
+        responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: {
-            position: 'top',
-            labels: {
-              font: {
-                size: 12
-              },
-              padding: 20,
-              usePointStyle: true
-            }
-          },
+          legend: { position: 'top', labels: { font: { size: 12 }, padding: 20, usePointStyle: true } },
           tooltip: {
-            backgroundColor: 'rgba(31, 41, 55, 0.9)',
-            titleFont: { size: 14 },
-            bodyFont: { size: 13 },
-            padding: 12,
-            cornerRadius: 8,
-            displayColors: false,
+            backgroundColor: 'rgba(31,41,55,0.9)',
+            padding: 12, cornerRadius: 8,
             callbacks: {
-              label: function(context) {
-                return '${kpi.unit ? kpi.unit + ': ' : ''}' + context.parsed.y.toFixed(2);
+              label: function(ctx) {
+                if (ctx.dataset.label === 'High Limit') return 'High Limit: ' + ctx.parsed.y;
+                if (ctx.dataset.label === 'Low Limit')  return 'Low Limit: '  + ctx.parsed.y;
+                return '${kpi.unit ? kpi.unit + ': ' : ''}' + ctx.parsed.y.toFixed(2);
               }
             }
           }
         },
         scales: {
-          x: {
-            grid: {
-              color: 'rgba(0, 0, 0, 0.05)'
-            },
-            ticks: {
-              font: {
-                size: 11
-              }
-            }
-          },
-          y: {
-            beginAtZero: true,
-            grid: {
-              color: 'rgba(0, 0, 0, 0.05)'
-            },
-            ticks: {
-              font: {
-                size: 11
-              },
-              callback: function(value) {
-                return value + '${kpi.unit ? ' ' + kpi.unit : ''}';
-              }
-            }
-          }
+          x: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 11 } } },
+          y: { beginAtZero: false, grid: { color: 'rgba(0,0,0,0.05)' },
+               ticks: { font: { size: 11 },
+                 callback: function(v){ return v + '${kpi.unit ? ' ' + kpi.unit : ''}'; } } }
         },
-        interaction: {
-          intersect: false,
-          mode: 'index'
-        },
-        animations: {
-          tension: {
-            duration: 1000,
-            easing: 'linear'
-          }
-        }
+        interaction: { intersect: false, mode: 'index' }
       }
     });
-  `;
+  })();`;
 }
 
-// Error HTML
 function createErrorHTML(message) {
-  return `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="utf-8">
-    <title>Error - KPI Trends</title>
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-      
-      body {
-        font-family: 'Inter', sans-serif;
-        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-        min-height: 100vh;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        padding: 20px;
-        margin: 0;
-      }
-      
-      .error-container {
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(10px);
-        border-radius: 24px;
-        padding: 50px 40px;
-        text-align: center;
-        max-width: 500px;
-        box-shadow: 0 20px 60px rgba(220, 38, 38, 0.2);
-      }
-      
-      .error-icon {
-        font-size: 72px;
-        margin-bottom: 30px;
-        color: #ef4444;
-      }
-      
-      h1 {
-        color: #1f2937;
-        font-size: 28px;
-        font-weight: 700;
-        margin-bottom: 15px;
-      }
-      
-      .error-message {
-        color: #6b7280;
-        font-size: 16px;
-        line-height: 1.6;
-        margin-bottom: 30px;
-        padding: 15px;
-        background: #fef2f2;
-        border-radius: 12px;
-        border-left: 4px solid #ef4444;
-      }
-      
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        padding: 15px 30px;
-        background: linear-gradient(135deg, #ef4444, #dc2626);
-        color: white;
-        text-decoration: none;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 16px;
-        transition: all 0.3s ease;
-      }
-      
-      .btn:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 15px 30px rgba(220, 38, 38, 0.3);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="error-container">
-      <div class="error-icon">❌</div>
-      <h1>Error Loading KPI Trends</h1>
-      <div class="error-message">${message}</div>
-      <a href="/" class="btn">
-        <i class="fas fa-home"></i>
-        Return to Home
-      </a>
-    </div>
-  </body>
-  </html>
-  `;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#ef4444,#dc2626);
+      min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px;margin:0;">
+      <div style="background:rgba(255,255,255,0.95);border-radius:24px;padding:50px 40px;text-align:center;max-width:500px;">
+        <div style="font-size:72px;color:#ef4444;margin-bottom:30px;">❌</div>
+        <h1 style="color:#1f2937;font-size:28px;">Error Loading KPI Trends</h1>
+        <div style="color:#6b7280;padding:15px;background:#fef2f2;border-radius:12px;margin:20px 0;">${message}</div>
+        <a href="/" style="display:inline-block;padding:15px 30px;background:linear-gradient(135deg,#ef4444,#dc2626);
+          color:white;text-decoration:none;border-radius:12px;font-weight:600;">Return to Home</a>
+      </div>
+    </body></html>`;
 }
 
 const getPreviousWeek = (currentWeek) => {
   const [yearStr, weekStr] = currentWeek.split('-Week');
-  let year = parseInt(yearStr);
-  let weekNumber = parseInt(weekStr);
-
-  weekNumber -= 1;
-  if (weekNumber < 1) {
-    year -= 1;
-    weekNumber = 52;
-  }
-
+  let year = parseInt(yearStr), weekNumber = parseInt(weekStr) - 1;
+  if (weekNumber < 1) { year--; weekNumber = 52; }
   return `${year}-Week${weekNumber}`;
 };
 
+const weekToMonthLabel = (weekStr) => {
+  const match = weekStr.match(/(\d{4})-Week(\d+)/);
+  if (!match) return weekStr;
+  const date = new Date(parseInt(match[1]), 0, 1 + (parseInt(match[2]) - 1) * 7);
+  return date.toLocaleString('en-US', { month: 'short', year: 'numeric' }); // "Feb 2026"
+};
+
+
 const getDepartmentKPIReport = async (plantId, week) => {
   try {
-    // 1. Get plant and manager info
     const plantRes = await pool.query(
-      `
-      SELECT p.plant_id, p.name AS plant_name, p.manager, p.manager_email
-      FROM public."Plant" p
-      WHERE p.plant_id = $1 AND p.manager_email IS NOT NULL
-      `,
+      `SELECT p.plant_id, p.name AS plant_name, p.manager, p.manager_email
+       FROM public."Plant" p WHERE p.plant_id = $1 AND p.manager_email IS NOT NULL`,
       [plantId]
     );
-
     const plant = plantRes.rows[0];
-    if (!plant || !plant.manager_email) {
-      return null;
-    }
-
-    // 2. Get KPIs with target, min, max values - UPDATED QUERY
-    // In getDepartmentKPIReport function, update the kpiRes query:
+    if (!plant || !plant.manager_email) return null;
 
     const kpiRes = await pool.query(
-      `
-WITH LatestKPIValues AS (
-  SELECT 
-    h.kpi_id,
-    h.responsible_id,
-    r.name AS responsible_name,
-    h.week,
-    h.new_value,
-    h.updated_at,
-    r.department_id,
-    d.name AS department_name,
-    k.indicator_title,
-    k.indicator_sub_title,
-    k.unit,
-    k.target,
-    k.min,
-    k.max,
-    ROW_NUMBER() OVER (
-      PARTITION BY h.kpi_id, h.responsible_id, h.week 
-      ORDER BY h.updated_at DESC
-    ) as rn
-  FROM public.kpi_values_hist26 h
-  JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
-  JOIN public."Department" d ON r.department_id = d.department_id
-  JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-  WHERE r.plant_id = $1 
-    AND h.week = $2
-    AND h.new_value IS NOT NULL
-    AND h.new_value != ''
-    AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'  -- FIXED: Cast to text first
-)
-SELECT * FROM LatestKPIValues WHERE rn = 1
-ORDER BY indicator_title
-  `,
+      `WITH LatestKPIValues AS (
+         SELECT h.kpi_id, h.responsible_id, r.name AS responsible_name, h.week, h.new_value,
+                h.updated_at, h.comment, r.department_id, d.name AS department_name,
+                k.indicator_title, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
+                k.high_limit, k.low_limit,
+                ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.responsible_id, h.week ORDER BY h.updated_at DESC) as rn
+         FROM public.kpi_values_hist26 h
+         JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
+         JOIN public."Department" d ON r.department_id = d.department_id
+         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+         WHERE r.plant_id = $1 AND h.week = $2
+           AND h.new_value IS NOT NULL AND h.new_value != ''
+           AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'
+       )
+       SELECT lkv.*,
+              ca.root_cause, ca.implemented_solution, ca.evidence, ca.status AS ca_status
+       FROM LatestKPIValues lkv
+       LEFT JOIN public.corrective_actions ca
+         ON ca.kpi_id = lkv.kpi_id
+        AND ca.responsible_id = lkv.responsible_id
+        AND ca.week = lkv.week
+       WHERE lkv.rn = 1 ORDER BY lkv.indicator_title`,
       [plantId, week]
     );
 
-    if (!kpiRes.rows.length) {
-      console.log(`No KPI data found for plant ${plantId} week ${week}`);
-      return null;
-    }
+    if (!kpiRes.rows.length) return null;
 
-    // 3. Get WEEKLY TREND DATA for ALL KPIs (last 12 weeks)
     const weeklyTrendRes = await pool.query(
-      `
-WITH WeeklyKPIData AS (
-  SELECT 
-    k.kpi_id,
-    k.indicator_title,
-    k.indicator_sub_title,
-    k.unit,
-    k.target,
-    k.min,
-    k.max,
-    h.week,
-    AVG(CAST(h.new_value AS NUMERIC)) as avg_value,
-    MIN(CAST(h.new_value AS NUMERIC)) as min_value,
-    MAX(CAST(h.new_value AS NUMERIC)) as max_value,
-    COUNT(*) as data_points,
-    CAST(SPLIT_PART(h.week, 'Week', 2) AS INTEGER) as week_num
-  FROM public.kpi_values_hist26 h
-  JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-  JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
-  WHERE r.plant_id = $1 
-    AND h.new_value IS NOT NULL
-    AND h.new_value != ''
-    AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'  -- FIXED: Cast to text first
-    AND h.week LIKE '2026-Week%'
-  GROUP BY k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit, 
-           k.target, k.min, k.max, h.week
-)
-SELECT * FROM WeeklyKPIData
-ORDER BY kpi_id, week_num DESC
-LIMIT 500
-      `,
+      `WITH WeeklyKPIData AS (
+         SELECT k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit,
+                k.target, k.min, k.max, k.high_limit, k.low_limit,
+                h.week, AVG(CAST(h.new_value AS NUMERIC)) as avg_value,
+                CAST(SPLIT_PART(h.week, 'Week', 2) AS INTEGER) as week_num
+         FROM public.kpi_values_hist26 h
+         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+         JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
+         WHERE r.plant_id = $1 AND h.new_value IS NOT NULL AND h.new_value != ''
+           AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$' AND h.week LIKE '2026-Week%'
+         GROUP BY k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit,
+                  k.target, k.min, k.max, k.high_limit, k.low_limit, h.week
+       )
+       SELECT * FROM WeeklyKPIData ORDER BY kpi_id, week_num DESC LIMIT 500`,
       [plantId]
     );
 
-    // Helper function to extract department from indicator_title
-    const extractDepartmentFromTitle = (indicatorTitle) => {
-      if (!indicatorTitle) return 'Other';
-      if (indicatorTitle.includes('Actual - ')) {
-        const extracted = indicatorTitle.split('Actual - ')[1];
-        if (extracted.includes('/')) {
-          return extracted.split('/')[0].trim();
-        } else if (extracted.includes('(')) {
-          return extracted.split('(')[0].trim();
-        }
-        return extracted.trim();
+    const extractDept = (t) => {
+      if (!t) return 'Other';
+      if (t.includes('Actual - ')) {
+        const ex = t.split('Actual - ')[1];
+        if (ex.includes('/')) return ex.split('/')[0].trim();
+        if (ex.includes('(')) return ex.split('(')[0].trim();
+        return ex.trim();
       }
-      return indicatorTitle;
+      return t;
     };
 
-    // 4. Organize data by department
     const kpisByDepartment = {};
     const weeklyDataByKPI = {};
 
-    // First, organize weekly trend data
+    // Accumulate weekly values grouped into months
     weeklyTrendRes.rows.forEach(row => {
-      const kpiKey = `${row.kpi_id}_${row.indicator_title}`;
-      const derivedDept = extractDepartmentFromTitle(row.indicator_title);
+      const key = `${row.kpi_id}_${row.indicator_title}`;
+      const dept = extractDept(row.indicator_title);
+      const month = weekToMonthLabel(row.week); // e.g. "Feb 2026"
 
-      if (!weeklyDataByKPI[kpiKey]) {
-        weeklyDataByKPI[kpiKey] = {
-          kpi_id: row.kpi_id,
-          title: row.indicator_title,
-          subtitle: row.indicator_sub_title || '',
-          unit: row.unit || '',
-          target: row.target,
-          min: row.min,
-          max: row.max,
-          department: derivedDept,
-          weeks: [],
-          values: []
+      if (!weeklyDataByKPI[key]) {
+        weeklyDataByKPI[key] = {
+          kpi_id: row.kpi_id, title: row.indicator_title, subtitle: row.indicator_sub_title || '',
+          unit: row.unit || '', target: row.target, min: row.min, max: row.max,
+          high_limit: row.high_limit, low_limit: row.low_limit,
+          department: dept,
+          _monthlyMap: {},  // { "Feb 2026": { sum, count } }
+          weeks: [], values: []
         };
       }
 
-      weeklyDataByKPI[kpiKey].weeks.push(row.week);
-      weeklyDataByKPI[kpiKey].values.push(parseFloat(row.avg_value));
+      const mm = weeklyDataByKPI[key]._monthlyMap;
+      if (!mm[month]) mm[month] = { sum: 0, count: 0 };
+      mm[month].sum += parseFloat(row.avg_value);
+      mm[month].count += 1;
     });
 
-    // Then, organize current week data by extracted department
+    // Convert monthly map → sorted arrays
+    Object.values(weeklyDataByKPI).forEach(kpi => {
+      const mm = kpi._monthlyMap || {};
+      const sortedMonths = Object.keys(mm).sort((a, b) => new Date(a) - new Date(b));
+      kpi.weeks = sortedMonths;                                        // ["Jan 2026", "Feb 2026", …]
+      kpi.values = sortedMonths.map(m => mm[m].sum / mm[m].count);     // monthly average
+      delete kpi._monthlyMap;
+    });
+
     kpiRes.rows.forEach(row => {
-      const derivedDepartment = extractDepartmentFromTitle(row.indicator_title);
-      const kpiKey = `${row.kpi_id}_${row.indicator_title}`;
-
-      if (!kpisByDepartment[derivedDepartment]) {
-        kpisByDepartment[derivedDepartment] = [];
-      }
-
-      let existingKpi = kpisByDepartment[derivedDepartment].find(k =>
-        k.id === row.kpi_id && k.title === row.indicator_title
-      );
-
-      if (!existingKpi) {
-        const value = parseFloat(row.new_value);
-
-        existingKpi = {
-          id: row.kpi_id,
-          title: row.indicator_title,
-          subtitle: row.indicator_sub_title || '',
-          unit: row.unit || '',
-          target: row.target,
-          min: row.min,
-          max: row.max,
-          department: derivedDepartment,
-          originalDepartment: row.department_name,
-          currentValue: value,
-          weeklyData: weeklyDataByKPI[kpiKey] || { weeks: [], values: [] },
-          lastUpdated: row.updated_at,
-          responsible: row.responsible_name || ''
+      const dept = extractDept(row.indicator_title);
+      const key = `${row.kpi_id}_${row.indicator_title}`;
+      if (!kpisByDepartment[dept]) kpisByDepartment[dept] = [];
+      let existing = kpisByDepartment[dept].find(k => k.id === row.kpi_id && k.title === row.indicator_title);
+      if (!existing) {
+        existing = {
+          id: row.kpi_id, title: row.indicator_title, subtitle: row.indicator_sub_title || '',
+          unit: row.unit || '', target: row.target, min: row.min, max: row.max,
+          high_limit: row.high_limit, low_limit: row.low_limit,
+          department: dept, originalDepartment: row.department_name,
+          currentValue: parseFloat(row.new_value),
+          weeklyData: weeklyDataByKPI[key] || { weeks: [], values: [] },
+          lastUpdated: row.updated_at, responsible: row.responsible_name || '',
+          comments: [], correctiveAction: null
         };
-
-        kpisByDepartment[derivedDepartment].push(existingKpi);
+        kpisByDepartment[dept].push(existing);
+      }
+      if (row.comment && row.comment.trim())
+        existing.comments.push({ week: row.week, text: row.comment.trim() });
+      if (!existing.correctiveAction && (row.root_cause || row.implemented_solution || row.evidence)) {
+        existing.correctiveAction = {
+          rootCause: (row.root_cause || '').trim(),
+          implementedSolution: (row.implemented_solution || '').trim(),
+          evidence: (row.evidence || '').trim(),
+          status: row.ca_status || ''
+        };
       }
     });
 
-    // Sort departments alphabetically
-    const sortedDepartments = {};
-    Object.keys(kpisByDepartment)
-      .sort()
-      .forEach(dept => {
-        sortedDepartments[dept] = kpisByDepartment[dept];
-      });
+    const sortedDepts = {};
+    Object.keys(kpisByDepartment).sort().forEach(d => { sortedDepts[d] = kpisByDepartment[d]; });
 
     return {
-      plant: plant,
-      week: week,
-      kpisByDepartment: sortedDepartments,
+      plant, week, kpisByDepartment: sortedDepts,
       stats: {
-        totalDepartments: Object.keys(sortedDepartments).length,
-        totalKPIs: Object.values(sortedDepartments).reduce((sum, kpis) => sum + kpis.length, 0),
+        totalDepartments: Object.keys(sortedDepts).length,
+        totalKPIs: Object.values(sortedDepts).reduce((s, k) => s + k.length, 0),
         totalValues: kpiRes.rows.length
       }
     };
@@ -5320,121 +3304,93 @@ LIMIT 500
   }
 };
 
-
-
-// Email sender function (unchanged)
 const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
   try {
     const prevWeek = getPreviousWeek(currentWeek);
     const reportData = await getDepartmentKPIReport(plantId, prevWeek);
-
-    if (!reportData || reportData.stats.totalKPIs === 0) {
-      console.log(`⚠️ No department KPI data to send for plant ${plantId} week ${prevWeek}`);
-      return null;
-    }
+    if (!reportData || reportData.stats.totalKPIs === 0) return null;
 
     const emailHtml = generateManagerReportHtml(reportData);
 
+    // ── Generate plant-wide recommendations PDF ───────────────────────────────
+    let pdfAttachment = null;
+    try {
+      console.log(`📄 Generating plant-wide recommendations PDF for plant=${plantId}…`);
+      const pdfBuffer = await generatePlantKPIRecommendationsPDFBuffer(pool, plantId, prevWeek);
+      if (pdfBuffer) {
+        const weekLabel = prevWeek.replace('2026-Week', 'Week_');
+        pdfAttachment = {
+          filename: `KPI_Recommendations_${reportData.plant.plant_name.replace(/ /g, '_')}_${weekLabel}.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        };
+        console.log(`📄 Plant PDF ready — ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
+      }
+    } catch (pdfErr) {
+      // Never block the main email if PDF generation fails
+      console.error(`⚠️ Could not generate plant recommendations PDF:`, pdfErr.message);
+    }
+
+    // ── Send email with optional PDF attachment ───────────────────────────────
     const transporter = createTransporter();
-    const mailOptions = {
+    await transporter.sendMail({
       from: '"AVOCarbon Plant Analytics" <administration.STS@avocarbon.com>',
       to: reportData.plant.manager_email,
       subject: `📊 Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${prevWeek.replace('2026-Week', '')}`,
-      html: emailHtml
-    };
+      html: emailHtml,
+      attachments: pdfAttachment ? [pdfAttachment] : [],
+    });
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Weekly KPI report sent to ${reportData.plant.manager_email} for plant ${reportData.plant.plant_name} (Week ${prevWeek})`);
-
-    return info;
+    console.log(`✅ KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${reportData.plant.manager_email}`);
   } catch (error) {
-    console.error(`❌ Failed to send KPI report for plant ${plantId}:`, error.message);
-    return null;
+    console.error(`❌ Failed to send report for plant ${plantId}:`, error.message);
   }
 };
-// ---------- Update Cron Job for Department Reports ----------
-// ---------- Schedule Department Reports ----------
 
-// cron.schedule(
-//   "57 14 * * *",
-//   async () => {
+// ---------- Cron: weekly manager/plant report ----------
+let managerCronRunning = false;
+cron.schedule("53 09 * * *", async () => {
+  const lockId = "department_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (managerCronRunning) return;
+    managerCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const currentWeek = `${year}-Week${weekNumber}`;
+    console.log(`📊 [Manager Report] Sending reports for week ${currentWeek}...`);
+    const plantsRes = await pool.query(
+      `SELECT plant_id, name, manager_email FROM public."Plant"
+       WHERE manager_email IS NOT NULL AND manager_email != ''`
+    );
+    console.log(`📋 Found ${plantsRes.rows.length} plants with manager emails`);
+    for (const plant of plantsRes.rows) {
+      try {
+        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+        console.log(`  ✅ Report sent for plant: ${plant.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`  ❌ Failed for plant ${plant.name}:`, err.message);
+      }
+    }
+    console.log(`✅ [Manager Report] All plant reports sent`);
+  } catch (error) {
+    console.error("❌ [Manager Report] Cron error:", error.message);
+  } finally {
+    managerCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
-//     const lockId = "department_report_job";
-//     const client = await pool.connect();
 
-//     try {
-//       // Create stable hash
-//       const lockHash = Math.abs(
-//         lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)
-//       );
-
-//       // Try acquiring advisory lock
-//       const result = await client.query(
-//         "SELECT pg_try_advisory_lock($1) as acquired",
-//         [lockHash]
-//       );
-
-//       if (!result.rows[0].acquired) {
-//         console.log("⏭️ [Department Report] Skipping - lock held by another instance");
-//         return;
-//       }
-
-//       console.log("🔒 [Department Report] Lock acquired");
-
-//       // ===== YOUR EXISTING LOGIC =====
-
-//       const now = new Date();
-
-//       const getWeekNumber = (date) => {
-//         const d = new Date(date);
-//         d.setHours(0, 0, 0, 0);
-//         d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//         const yearStart = new Date(d.getFullYear(), 0, 1);
-//         return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//       };
-
-//       const weekNumber = getWeekNumber(now);
-//       const currentWeek = `2026-Week${weekNumber}`;
-
-//       console.log(`📊 [Department Report] Starting for week ${currentWeek}...`);
-
-//       const plantsRes = await pool.query(`
-//         SELECT plant_id, name, manager_email 
-//         FROM public."Plant" 
-//         WHERE manager_email IS NOT NULL AND manager_email != ''
-//       `);
-
-//       for (const plant of plantsRes.rows) {
-//         try {
-//           await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-//           await new Promise(resolve => setTimeout(resolve, 1500));
-//         } catch (err) {
-//           console.error(`❌ Failed for ${plant.name}:`, err.message);
-//         }
-//       }
-
-//       console.log("✅ [Department Report] Completed successfully");
-
-//     } catch (error) {
-//       console.error("❌ [Department Report] Error:", error.message);
-//     } finally {
-//       try {
-//         await client.query("SELECT pg_advisory_unlock($1)", [
-//           Math.abs(lockId.split('').reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0))
-//         ]);
-//         console.log("🔓 [Department Report] Lock released");
-//       } catch (e) {
-//         console.error("⚠️ Failed to release lock:", e.message);
-//       }
-
-//       client.release();
-//     }
-//   },
-//   {
-//     scheduled: true,
-//     timezone: "Africa/Tunis"
-//   }
-// );
-
+registerRecommendationRoutes(app, pool, createTransporter);
 // ---------- Start server ----------
 app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
