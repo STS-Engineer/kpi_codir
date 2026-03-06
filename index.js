@@ -134,66 +134,55 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
 };
 
 const generateEmailHtml = ({ responsible, week }) => {
+  // Convert week format (e.g., "2026-Week12") to month and year
+  const getMonthYearFromWeek = (weekStr) => {
+    const match = weekStr.match(/(\d{4})-Week(\d+)/);
+    if (!match) return weekStr; // Return original if format doesn't match
+    
+    const year = parseInt(match[1]);
+    const weekNumber = parseInt(match[2]);
+    
+    // Calculate approximate date from week number (week 1 starts around Jan 1)
+    const date = new Date(year, 0, 1 + (weekNumber - 1) * 7);
+    
+    // Return month and year (e.g., "March 2026")
+    return date.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  };
+
+  const monthYear = getMonthYearFromWeek(week);
+  
   return `
   <!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form</title></head>
-  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;">
-    <div style="max-width:600px;margin:0 auto;background:#fff;padding:25px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
-      <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0"
-           alt="AVOCarbon Logo" style="width:80px;height:80px;object-fit:contain;margin-bottom:10px;">
-      <h2 style="color:#0078D7;font-size:22px;margin-bottom:20px;">KPI Submission - ${week}</h2>
-      <h3 style="color:#0078D7;font-size:16px;margin-bottom:20px;">${responsible.plant_name}</h3>
-      <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
-         style="display:inline-block;padding:12px 28px;background:#0078D7;color:white;
-                border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;">
+  <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;margin:0;">
+    <div style="max-width:600px;margin:0 auto;background:#fff;padding:30px 25px 40px;border-radius:10px;box-shadow:0 4px 15px rgba(0,0,0,0.1);text-align:center;">
+      
+      <!-- Logo -->
+      <div style="margin-bottom:10px;">
+        <img src="https://media.licdn.com/dms/image/v2/D4E0BAQGYVmAPO2RZqQ/company-logo_200_200/company-logo_200_200/0/1689240189455/avocarbon_group_logo?e=2147483647&v=beta&t=nZNCXd3ypoMFQnQMxfAZrljyNBbp4E5HM11Y1yl9_L0"
+             alt="AVOCarbon Logo" style="width:90px;height:90px;object-fit:contain;">
+      </div>
+      
+      <!-- KPI codir with cadre/border - directly under logo and centered -->
+      <div style="border:2px solid #0078D7;border-radius:8px;padding:6px 25px;display:inline-block;margin:0 auto 15px auto;">
+        <span style="color:#0078D7;font-size:16px;font-weight:500;display:inline-block;">KPI codir</span>
+      </div>
+      
+      <h2 style="color:#0078D7;font-size:24px;margin:0 0 10px 0;font-weight:600;">KPI Submission - ${monthYear}</h2>
+      
+      <h3 style="color:#333;font-size:18px;margin:0 0 25px 0;font-weight:500;">${responsible.plant_name}</h3>
+      
+      <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${week}"
+         style="display:inline-block;padding:14px 35px;background:#0078D7;color:white;
+                border-radius:50px;text-decoration:none;font-weight:600;font-size:16px;
+                margin-bottom:20px;border:none;cursor:pointer;">
         Fill KPI Form
       </a>
-      <p style="margin-top:20px;font-size:12px;color:#888;">Click the button above to fill your KPIs for week ${week}.</p>
+      
+      <p style="margin:0;font-size:13px;color:#666;">Click the button above to fill your KPIs for ${monthYear}.</p>
     </div>
   </body></html>`;
 };
 
-const parsetargetValue = (targetValue) => {
-  if (targetValue === null || targetValue === undefined || targetValue === '') return null;
-  const parsed = parseFloat(targetValue);
-  return isNaN(parsed) ? null : parsed;
-};
-
-const sendConsolidatedTargetUpdateEmail = async (responsibleId, week, targetUpdates) => {
-  try {
-    const resResp = await pool.query(
-      `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-              p.name AS plant_name, d.name AS department_name
-       FROM public."Responsible" r
-       JOIN public."Plant" p ON r.plant_id = p.plant_id
-       JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`,
-      [responsibleId]
-    );
-    const responsible = resResp.rows[0];
-    if (!responsible || !responsible.email || targetUpdates.length === 0) return null;
-    const enhancedUpdates = [];
-    for (const update of targetUpdates) {
-      const kpiRes = await pool.query(
-        `SELECT indicator_title, indicator_sub_title, unit FROM public."Kpi" WHERE kpi_id = $1`,
-        [update.kpiId]
-      );
-      if (kpiRes.rows[0]) {
-        const kpi = kpiRes.rows[0];
-        enhancedUpdates.push({
-          ...update,
-          indicator_title: kpi.indicator_title,
-          indicator_sub_title: kpi.indicator_sub_title,
-          unit: kpi.unit || '',
-          improvement: ((update.newTarget - update.oldTarget) / update.oldTarget * 100).toFixed(1)
-        });
-      }
-    }
-    const transporter = createTransporter();
-    console.log(`✅ Target update email sent to ${responsible.email}`);
-  } catch (err) {
-    console.error(`❌ Failed to send consolidated target update email:`, err.message);
-  }
-};
 
 const checkAndTriggerCorrectiveActions = async (responsibleId, kpiId, week, newValue, histId) => {
   try {
@@ -2292,7 +2281,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("42 10 * * *", async () => {
+cron.schedule("10 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2323,7 +2312,7 @@ cron.schedule("42 10 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("44 10 * * *", async () => {
+cron.schedule("15 11 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3349,7 +3338,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("45 10 * * *", async () => {
+cron.schedule("16 11 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
