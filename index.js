@@ -2292,7 +2292,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("20 10 * * *", async () => {
+cron.schedule("00 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2323,7 +2323,7 @@ cron.schedule("20 10 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("26 10 * * *", async () => {
+cron.schedule("12 11 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3349,7 +3349,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("25 10 * * *", async () => {
+cron.schedule("15 11 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
