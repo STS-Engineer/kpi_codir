@@ -171,7 +171,7 @@ const generateEmailHtml = ({ responsible, week }) => {
       
       <h3 style="color:#333;font-size:18px;margin:0 0 25px 0;font-weight:500;">${responsible.plant_name}</h3>
       
-      <a href="http://localhost:5000/form?responsible_id=${responsible.responsible_id}&week=${week}"
+      <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
          style="display:inline-block;padding:14px 35px;background:#0078D7;color:white;
                 border-radius:50px;text-decoration:none;font-weight:600;font-size:16px;
                 margin-bottom:20px;border:none;cursor:pointer;">
@@ -2281,7 +2281,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("30 11 * * *", async () => {
+cron.schedule("40 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2312,7 +2312,7 @@ cron.schedule("30 11 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("32 11 * * *", async () => {
+cron.schedule("42 11 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3338,7 +3338,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("34 11 * * *", async () => {
+cron.schedule("43 11 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
