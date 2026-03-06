@@ -2323,7 +2323,7 @@ cron.schedule("01 12 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("52 09 * * *", async () => {
+cron.schedule("15 10 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3349,7 +3349,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("53 09 * * *", async () => {
+cron.schedule("17 10 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
