@@ -84,10 +84,10 @@ const createTransporter = () =>
 
 
 
-cron.schedule('25 14 * * 2', async () => {
+cron.schedule('00 15 * * 5', async () => {
   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
   try {
-    await pool.query('CALL public.update_kpi_week()');
+    await pool.query('SELECT public.update_kpi_week()');
     console.log('[CRON] ✅ kpi_values.week updated successfully');
   } catch (err) {
     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
