@@ -82,6 +82,20 @@ const createTransporter = () =>
     },
   });
 
+
+
+cron.schedule('25 14 * * 2', async () => {
+  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+  try {
+    await pool.query('CALL public.update_kpi_week()');
+    console.log('[CRON] ✅ kpi_values.week updated successfully');
+  } catch (err) {
+    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+  }
+}, {
+  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+});
+
 // ============================================================
 // getResponsibleWithKPIs — now also fetches existing corrective
 // action data (root_cause, implemented_solution, evidence)
