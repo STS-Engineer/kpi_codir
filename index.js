@@ -6,7 +6,7 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 const { registerRecommendationRoutes } = require('./kpi-recommendations');
-const { generateAndSendKPIRecommendations, generateAndSendManagerReport, generateKPIRecommendationsPDFBuffer, generatePlantKPIRecommendationsPDFBuffer } = require('./kpi-recommendations');
+const { generateKPIRecommendationsPDFBuffer, generatePlantKPIRecommendationsPDFBuffer } = require('./kpi-recommendations');
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -24,7 +24,8 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-cron.schedule('00 15 * * 5', async () => {
+
+cron.schedule('47 14 * * 2', async () => {
   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
   try {
     await pool.query('SELECT public.update_kpi_week()');
@@ -1651,12 +1652,11 @@ const generateVerticalBarChart = (chartData) => {
   }
 
   const validData = data.filter(v => v > 0 && !isNaN(v));
-  const values = data.slice(0, 12).reverse();
+  const values = data.slice(0, 12);
 
   const labels =
     (weekLabels || data.map((_, i) => `W${i + 1}`))
-      .slice(0, 12)
-      .reverse();
+      .slice(0, 12);
 
   const fmt = (num) => {
     if (num === null || num === undefined || isNaN(num)) return '0';
@@ -2328,7 +2328,7 @@ cron.schedule("00 10 1 * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("15 10 1 * *", async () => {
+cron.schedule("10 12 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2377,8 +2377,8 @@ const createIndividualKPIChart = (kpi) => {
   const low_limit = kpi.low_limit && kpi.low_limit !== 'None' ? Number(kpi.low_limit) : null;
 
   const weeklyData = kpi.weeklyData || { weeks: [], values: [] };
-  const weeks = weeklyData.weeks.slice(0, 12).reverse();
-  const values = weeklyData.values.slice(0, 12).reverse();
+  const weeks = weeklyData.weeks.slice(0, 12);
+  const values = weeklyData.values.slice(0, 12);
 
   if (!values || values.length === 0 || values.every(v => v <= 0)) {
     return `<table border="0" cellpadding="15" cellspacing="0" width="100%"
@@ -3354,7 +3354,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("17 10 1 * *", async () => {
+cron.schedule("15 12 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
