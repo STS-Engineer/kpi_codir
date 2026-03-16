@@ -1,6 +1,6 @@
 require("dotenv").config();
 const express = require("express");
-const { Pool } = require("pg"); 
+const { Pool } = require("pg");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
@@ -25,7 +25,7 @@ const pool = new Pool({
 });
 
 
-cron.schedule('47 14 * * 2', async () => {
+cron.schedule('00 07 * * 1', async () => {
   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
   try {
     await pool.query('SELECT public.update_kpi_week()');
@@ -155,19 +155,19 @@ const generateEmailHtml = ({ responsible, week }) => {
   const getMonthYearFromWeek = (weekStr) => {
     const match = weekStr.match(/(\d{4})-Week(\d+)/);
     if (!match) return weekStr; // Return original if format doesn't match
-    
+
     const year = parseInt(match[1]);
     const weekNumber = parseInt(match[2]);
-    
+
     // Calculate approximate date from week number (week 1 starts around Jan 1)
     const date = new Date(year, 0, 1 + (weekNumber - 1) * 7);
-    
+
     // Return month and year (e.g., "March 2026")
     return date.toLocaleString('en-US', { month: 'long', year: 'numeric' });
   };
 
   const monthYear = getMonthYearFromWeek(week);
-  
+
   return `
   <!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form</title></head>
   <body style="font-family:'Segoe UI',sans-serif;background:#f4f4f4;padding:20px;margin:0;">
@@ -1709,6 +1709,15 @@ const generateVerticalBarChart = (chartData) => {
   const currentValue = data[data.length - 1] || 0;
 
   // STATS BOX - 3 columns (CURRENT, AVERAGE, TREND)
+  // Replace the statsBox const with this:
+  const trendIcon = (() => {
+    if (cleanLow !== null) {
+      if (currentValue < cleanLow) return { icon: '↓', color: '#dc2626' };       // red - below limit
+      if (currentValue < cleanLow * 1.10) return { icon: '→', color: '#ff9800' }; // orange - near limit
+    }
+    return { icon: '↑', color: '#28a745' }; // green - safe
+  })();
+
   const statsBox = `
   <table border="0" cellpadding="0" cellspacing="0" width="100%"
          style="background:white;border-radius:12px;border:1px solid #e0e0e0;margin-bottom:20px;">
@@ -1717,34 +1726,31 @@ const generateVerticalBarChart = (chartData) => {
         <table border="0" cellpadding="0" cellspacing="0" align="center"
                style="margin:0 auto;text-align:center;">
           <tr>
+
             <!-- CURRENT -->
-            <td valign="top" style="padding-right:20px;text-align:center;">
-              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">
-                CURRENT
-              </div>
+            <td valign="middle" style="padding-right:30px;text-align:center;">
+              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">CURRENT</div>
               <div style="font-size:32px;font-weight:700;color:${getDotColor(currentValue, cleanLow, cleanHigh)};line-height:36px;">
                 ${stats.current}
               </div>
               ${currentWeek ? `
                 <div style="font-size:11px;color:#999;margin-top:2px;">
                   ${String(currentWeek).replace('2026-Week', 'Week ')}
-                </div>
-              ` : ''}
+                </div>` : ''}
             </td>
 
-            <!-- spacer -->
-            <td width="20" style="font-size:0;line-height:0;">&nbsp;</td>
-
-
-
-            <!-- spacer -->
-            <td width="20" style="font-size:0;line-height:0;">&nbsp;</td>
+            <!-- TREND ICON — same row, between CURRENT and AVERAGE -->
+            <td valign="middle" style="padding:0 30px;text-align:center;">
+             <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">Direction</div>
+              <div style="font-size:40px;font-weight:900;color:${trendIcon.color};line-height:1;">
+                ${trendIcon.icon}
+              </div>
+           
+            </td>
 
             <!-- AVERAGE -->
-            <td valign="top" style="padding-left:20px;text-align:center;">
-              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">
-                AVERAGE
-              </div>
+            <td valign="middle" style="padding-left:30px;text-align:center;">
+              <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">AVERAGE</div>
               <div style="font-size:32px;font-weight:700;color:#0078D7;line-height:36px;">
                 ${stats.average}
               </div>
@@ -1752,13 +1758,13 @@ const generateVerticalBarChart = (chartData) => {
                 ${stats.dataPoints || data.length} periods
               </div>
             </td>
+
           </tr>
         </table>
       </td>
     </tr>
   </table>
 `;
-
   // QuickChart datasets
   const datasets = [
     {
@@ -2297,7 +2303,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("00 10 1 * *", async () => {
+cron.schedule("02 16 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2328,7 +2334,7 @@ cron.schedule("00 10 1 * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("10 12 1 * *", async () => {
+cron.schedule("34 10 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3354,7 +3360,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("15 12 1 * *", async () => {
+cron.schedule("29 10 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
