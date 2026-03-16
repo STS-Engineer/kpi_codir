@@ -1857,9 +1857,9 @@ const generateVerticalBarChart = (chartData) => {
       <h4 style="margin:0 0 15px;color:#333;font-size:16px;">⚠️ Corrective Actions</h4>
       ${correctiveActions.map(ca => `
         <div style="margin-bottom:15px;padding:15px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;">
-          <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
-            Week ${ca.week ? String(ca.week).replace('2026-Week', '') : 'N/A'}
-            ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
+        <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
+           ${ca.week ? weekToMonthLabel(ca.week) : 'N/A'}
+           ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
           </div>
           ${ca.root_cause ? `
             <div style="margin-bottom:8px;">
