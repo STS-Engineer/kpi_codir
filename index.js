@@ -25,7 +25,7 @@ const pool = new Pool({
 });
 
 
-cron.schedule('00 07 * * 1', async () => {
+cron.schedule('34 09 * * 1', async () => {
   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
   try {
     await pool.query('SELECT public.update_kpi_week()');
@@ -203,26 +203,40 @@ const generateEmailHtml = ({ responsible, week }) => {
 
 const checkAndTriggerCorrectiveActions = async (responsibleId, kpiId, week, newValue, histId) => {
   try {
-    const kpiRes = await pool.query(`SELECT target FROM public."Kpi" WHERE kpi_id = $1`, [kpiId]);
+    const kpiRes = await pool.query(
+      `SELECT target FROM public."Kpi" WHERE kpi_id = $1`, [kpiId]
+    );
     if (!kpiRes.rows.length) return { targetUpdated: false };
+
     const currentTarget = parseFloat(kpiRes.rows[0].target);
     const numValue = parseFloat(newValue);
     if (isNaN(numValue) || isNaN(currentTarget)) return { targetUpdated: false };
 
-    await pool.query(
-      `UPDATE public.kpi_values_hist26
-       SET target = $1
-       WHERE responsible_id = $2 AND kpi_id = $3 AND week = $4 AND (target IS NULL OR target < $1)`,
-      [numValue, responsibleId, kpiId, week]
-    );
-
+    // ── value exceeds current target → queue it, touch NOTHING else ──────────
     if (numValue > currentTarget) {
-      await pool.query(`UPDATE public."Kpi" SET target = $1 WHERE kpi_id = $2`, [numValue, kpiId]);
-      return { targetUpdated: true, updateInfo: { kpiId, oldTarget: currentTarget, newTarget: numValue } };
+      console.log(`📌 KPI ${kpiId}: ${numValue} > target ${currentTarget} — queuing pending update`);
+
+      await pool.query(
+        `INSERT INTO public.pending_target_updates
+           (kpi_id, responsible_id, week, new_target, applied)
+         VALUES ($1, $2, $3, $4, false)
+         ON CONFLICT (kpi_id, responsible_id, week)
+         DO UPDATE SET new_target = EXCLUDED.new_target, applied = false`,
+        [kpiId, responsibleId, week, String(numValue)]
+      );
+
+      console.log(`✅ Pending target queued — KPI ${kpiId}: ${currentTarget} → ${numValue}`);
+
+      return {
+        targetUpdated: true,
+        updateInfo: { kpiId, oldTarget: currentTarget, newTarget: numValue }
+      };
     }
 
     return { targetUpdated: false };
+
   } catch (error) {
+    console.error('❌ checkAndTriggerCorrectiveActions error:', error.message);
     return { targetUpdated: false, error: error.message };
   }
 };
@@ -1857,9 +1871,9 @@ const generateVerticalBarChart = (chartData) => {
       <h4 style="margin:0 0 15px;color:#333;font-size:16px;">⚠️ Corrective Actions</h4>
       ${correctiveActions.map(ca => `
         <div style="margin-bottom:15px;padding:15px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;">
-        <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
-           ${ca.week ? weekToMonthLabel(ca.week) : 'N/A'}
-           ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
+       <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
+         ${ca.week ? weekToMonthLabel(ca.week) : 'N/A'}
+         ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
           </div>
           ${ca.root_cause ? `
             <div style="margin-bottom:8px;">
@@ -2201,23 +2215,26 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     const resResp = await pool.query(
       `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
               p.name AS plant_name, d.name AS department_name
-       FROM public."Responsible" r JOIN public."Plant" p ON r.plant_id = p.plant_id
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
        JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`, [responsibleId]);
+       WHERE r.responsible_id = $1`, [responsibleId]
+    );
     const responsible = resResp.rows[0];
     if (!responsible) throw new Error(`Responsible ${responsibleId} not found`);
 
+    // ── Build charts using CURRENT (old) target from Kpi table ───────────────
     const chartsData = await generateWeeklyReportData(responsibleId, reportWeek);
     let chartsHtml = '';
-    let hasData = false;
 
     if (chartsData && chartsData.length > 0) {
-      hasData = true;
       chartsData.forEach(chart => { chartsHtml += generateVerticalBarChart(chart); });
     } else {
-      chartsHtml = `<div style="text-align:center;padding:60px;background:#f8f9fa;border-radius:12px;">
-        <div style="font-size:48px;color:#adb5bd;margin-bottom:20px;">📊</div>
-        <p style="color:#495057;margin:0;font-size:18px;">No KPI Data Available</p></div>`;
+      chartsHtml = `
+        <div style="text-align:center;padding:60px;background:#f8f9fa;border-radius:12px;">
+          <div style="font-size:48px;color:#adb5bd;margin-bottom:20px;">📊</div>
+          <p style="color:#495057;margin:0;font-size:18px;">No KPI Data Available</p>
+        </div>`;
     }
 
     const emailHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
@@ -2228,22 +2245,24 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <tr><td style="background:#0078D7;padding:30px;text-align:center;border-radius:8px 8px 0 0;">
               <h1 style="margin:0;color:white;font-size:24px;">📊 KPI Performance Report</h1>
               <p style="margin:10px 0 20px;color:rgba(255,255,255,0.9);">
-                ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}</p>
+                ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}
+              </p>
               <table border="0" cellpadding="0" cellspacing="0" align="center"><tr>
                 <td style="padding:0 8px;">
                   <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    📈 View KPI Graphics</a></td>
+                    📈 View KPI Graphics</a>
+                </td>
                 <td style="padding:0 8px;">
                   <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    📊 View Dashboard</a></td>
+                    📊 View Dashboard</a>
+                </td>
               </tr></table>
             </td></tr>
 
-            <!-- ── Recommendations note ───────────────────────────── -->
             <tr><td style="padding:20px 30px 0;">
               <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:14px 18px;">
                 <span style="font-size:14px;color:#5f4200;">
@@ -2252,9 +2271,9 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
                 </span>
               </div>
             </td></tr>
-            <!-- ───────────────────────────────────────────────────── -->
 
             <tr><td style="padding:30px;">${chartsHtml}</td></tr>
+
             <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
                             text-align:center;font-size:12px;color:#666;">
               AVOCarbon KPI System • Generated ${new Date().toLocaleDateString('en-GB')}
@@ -2264,7 +2283,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
       </table>
     </body></html>`;
 
-    // ── Generate recommendations PDF to attach ────────────────────────────────
+    // ── Generate PDF attachment ───────────────────────────────────────────────
     let pdfAttachment = null;
     try {
       console.log(`📄 Generating recommendations PDF for ${responsible.name}…`);
@@ -2279,31 +2298,80 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         console.log(`📄 PDF ready — ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
       }
     } catch (pdfErr) {
-      // Don't block the main email if PDF generation fails
-      console.error(`⚠️ Could not generate recommendations PDF for ${responsible.name}:`, pdfErr.message);
+      console.error(`⚠️ PDF generation failed for ${responsible.name}:`, pdfErr.message);
     }
 
-    // ── Send the single combined email ────────────────────────────────────────
+    // ── SEND EMAIL (with OLD target values in charts) ─────────────────────────
     const transporter = createTransporter();
-    const mailOptions = {
+    await transporter.sendMail({
       from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
       to: responsible.email,
       subject: `📊 KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
-    };
+    });
+    console.log(`✅ Email sent to ${responsible.email}`);
 
-    await transporter.sendMail(mailOptions);
-    console.log(`✅ Weekly report + recommendations PDF sent to ${responsible.email}`);
+    // ── NOW apply all pending target updates for this responsible ─────────────
+    // Email is already sent — safe to update Kpi.target and hist26.target
+    try {
+      const pending = await pool.query(
+        `SELECT p.id, p.kpi_id, p.week, p.new_target,
+                k.target AS current_kpi_target, k.subject
+         FROM public.pending_target_updates p
+         JOIN public."Kpi" k ON k.kpi_id = p.kpi_id
+         WHERE p.responsible_id = $1 AND p.applied = false`,
+        [responsibleId]
+      );
+
+      console.log(`📋 ${pending.rows.length} pending target update(s) to apply for ${responsible.name}`);
+
+      for (const row of pending.rows) {
+        const newVal = parseFloat(row.new_target);
+        const currVal = parseFloat(row.current_kpi_target);
+
+        if (isNaN(newVal)) {
+          console.warn(`⚠️ Skipping KPI ${row.kpi_id} — new_target "${row.new_target}" is not a number`);
+          continue;
+        }
+
+        // 1. Update Kpi.target
+        await pool.query(
+          `UPDATE public."Kpi" SET target = $1 WHERE kpi_id = $2`,
+          [String(newVal), row.kpi_id]
+        );
+        console.log(`🎯 Kpi.target updated: "${row.subject}" (${row.kpi_id}) ${currVal} → ${newVal}`);
+
+        // 2. Update kpi_values_hist26.target for that week
+        await pool.query(
+          `UPDATE public.kpi_values_hist26
+           SET target = $1
+           WHERE responsible_id = $2 AND kpi_id = $3 AND week = $4`,
+          [newVal, responsibleId, row.kpi_id, row.week]
+        );
+        console.log(`📝 kpi_values_hist26.target updated: KPI ${row.kpi_id} week ${row.week} → ${newVal}`);
+
+        // 3. Mark as applied
+        await pool.query(
+          `UPDATE public.pending_target_updates SET applied = true WHERE id = $1`,
+          [row.id]
+        );
+      }
+
+      console.log(`✅ All pending target updates applied for ${responsible.name}`);
+
+    } catch (applyErr) {
+      console.error(`❌ Failed to apply pending target updates for ${responsible.name}:`, applyErr.message);
+    }
 
   } catch (error) {
-    console.error(`❌ Failed to send weekly report to ${responsibleId}:`, error.message);
+    console.error(`❌ generateWeeklyReportEmail failed for responsible ${responsibleId}:`, error.message);
     throw error;
   }
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("02 16 * * *", async () => {
+cron.schedule("45 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2334,7 +2402,7 @@ cron.schedule("02 16 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("35 11 * * *", async () => {
+cron.schedule("55 11 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3360,7 +3428,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 // ---------- Cron: weekly manager/plant report ----------
 let managerCronRunning = false;
-cron.schedule("40 11 * * *", async () => {
+cron.schedule("00 12 * * *", async () => {
   const lockId = "department_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
