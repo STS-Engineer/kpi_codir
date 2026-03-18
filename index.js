@@ -25,7 +25,7 @@ const pool = new Pool({
 });
 
 
-cron.schedule('56 09 * * 3', async () => {
+cron.schedule('12 10 * * 3', async () => {
   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
   try {
     await pool.query('SELECT public.update_kpi_week()');
