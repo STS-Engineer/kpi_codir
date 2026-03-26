@@ -25,17 +25,17 @@ const pool = new Pool({
 });
 
 
-cron.schedule('12 10 * * 3', async () => {
-  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
-  try {
-    await pool.query('SELECT public.update_kpi_week()');
-    console.log('[CRON] ✅ kpi_values.week updated successfully');
-  } catch (err) {
-    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
-  }
-}, {
-  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
-});
+// cron.schedule('12 10 * * 3', async () => {
+//   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+//   try {
+//     await pool.query('SELECT public.update_kpi_week()');
+//     console.log('[CRON] ✅ kpi_values.week updated successfully');
+//   } catch (err) {
+//     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+//   }
+// }, {
+//   timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+// });
 
 // ============================================================
 // DOT COLOR HELPER
