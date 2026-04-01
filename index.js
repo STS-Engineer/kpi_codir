@@ -2371,7 +2371,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("50 08 * * *", async () => {
+cron.schedule("56 08 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -2382,9 +2382,7 @@ cron.schedule("50 08 * * *", async () => {
     const startOfYear = new Date(now.getFullYear(), 0, 1);
     const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
     const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-    const targetWeek = currentWeek - 1;
-    const targetYear = targetWeek < 1 ? now.getFullYear() - 1 : now.getFullYear();
-    const forcedWeek = `${targetYear}-Week${targetWeek < 1 ? 52 : targetWeek}`;
+    const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
     const resps = await pool.query(
       `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
