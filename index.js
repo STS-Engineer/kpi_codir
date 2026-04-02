@@ -25,17 +25,17 @@ const pool = new Pool({
 });
 
 
-// cron.schedule('12 10 * * 3', async () => {
-//   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
-//   try {
-//     await pool.query('SELECT public.update_kpi_week()');
-//     console.log('[CRON] ✅ kpi_values.week updated successfully');
-//   } catch (err) {
-//     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
-//   }
-// }, {
-//   timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
-// });
+cron.schedule('34 09 * * 1', async () => {
+  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+  try {
+    await pool.query('SELECT public.update_kpi_week()');
+    console.log('[CRON] ✅ kpi_values.week updated successfully');
+  } catch (err) {
+    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+  }
+}, {
+  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+});
 
 // ============================================================
 // DOT COLOR HELPER
@@ -73,7 +73,7 @@ const acquireJobLock = async (lockId, ttlMinutes = 9) => {
   }
 };
 
-const releaseJobLock = async (lockId, instanceId, lockHash) => {
+const releaseJobLock = async (lockId, lockHash) => {
   try {
     if (lockHash) {
       await pool.query('SELECT pg_advisory_unlock($1)', [lockHash]);
@@ -136,7 +136,10 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
            ca.root_cause       AS ca_root_cause,
            ca.implemented_solution AS ca_implemented_solution,
            ca.evidence         AS ca_evidence,
-           ca.status           AS ca_status
+           ca.status           AS ca_status,
+           ca.start_date       AS ca_start_date,
+           ca.end_date         AS ca_end_date,
+           ca.deadline         AS ca_deadline
     FROM public.kpi_values kv
     JOIN "Kpi" k ON kv.kpi_id = k.kpi_id
     LEFT JOIN public.corrective_actions ca
@@ -249,7 +252,7 @@ const upsertCorrectiveAction = async (
   responsibleId,
   kpiId,
   week,
-  { rootCause, implementedSolution, evidence }
+  { rootCause, implementedSolution, evidence, startDate, endDate, deadline }
 ) => {
   try {
     const result = await pool.query(
@@ -257,6 +260,9 @@ const upsertCorrectiveAction = async (
        SET root_cause = $4::text,
            implemented_solution = $5::text,
            evidence = $6::text,
+           start_date = $7::date,
+           end_date = $8::date,
+           deadline = $9::date,
            status = CASE
              WHEN $4::text IS NOT NULL
               AND $5::text IS NOT NULL
@@ -266,8 +272,8 @@ const upsertCorrectiveAction = async (
            END,
            updated_date = NOW()
        WHERE responsible_id = $1
-       AND kpi_id = $2
-       AND week = $3
+         AND kpi_id = $2
+         AND week = $3
        RETURNING corrective_action_id`,
       [
         responsibleId,
@@ -275,30 +281,41 @@ const upsertCorrectiveAction = async (
         week,
         rootCause || null,
         implementedSolution || null,
-        evidence || null
+        evidence || null,
+        startDate || null,
+        endDate || null,
+        deadline || null
       ]
     );
 
-    // If no row was updated → insert
     if (result.rowCount === 0) {
       await pool.query(
         `INSERT INTO public.corrective_actions
-         (responsible_id, kpi_id, week, root_cause, implemented_solution, evidence, status)
-         VALUES ($1,$2,$3,$4::text,$5::text,$6::text,
+         (
+           responsible_id, kpi_id, week,
+           root_cause, implemented_solution, evidence,
+           start_date, end_date, deadline, status
+         )
+         VALUES (
+           $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::date,$9::date,
            CASE
              WHEN $4::text IS NOT NULL
               AND $5::text IS NOT NULL
               AND $6::text IS NOT NULL
              THEN 'Waiting for validation'
              ELSE 'Open'
-           END)`,
+           END
+         )`,
         [
           responsibleId,
           kpiId,
           week,
           rootCause || null,
           implementedSolution || null,
-          evidence || null
+          evidence || null,
+          startDate || null,
+          endDate || null,
+          deadline || null
         ]
       );
     }
@@ -319,47 +336,65 @@ const generateCASuggestions = async (kpi) => {
 
     const currentVal = parseFloat(kpi.value || 0);
     const targetVal = parseFloat(kpi.target || 0);
-    const gap = targetVal > 0 ? (targetVal - currentVal).toFixed(2) : "N/A";
-    const pctGap = targetVal > 0
-      ? (((targetVal - currentVal) / targetVal) * 100).toFixed(1)
-      : "N/A";
+    const lowLimit = parseFloat(kpi.low_limit || 0);
+    const highLimit = parseFloat(kpi.high_limit || 0);
 
-    const prompt = `You are an industrial manufacturing and continuous-improvement expert.
+    const gapToTarget = !isNaN(targetVal) ? (targetVal - currentVal).toFixed(2) : "N/A";
+    const gapToLow = !isNaN(lowLimit) ? (lowLimit - currentVal).toFixed(2) : "N/A";
 
-A KPI is BELOW its target. Give exactly 2 distinct corrective action plans.
-Each plan must have:
-1. root_cause       – likely reason the KPI is below target (1-2 sentences)
-2. immediate_action – what to do right now, within 1 week (1-2 sentences)
-3. evidence         – how to prove the action is working (1-2 sentences)
+    const prompt = `
+You are a senior industrial performance manager in manufacturing.
 
-The 2 plans should represent DIFFERENT root-cause hypotheses so the responsible can pick the most relevant one.
+Your task is to write 2 highly practical corrective action suggestions for a KPI that is underperforming.
 
-KPI Details:
-- Indicator: ${kpi.subject}${kpi.indicator_sub_title ? ` — ${kpi.indicator_sub_title}` : ""}
+KPI CONTEXT
+- KPI: ${kpi.subject || "N/A"}
+- Subtitle: ${kpi.indicator_sub_title || "N/A"}
+- Definition: ${kpi.definition || "N/A"}
+- Calculation basis: ${kpi.calculation_on || "N/A"}
+- Frequency: ${kpi.frequency || "N/A"}
 - Unit: ${kpi.unit || "N/A"}
-- Current Value: ${currentVal} ${kpi.unit || ""}
-- Target Value: ${targetVal} ${kpi.unit || ""}
-- Gap: ${gap} ${kpi.unit || ""} (${pctGap}% below target)
+- Current value: ${currentVal}
+- Target: ${targetVal || "N/A"}
+- Low limit: ${kpi.low_limit || "N/A"}
+- High limit: ${kpi.high_limit || "N/A"}
+- Gap to target: ${gapToTarget}
+- Gap to low limit: ${gapToLow}
 
-Rules:
-- Be specific to this KPI context, not generic
-- Return ONLY valid JSON, no markdown, no extra text
+INSTRUCTIONS
+- Give exactly 2 different hypotheses.
+- Be specific to the KPI context.
+- Use direct operational language.
+- Avoid generic phrases like "improve monitoring" or "optimize process" unless you say exactly how.
+- The immediate action must be executable by a plant/department responsible.
+- Evidence must be measurable and concrete.
+- Mention exact checks, exact actions, and exact proof.
+- Keep each field short but precise.
+- Write like an industrial manager, not like a consultant.
 
-Format:
+Return ONLY valid JSON with this format:
 {
-  "suggestion_1": { "root_cause": "...", "immediate_action": "...", "evidence": "..." },
-  "suggestion_2": { "root_cause": "...", "immediate_action": "...", "evidence": "..." }
-}`;
+  "suggestion_1": {
+    "root_cause": "...",
+    "immediate_action": "...",
+    "evidence": "..."
+  },
+  "suggestion_2": {
+    "root_cause": "...",
+    "immediate_action": "...",
+    "evidence": "..."
+  }
+}
+`;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 600,
+      temperature: 0.35,
+      max_tokens: 700,
     });
 
-    const raw = completion.choices[0].message.content.trim()
-      .replace(/```json|```/g, "").trim();
+    const raw = completion.choices[0].message.content.trim().replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(raw);
 
     return [
@@ -419,37 +454,436 @@ app.get("/generate-ca-suggestion", async (req, res) => {
 app.get("/corrective-actions-list", async (req, res) => {
   try {
     const { responsible_id } = req.query;
-    const actionsRes = await pool.query(
-      `SELECT ca.*, k.indicator_title, k.indicator_sub_title, k.unit
-       FROM public.corrective_actions ca
-       JOIN public."Kpi" k ON ca.kpi_id = k.kpi_id
-       WHERE ca.responsible_id = $1 ORDER BY ca.created_date DESC`,
+
+    if (!responsible_id) {
+      return res.status(400).send(`<p style="color:red;">Missing responsible_id</p>`);
+    }
+
+    const responsibleRes = await pool.query(
+      `SELECT r.responsible_id, r.name, r.email,
+              p.name AS plant_name,
+              d.name AS department_name
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
+       JOIN public."Department" d ON r.department_id = d.department_id
+       WHERE r.responsible_id = $1`,
       [responsible_id]
     );
+
+    const responsible = responsibleRes.rows[0];
+    if (!responsible) {
+      return res.status(404).send(`<p style="color:red;">Responsible not found</p>`);
+    }
+
+    const actionsRes = await pool.query(
+      `SELECT
+         ca.*,
+         k.subject AS indicator_title,
+         k.indicator_sub_title,
+         k.unit,
+         kv.value,
+         k.target,
+         k.low_limit,
+         k.high_limit
+       FROM public.corrective_actions ca
+       JOIN public."Kpi" k
+         ON ca.kpi_id = k.kpi_id
+       LEFT JOIN public.kpi_values kv
+         ON kv.kpi_id = ca.kpi_id
+        AND kv.responsible_id = ca.responsible_id
+        AND kv.week = ca.week
+       WHERE ca.responsible_id = $1
+       ORDER BY
+         CASE
+           WHEN ca.deadline IS NULL THEN 1
+           WHEN ca.deadline < CURRENT_DATE
+                AND ca.status NOT IN ('Closed', 'Completed') THEN 0
+           ELSE 1
+         END,
+         ca.deadline ASC NULLS LAST,
+         ca.created_date DESC`,
+      [responsible_id]
+    );
+
     const actions = actionsRes.rows;
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Corrective Actions</title>
-      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;padding:20px}
-      .container{max-width:1200px;margin:0 auto;background:white;padding:30px;border-radius:8px}
-      h1{color:#0078D7}table{width:100%;border-collapse:collapse;margin-top:20px}
-      th,td{padding:12px;border:1px solid #ddd}th{background:#0078D7;color:white}
-      tr:nth-child(even){background:#f8f9fa}
-      .status-open{background:#ffebee;color:#c62828;padding:4px 10px;border-radius:12px;font-size:12px}
-      .status-completed{background:#e8f5e9;color:#2e7d32;padding:4px 10px;border-radius:12px;font-size:12px}
-      </style></head><body>
-      <div class="container"><h1>📋 Corrective Actions History</h1>
-      <table><thead><tr><th>Week</th><th>KPI</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
-      <tbody>${actions.length === 0
-        ? '<tr><td colspan="5" style="text-align:center;padding:40px;color:#999;">No corrective actions found</td></tr>'
-        : actions.map(a => `<tr>
-            <td>${a.week}</td>
-            <td><strong>${a.indicator_title}</strong>${a.indicator_sub_title ? `<br><small>${a.indicator_sub_title}</small>` : ''}</td>
-            <td><span class="status-${a.status.toLowerCase()}">${a.status}</span></td>
-            <td>${new Date(a.created_date).toLocaleDateString()}</td>
-            <td><a href="/corrective-action-form?responsible_id=${responsible_id}&kpi_id=${a.kpi_id}&week=${a.week}"
-                   style="color:#0078D7;font-weight:600;">${a.status === 'Open' ? 'Complete' : 'View'}</a></td>
-          </tr>`).join('')}
-      </tbody></table></div></body></html>`);
+
+    const formatDate = (dateValue) => {
+      if (!dateValue) return "—";
+      const d = new Date(dateValue);
+      if (isNaN(d.getTime())) return "—";
+      return d.toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      });
+    };
+
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
+    const cardsHtml = actions.length === 0
+      ? `
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <h3>No corrective actions found</h3>
+          <p>This responsible does not have corrective actions yet.</p>
+        </div>
+      `
+      : actions.map((a) => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const deadlineDate = a.deadline ? new Date(a.deadline) : null;
+        const isOverdue =
+          deadlineDate &&
+          !isNaN(deadlineDate.getTime()) &&
+          deadlineDate < today &&
+          !["Closed", "Completed"].includes(a.status);
+
+        const currentVal = a.value !== null && a.value !== undefined && a.value !== ""
+          ? parseFloat(a.value)
+          : null;
+
+        const targetVal = a.target !== null && a.target !== undefined && a.target !== ""
+          ? parseFloat(a.target)
+          : null;
+
+        const gap =
+          currentVal !== null && !isNaN(currentVal) &&
+            targetVal !== null && !isNaN(targetVal)
+            ? (targetVal - currentVal).toFixed(2)
+            : "—";
+
+        const safeStatusClass = String(a.status || "open")
+          .toLowerCase()
+          .replace(/\s+/g, "-");
+
+        return `
+            <div class="ca-card ${isOverdue ? "overdue" : ""}">
+              <div class="ca-card-top">
+                <div>
+                  <div class="ca-kpi-title">${escapeHtml(a.indicator_title)}</div>
+                  ${a.indicator_sub_title
+            ? `<div class="ca-kpi-subtitle">${escapeHtml(a.indicator_sub_title)}</div>`
+            : ""}
+                </div>
+                <span class="status-pill status-${safeStatusClass}">
+                  ${escapeHtml(a.status || "Open")}
+                </span>
+              </div>
+
+              <div class="ca-stats">
+                <div class="stat-box">
+                  <span class="stat-label">Current</span>
+                  <strong>${a.value ?? "—"} ${escapeHtml(a.unit || "")}</strong>
+                </div>
+                <div class="stat-box">
+                  <span class="stat-label">Target</span>
+                  <strong>${a.target ?? "—"} ${escapeHtml(a.unit || "")}</strong>
+                </div>
+                <div class="stat-box">
+                  <span class="stat-label">Gap</span>
+                  <strong>${gap} ${escapeHtml(a.unit || "")}</strong>
+                </div>
+              </div>
+
+              <div class="ca-meta-grid">
+                <div class="meta-item">
+                  <span>Week</span>
+                  <strong>${escapeHtml(a.week)}</strong>
+                </div>
+                <div class="meta-item">
+                  <span>Start Date</span>
+                  <strong>${formatDate(a.start_date)}</strong>
+                </div>
+                <div class="meta-item">
+                  <span>End Date</span>
+                  <strong>${formatDate(a.end_date)}</strong>
+                </div>
+                <div class="meta-item ${isOverdue ? "deadline-overdue" : ""}">
+                  <span>Deadline</span>
+                  <strong>${formatDate(a.deadline)}</strong>
+                </div>
+                <div class="meta-item">
+                  <span>Created</span>
+                  <strong>${formatDate(a.created_date)}</strong>
+                </div>
+                <div class="meta-item">
+                  <span>Updated</span>
+                  <strong>${formatDate(a.updated_date)}</strong>
+                </div>
+              </div>
+
+              <div class="ca-footer">
+                <div class="deadline-badge ${isOverdue ? "deadline-badge-overdue" : ""}">
+                  ${a.deadline
+            ? (isOverdue ? "⛔ Overdue" : "⏰ Deadline set")
+            : "🕒 No deadline"}
+                </div>
+
+                <a class="view-btn"
+                   href="/corrective-action-form?responsible_id=${encodeURIComponent(responsible_id)}&kpi_id=${encodeURIComponent(a.kpi_id)}&week=${encodeURIComponent(a.week)}">
+                  ${a.status === "Open" ? "Complete Action" : "View Corrective Action"}
+                </a>
+              </div>
+            </div>
+          `;
+      }).join("");
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1.0">
+        <title>Corrective Actions</title>
+        <style>
+          *{box-sizing:border-box}
+          body{
+            margin:0;
+            padding:24px;
+            font-family:'Segoe UI',system-ui,sans-serif;
+            background:linear-gradient(135deg,#eef2ff 0%,#f8fafc 100%);
+            color:#1f2937;
+          }
+          .container{
+            max-width:1200px;
+            margin:0 auto;
+          }
+          .header{
+            background:linear-gradient(135deg,#0f172a,#1d4ed8);
+            color:white;
+            border-radius:18px;
+            padding:28px;
+            box-shadow:0 10px 30px rgba(0,0,0,0.12);
+            margin-bottom:24px;
+          }
+          .header h1{
+            margin:0 0 10px;
+            font-size:30px;
+          }
+          .header-sub{
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px 18px;
+            opacity:.95;
+            font-size:14px;
+          }
+          .cards-grid{
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(340px,1fr));
+            gap:20px;
+          }
+          .ca-card{
+            background:white;
+            border-radius:18px;
+            padding:22px;
+            border:1px solid #e5e7eb;
+            box-shadow:0 8px 24px rgba(15,23,42,0.06);
+            transition:transform .2s ease, box-shadow .2s ease;
+          }
+          .ca-card:hover{
+            transform:translateY(-3px);
+            box-shadow:0 14px 34px rgba(15,23,42,0.10);
+          }
+          .ca-card.overdue{
+            border:1px solid #ef4444;
+            box-shadow:0 10px 28px rgba(239,68,68,0.12);
+          }
+          .ca-card-top{
+            display:flex;
+            justify-content:space-between;
+            gap:14px;
+            align-items:flex-start;
+            margin-bottom:16px;
+          }
+          .ca-kpi-title{
+            font-size:18px;
+            font-weight:800;
+            color:#111827;
+            line-height:1.3;
+          }
+          .ca-kpi-subtitle{
+            margin-top:6px;
+            font-size:13px;
+            color:#6b7280;
+          }
+          .status-pill{
+            display:inline-flex;
+            align-items:center;
+            padding:8px 12px;
+            border-radius:999px;
+            font-size:12px;
+            font-weight:700;
+            white-space:nowrap;
+            border:1px solid transparent;
+          }
+          .status-open{
+            background:#fef2f2;
+            color:#b91c1c;
+            border-color:#fecaca;
+          }
+          .status-waiting-for-validation{
+            background:#fff7ed;
+            color:#c2410c;
+            border-color:#fed7aa;
+          }
+          .status-completed,.status-closed{
+            background:#ecfdf5;
+            color:#047857;
+            border-color:#a7f3d0;
+          }
+          .ca-stats{
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:12px;
+            margin-bottom:16px;
+          }
+          .stat-box{
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:12px;
+            padding:12px;
+            text-align:center;
+          }
+          .stat-label{
+            display:block;
+            font-size:11px;
+            text-transform:uppercase;
+            letter-spacing:.6px;
+            color:#64748b;
+            margin-bottom:6px;
+            font-weight:700;
+          }
+          .stat-box strong{
+            font-size:16px;
+            color:#111827;
+          }
+          .ca-meta-grid{
+            display:grid;
+            grid-template-columns:repeat(2,1fr);
+            gap:12px;
+            margin-bottom:18px;
+          }
+          .meta-item{
+            background:#f9fafb;
+            border:1px solid #e5e7eb;
+            border-radius:12px;
+            padding:12px;
+          }
+          .meta-item span{
+            display:block;
+            font-size:11px;
+            text-transform:uppercase;
+            letter-spacing:.5px;
+            color:#6b7280;
+            margin-bottom:5px;
+            font-weight:700;
+          }
+          .meta-item strong{
+            font-size:14px;
+            color:#111827;
+          }
+          .deadline-overdue{
+            background:#fef2f2;
+            border-color:#fecaca;
+          }
+          .deadline-overdue strong{
+            color:#b91c1c;
+          }
+          .ca-footer{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:12px;
+            flex-wrap:wrap;
+          }
+          .deadline-badge{
+            display:inline-flex;
+            align-items:center;
+            padding:8px 12px;
+            border-radius:999px;
+            background:#eff6ff;
+            color:#1d4ed8;
+            font-size:12px;
+            font-weight:700;
+          }
+          .deadline-badge-overdue{
+            background:#fef2f2;
+            color:#b91c1c;
+          }
+          .view-btn{
+            display:inline-block;
+            text-decoration:none;
+            background:linear-gradient(135deg,#2563eb,#1d4ed8);
+            color:white;
+            font-weight:700;
+            padding:11px 16px;
+            border-radius:12px;
+            box-shadow:0 8px 20px rgba(37,99,235,0.22);
+          }
+          .view-btn:hover{
+            opacity:.95;
+          }
+          .empty-state{
+            background:white;
+            border-radius:18px;
+            padding:60px 24px;
+            text-align:center;
+            border:1px dashed #cbd5e1;
+          }
+          .empty-icon{
+            font-size:48px;
+            margin-bottom:10px;
+          }
+          .back-row{
+            margin-top:22px;
+            text-align:center;
+          }
+          .back-link{
+            display:inline-block;
+            text-decoration:none;
+            color:#1d4ed8;
+            font-weight:700;
+          }
+          @media(max-width:700px){
+            body{padding:16px}
+            .ca-stats,.ca-meta-grid{grid-template-columns:1fr}
+            .ca-card-top,.ca-footer{flex-direction:column;align-items:flex-start}
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>📋 Corrective Actions</h1>
+            <div class="header-sub">
+              <div><strong>Responsible:</strong> ${escapeHtml(responsible.name)}</div>
+              <div><strong>Plant:</strong> ${escapeHtml(responsible.plant_name)}</div>
+              <div><strong>Department:</strong> ${escapeHtml(responsible.department_name)}</div>
+            </div>
+          </div>
+
+          <div class="cards-grid">
+            ${cardsHtml}
+          </div>
+
+          <div class="back-row">
+            <a class="back-link" href="/dashboard?responsible_id=${encodeURIComponent(responsible_id)}">
+              ← Back to Dashboard
+            </a>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
   } catch (err) {
+    console.error("Error loading corrective actions list:", err);
     res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
@@ -457,53 +891,408 @@ app.get("/corrective-actions-list", async (req, res) => {
 app.get("/corrective-action-form", async (req, res) => {
   try {
     const { responsible_id, kpi_id, week } = req.query;
+
+    if (!responsible_id || !kpi_id || !week) {
+      return res.status(400).send("Missing responsible_id, kpi_id, or week");
+    }
+
     const resResp = await pool.query(
       `SELECT r.*, p.name AS plant_name, d.name AS department_name
        FROM public."Responsible" r
        JOIN public."Plant" p ON r.plant_id = p.plant_id
        JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`, [responsible_id]);
+       WHERE r.responsible_id = $1`,
+      [responsible_id]
+    );
+
     const responsible = resResp.rows[0];
-    if (!responsible) return res.status(404).send("Responsible not found");
+    if (!responsible) {
+      return res.status(404).send("Responsible not found");
+    }
+
     const kpiResp = await pool.query(
-      `SELECT k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit, k.target, kv.value
+      `SELECT
+         k.kpi_id,
+         k.subject AS indicator_title,
+         k.indicator_sub_title,
+         k.unit,
+         k.target,
+         k.low_limit,
+         k.high_limit,
+         kv.value
        FROM public."Kpi" k
-       LEFT JOIN public.kpi_values kv ON k.kpi_id = kv.kpi_id
-       WHERE k.kpi_id = $1 AND kv.responsible_id = $2 AND kv.week = $3`,
-      [kpi_id, responsible_id, week]);
+       LEFT JOIN public.kpi_values kv
+         ON k.kpi_id = kv.kpi_id
+        AND kv.responsible_id = $2
+        AND kv.week = $3
+       WHERE k.kpi_id = $1
+       LIMIT 1`,
+      [kpi_id, responsible_id, week]
+    );
+
     const kpi = kpiResp.rows[0];
-    if (!kpi) return res.status(404).send("KPI not found");
-    const existingCA = await pool.query(
-      `SELECT * FROM public.corrective_actions WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3
-       ORDER BY created_date DESC LIMIT 1`, [responsible_id, kpi_id, week]);
-    const ed = existingCA.rows[0] || {};
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Corrective Action</title>
-      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;padding:20px}
-      .container{max-width:800px;margin:0 auto;background:white;border-radius:8px;overflow:hidden}
-      .header{background:linear-gradient(135deg,#d32f2f,#f44336);color:white;padding:25px;text-align:center}
-      .form-section{padding:30px}label{display:block;font-weight:600;margin-bottom:8px}
-      textarea{width:100%;padding:12px;border:1px solid #ddd;border-radius:4px;min-height:100px;resize:vertical}
-      .submit-btn{background:#d32f2f;color:white;border:none;padding:14px 30px;border-radius:6px;
-                  font-size:16px;font-weight:600;cursor:pointer;width:100%}</style></head><body>
-      <div class="container">
-        <div class="header"><h1>Corrective Action Form</h1><div>Week ${week}</div></div>
-        <div class="form-section">
-          <form action="/submit-corrective-action" method="POST">
-            <input type="hidden" name="responsible_id" value="${responsible_id}">
-            <input type="hidden" name="kpi_id" value="${kpi_id}">
-            <input type="hidden" name="week" value="${week}">
-            ${ed.corrective_action_id ? `<input type="hidden" name="corrective_action_id" value="${ed.corrective_action_id}">` : ''}
-            <div style="margin-bottom:20px"><label>Root Cause Analysis *</label>
-              <textarea name="root_cause" required>${ed.root_cause || ''}</textarea></div>
-            <div style="margin-bottom:20px"><label>Implemented Solution *</label>
-              <textarea name="implemented_solution" required>${ed.implemented_solution || ''}</textarea></div>
-            <div style="margin-bottom:20px"><label>Evidence of Improvement *</label>
-              <textarea name="evidence" required>${ed.evidence || ''}</textarea></div>
-            <button type="submit" class="submit-btn">Submit Corrective Action</button>
-          </form>
+    if (!kpi) {
+      return res.status(404).send("KPI not found");
+    }
+
+    const existingCARes = await pool.query(
+      `SELECT *
+       FROM public.corrective_actions
+       WHERE responsible_id = $1
+         AND kpi_id = $2
+         AND week = $3
+       ORDER BY created_date DESC
+       LIMIT 1`,
+      [responsible_id, kpi_id, week]
+    );
+
+    const ed = existingCARes.rows[0] || {};
+
+    const formatInputDate = (dateValue) => {
+      if (!dateValue) return "";
+      const d = new Date(dateValue);
+      if (isNaN(d.getTime())) return "";
+      return d.toISOString().split("T")[0];
+    };
+
+    const escapeHtml = (value) =>
+      String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+
+    const today = new Date();
+    const defaultStartDate = formatInputDate(ed.start_date) || today.toISOString().split("T")[0];
+
+    const defaultDeadline = (() => {
+      if (ed.deadline) return formatInputDate(ed.deadline);
+      const d = new Date();
+      d.setDate(d.getDate() + 7);
+      return d.toISOString().split("T")[0];
+    })();
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1.0">
+        <title>Corrective Action</title>
+        <style>
+          *{box-sizing:border-box}
+          body{
+            margin:0;
+            padding:24px;
+            font-family:'Segoe UI',system-ui,sans-serif;
+            background:linear-gradient(135deg,#eef2ff 0%,#f8fafc 100%);
+            color:#1f2937;
+          }
+          .container{
+            max-width:900px;
+            margin:0 auto;
+            background:white;
+            border-radius:22px;
+            overflow:hidden;
+            box-shadow:0 20px 50px rgba(15,23,42,0.10);
+            border:1px solid #e5e7eb;
+          }
+          .header{
+            background:linear-gradient(135deg,#b91c1c,#ef4444);
+            color:white;
+            padding:30px;
+          }
+          .header h1{
+            margin:0 0 10px;
+            font-size:30px;
+          }
+          .header .sub{
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px 18px;
+            font-size:14px;
+            opacity:.96;
+          }
+          .body{
+            padding:30px;
+          }
+          .info-grid{
+            display:grid;
+            grid-template-columns:repeat(2,1fr);
+            gap:14px;
+            margin-bottom:24px;
+          }
+          .info-box{
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:14px;
+            padding:14px 16px;
+          }
+          .info-box span{
+            display:block;
+            font-size:11px;
+            text-transform:uppercase;
+            letter-spacing:.6px;
+            color:#64748b;
+            font-weight:700;
+            margin-bottom:6px;
+          }
+          .info-box strong{
+            color:#111827;
+            font-size:15px;
+          }
+          .section-title{
+            margin:0 0 18px;
+            font-size:20px;
+            color:#b91c1c;
+          }
+          .form-group{
+            margin-bottom:18px;
+          }
+          label{
+            display:block;
+            font-weight:700;
+            margin-bottom:8px;
+            color:#374151;
+            font-size:14px;
+          }
+          textarea,input[type="date"]{
+            width:100%;
+            padding:14px 15px;
+            border:1px solid #d1d5db;
+            border-radius:12px;
+            font-size:14px;
+            font-family:inherit;
+            background:#fff;
+            transition:border-color .2s, box-shadow .2s;
+          }
+          textarea{
+            min-height:120px;
+            resize:vertical;
+          }
+          textarea:focus,input[type="date"]:focus{
+            outline:none;
+            border-color:#2563eb;
+            box-shadow:0 0 0 4px rgba(37,99,235,0.10);
+          }
+          .dates-grid{
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:14px;
+          }
+          .status-line{
+            margin-bottom:18px;
+          }
+          .status-badge{
+            display:inline-flex;
+            align-items:center;
+            padding:8px 12px;
+            border-radius:999px;
+            font-size:12px;
+            font-weight:800;
+            border:1px solid transparent;
+          }
+          .status-open{
+            background:#fef2f2;
+            color:#b91c1c;
+            border-color:#fecaca;
+          }
+          .status-waiting-for-validation{
+            background:#fff7ed;
+            color:#c2410c;
+            border-color:#fed7aa;
+          }
+          .status-completed,.status-closed{
+            background:#ecfdf5;
+            color:#047857;
+            border-color:#a7f3d0;
+          }
+          .actions{
+            display:flex;
+            gap:12px;
+            margin-top:26px;
+            flex-wrap:wrap;
+          }
+          .submit-btn{
+            background:linear-gradient(135deg,#b91c1c,#ef4444);
+            color:white;
+            border:none;
+            padding:14px 28px;
+            border-radius:12px;
+            font-size:15px;
+            font-weight:800;
+            cursor:pointer;
+            box-shadow:0 10px 24px rgba(239,68,68,0.22);
+          }
+          .back-btn{
+            display:inline-block;
+            padding:14px 22px;
+            border-radius:12px;
+            text-decoration:none;
+            font-weight:800;
+            color:#1d4ed8;
+            background:#eff6ff;
+          }
+          .hint{
+            margin-top:6px;
+            font-size:12px;
+            color:#6b7280;
+          }
+          @media(max-width:760px){
+            body{padding:16px}
+            .info-grid,.dates-grid{grid-template-columns:1fr}
+            .body{padding:20px}
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Corrective Action Form</h1>
+            <div class="sub">
+              <div><strong>Week:</strong> ${escapeHtml(week)}</div>
+              <div><strong>Responsible:</strong> ${escapeHtml(responsible.name)}</div>
+              <div><strong>Plant:</strong> ${escapeHtml(responsible.plant_name)}</div>
+              <div><strong>Department:</strong> ${escapeHtml(responsible.department_name)}</div>
+            </div>
+          </div>
+
+          <div class="body">
+            <div class="info-grid">
+              <div class="info-box">
+                <span>KPI</span>
+                <strong>${escapeHtml(kpi.indicator_title)}</strong>
+              </div>
+              <div class="info-box">
+                <span>Subtitle</span>
+                <strong>${escapeHtml(kpi.indicator_sub_title || "—")}</strong>
+              </div>
+              <div class="info-box">
+                <span>Current Value</span>
+                <strong>${kpi.value ?? "—"} ${escapeHtml(kpi.unit || "")}</strong>
+              </div>
+              <div class="info-box">
+                <span>Target</span>
+                <strong>${kpi.target ?? "—"} ${escapeHtml(kpi.unit || "")}</strong>
+              </div>
+              <div class="info-box">
+                <span>Low Limit</span>
+                <strong>${kpi.low_limit ?? "—"} ${escapeHtml(kpi.unit || "")}</strong>
+              </div>
+              <div class="info-box">
+                <span>High Limit</span>
+                <strong>${kpi.high_limit ?? "—"} ${escapeHtml(kpi.unit || "")}</strong>
+              </div>
+            </div>
+
+            <div class="status-line">
+              <span class="status-badge ${String(ed.status || "Open").toLowerCase().replace(/\s+/g, "-").includes("waiting-for-validation") ? "status-waiting-for-validation" : String(ed.status || "Open").toLowerCase().replace(/\s+/g, "-").includes("completed") || String(ed.status || "Open").toLowerCase().replace(/\s+/g, "-").includes("closed") ? "status-completed" : "status-open"}">
+                Status: ${escapeHtml(ed.status || "Open")}
+              </span>
+            </div>
+
+            <h2 class="section-title">Action Details</h2>
+
+            <form action="/submit-corrective-action" method="POST">
+              <input type="hidden" name="responsible_id" value="${escapeHtml(responsible_id)}">
+              <input type="hidden" name="kpi_id" value="${escapeHtml(kpi_id)}">
+              <input type="hidden" name="week" value="${escapeHtml(week)}">
+              ${ed.corrective_action_id
+        ? `<input type="hidden" name="corrective_action_id" value="${escapeHtml(ed.corrective_action_id)}">`
+        : ""}
+     <div class="dates-grid">
+      <div class="form-group">
+      <label for="start_date">📅 Start Date *</label>
+      <input
+      type="date"
+      id="start_date"
+      name="start_date"
+      required
+      value=""
+    >
+  </div>
+
+  <div class="form-group">
+    <label for="end_date">🏁 End Date *</label>
+    <input
+      type="date"
+      id="end_date"
+      name="end_date"
+      required
+      value=""
+    >
+  </div>
+
+  <div class="form-group">
+    <label for="deadline">⏰ Deadline *</label>
+    <input
+      type="date"
+      id="deadline"
+      name="deadline"
+      required
+      value=""
+    >
+    <div class="hint">Set the final due date for this corrective action.</div>
+  </div>
+</div>
+
+<div class="form-group">
+  <label for="root_cause">🔍 Root Cause Analysis *</label>
+  <textarea id="root_cause" name="root_cause" required></textarea>
+</div>
+
+<div class="form-group">
+  <label for="implemented_solution">🔧 Implemented Solution *</label>
+  <textarea id="implemented_solution" name="implemented_solution" required></textarea>
+</div>
+
+<div class="form-group">
+  <label for="evidence">📊 Evidence of Improvement *</label>
+  <textarea id="evidence" name="evidence" required></textarea>
+</div>
+              <div class="actions">
+                <button type="submit" class="submit-btn">Submit Corrective Action</button>
+                <a class="back-btn"
+                   href="/corrective-actions-list?responsible_id=${encodeURIComponent(responsible_id)}">
+                  Back to Corrective Actions
+                </a>
+              </div>
+            </form>
+          </div>
         </div>
-      </div></body></html>`);
+
+        <script>
+          const startDateInput = document.getElementById('start_date');
+          const endDateInput = document.getElementById('end_date');
+          const deadlineInput = document.getElementById('deadline');
+
+          function validateDates() {
+            const startDate = startDateInput.value;
+            const endDate = endDateInput.value;
+            const deadline = deadlineInput.value;
+
+            endDateInput.setCustomValidity('');
+            deadlineInput.setCustomValidity('');
+
+            if (startDate && endDate && endDate < startDate) {
+              endDateInput.setCustomValidity('End date must be greater than or equal to start date');
+            }
+
+            if (startDate && deadline && deadline < startDate) {
+              deadlineInput.setCustomValidity('Deadline must be greater than or equal to start date');
+            }
+          }
+
+          startDateInput.addEventListener('change', validateDates);
+          endDateInput.addEventListener('change', validateDates);
+          deadlineInput.addEventListener('change', validateDates);
+        </script>
+      </body>
+      </html>
+    `);
   } catch (err) {
+    console.error("Error loading corrective action form:", err);
     res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
@@ -939,6 +1728,18 @@ app.post("/redirect", async (req, res) => {
       .filter(([k]) => k.startsWith("evidence_"))
       .reduce((acc, [k, v]) => { acc[k.replace("evidence_", "")] = v; return acc; }, {});
 
+    const startDates = Object.entries(values)
+      .filter(([k]) => k.startsWith("start_date_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("start_date_", "")] = v; return acc; }, {});
+
+    const endDates = Object.entries(values)
+      .filter(([k]) => k.startsWith("end_date_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("end_date_", "")] = v; return acc; }, {});
+
+    const deadlines = Object.entries(values)
+      .filter(([k]) => k.startsWith("deadline_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("deadline_", "")] = v; return acc; }, {});
+
     const targetUpdates = [];
     let correctiveActionsCount = 0;
 
@@ -962,7 +1763,9 @@ app.post("/redirect", async (req, res) => {
       const rc = rootCauses[item.kpi_values_id] || '';
       const is_ = implSolutions[item.kpi_values_id] || '';
       const ev = evidences[item.kpi_values_id] || '';
-
+      const sd = startDates[item.kpi_values_id] || null;
+      const ed = endDates[item.kpi_values_id] || null;
+      const dl = deadlines[item.kpi_values_id] || null;
       await pool.query(
         `INSERT INTO public.kpi_values_hist26
          (kpi_values_id, responsible_id, kpi_id, week, old_value, new_value, comment)
@@ -986,6 +1789,9 @@ app.post("/redirect", async (req, res) => {
             rootCause: rc || null,
             implementedSolution: is_ || null,
             evidence: ev || null,
+            startDate: sd,
+            endDate: ed,
+            deadline: dl,
           });
           correctiveActionsCount++;
         } else {
@@ -997,8 +1803,9 @@ app.post("/redirect", async (req, res) => {
           );
           if (existing.rows.length === 0) {
             await pool.query(
-              `INSERT INTO public.corrective_actions (responsible_id, kpi_id, week, status)
-               VALUES ($1, $2, $3, 'Open')`,
+              `INSERT INTO public.corrective_actions
+             (responsible_id, kpi_id, week, status, start_date, deadline)
+              VALUES ($1, $2, $3, 'Open', CURRENT_DATE, CURRENT_DATE + INTERVAL '7 day')`,
               [responsible_id, kpi_id, week]
             );
           }
@@ -1040,7 +1847,7 @@ app.post("/redirect", async (req, res) => {
           ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">📌</span><span>${n}</span></div>`).join('')}
         </div>
         <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
-        <a href="/kpi-trends?responsible_id=${responsible_id}" class="btn">View Trends</a>
+        <a href="/corrective-actions-list?responsible_id=${responsible_id}" class="btn">View Corrective Actions</a>
       </div></body></html>`);
   } catch (err) {
     res.status(500).send(`<h2 style="color:red;">❌ Failed: ${err.message}</h2>`);
@@ -1052,70 +1859,87 @@ app.get("/form", async (req, res) => {
   try {
     const { responsible_id, week } = req.query;
     const { responsible, kpis } = await getResponsibleWithKPIs(responsible_id, week);
-    if (!kpis.length) return res.send("<p>No KPIs found for this week.</p>");
+
+    if (!kpis.length) {
+      return res.send("<p>No KPIs found for this week.</p>");
+    }
 
     let kpiCardsHtml = '';
+
     kpis.forEach(kpi => {
       let lowLimit = null;
-      if (kpi.low_limit && kpi.low_limit !== 'None' && kpi.low_limit !== 'null' &&
-        kpi.low_limit !== '' && !isNaN(parseFloat(kpi.low_limit)))
+      if (
+        kpi.low_limit &&
+        kpi.low_limit !== 'None' &&
+        kpi.low_limit !== 'null' &&
+        kpi.low_limit !== '' &&
+        !isNaN(parseFloat(kpi.low_limit))
+      ) {
         lowLimit = parseFloat(kpi.low_limit);
+      }
 
       const currentValue = kpi.value && kpi.value !== '' ? parseFloat(kpi.value) : null;
       const showCA = lowLimit !== null && currentValue !== null && currentValue < lowLimit;
 
-      // Pre-fill from existing corrective action if available
       const existingRC = kpi.ca_root_cause || '';
       const existingIS = kpi.ca_implemented_solution || '';
       const existingEV = kpi.ca_evidence || '';
       const caStatus = kpi.ca_status || '';
 
+      const startDateValue = kpi.ca_start_date
+        ? new Date(kpi.ca_start_date).toISOString().split('T')[0]
+        : '';
+
+      const endDateValue = kpi.ca_end_date
+        ? new Date(kpi.ca_end_date).toISOString().split('T')[0]
+        : '';
+
+      const deadlineValue = kpi.ca_deadline
+        ? new Date(kpi.ca_deadline).toISOString().split('T')[0]
+        : '';
+
       kpiCardsHtml += `
         <div class="kpi-card" data-kpi-id="${kpi.kpi_id}" data-low-limit="${lowLimit !== null ? lowLimit : ''}">
-       <div class="kpi-header">
-       <div class="kpi-title">${kpi.subject}</div>
+          <div class="kpi-header">
+            <div class="kpi-title">${kpi.subject}</div>
 
-       <div class="kpi-limits">
-        ${lowLimit !== null ? `<span class="limit-badge low">Low: ${lowLimit} ${kpi.unit || ''}</span>` : ''}
+            <div class="kpi-limits">
+              ${lowLimit !== null ? `<span class="limit-badge low">Low: ${lowLimit} ${kpi.unit || ''}</span>` : ''}
 
-        ${(kpi.high_limit && kpi.high_limit !== 'None' && kpi.high_limit !== 'null' && kpi.high_limit !== '' && !isNaN(parseFloat(kpi.high_limit)))
+              ${(kpi.high_limit &&
+          kpi.high_limit !== 'None' &&
+          kpi.high_limit !== 'null' &&
+          kpi.high_limit !== '' &&
+          !isNaN(parseFloat(kpi.high_limit)))
           ? `<span class="limit-badge high">High: ${parseFloat(kpi.high_limit)} ${kpi.unit || ''}</span>`
           : ''
         }
-         </div>
-         </div>
+            </div>
+          </div>
+
           ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
-          <input type="number" step="any" name="value_${kpi.kpi_values_id}"
-                 value="${kpi.value || ''}" placeholder="Enter value"
-                 class="kpi-input value-input"
-                 data-kpi-values-id="${kpi.kpi_values_id}"
-                 data-low-limit="${lowLimit !== null ? lowLimit : ''}" required />
-      
+
+          <input
+            type="number"
+            step="any"
+            name="value_${kpi.kpi_values_id}"
+            value=""
+            placeholder="Enter value"
+            class="kpi-input value-input"
+            data-kpi-values-id="${kpi.kpi_values_id}"
+            data-low-limit="${lowLimit !== null ? lowLimit : ''}"
+            required
+          />
 
           <!-- ===== CORRECTIVE ACTION PANEL ===== -->
-          <div class="ca-container ${showCA ? 'visible' : ''}"
-               id="ca_container_${kpi.kpi_values_id}">
-
-            <!-- Header row -->
+          <div class="ca-container ${showCA ? 'visible' : ''}" id="ca_container_${kpi.kpi_values_id}">
             <div class="ca-header">
               ⚠️ Value is below low limit — corrective action required
               ${caStatus ? `<span class="ca-status-badge ca-status-${caStatus.toLowerCase().replace(/ /g, '-')}">${caStatus}</span>` : ''}
             </div>
 
-            <!-- AI Suggestion Box -->
             <div class="ca-ai-box" id="ca-ai-box-${kpi.kpi_values_id}">
-              <div class="ca-ai-header">
-                <span style="font-size:16px;">🤖</span>
-                <span class="ca-ai-title">AI Corrective Action Suggestion</span>
-                <button type="button" class="ca-gen-btn"
-                  id="ca-gen-btn-${kpi.kpi_values_id}"
-                  onclick="formGenerateSuggestion('${kpi.kpi_values_id}','${kpi.kpi_id}','${responsible_id}','${week}')">
-                  <span class="ca-gen-icon">✨</span>
-                  <span class="ca-gen-text">Generate Suggestion</span>
-                </button>
-              </div>
-
-              <!-- Cards shown after generation -->
+        
               <div class="ca-suggestion-content" id="ca-sugg-${kpi.kpi_values_id}" style="display:none;">
                 <div class="ca-ai-row">
                   <div class="ca-ai-card ca-rc-card"
@@ -1126,6 +1950,7 @@ app.get("/form", async (req, res) => {
                     </div>
                     <div class="ca-ai-card-text" id="ca-rc-text-${kpi.kpi_values_id}"></div>
                   </div>
+
                   <div class="ca-ai-card ca-sol-card"
                        onclick="formApplyField('impl_solution_${kpi.kpi_values_id}',this)">
                     <div class="ca-ai-card-label">
@@ -1134,6 +1959,7 @@ app.get("/form", async (req, res) => {
                     </div>
                     <div class="ca-ai-card-text" id="ca-sol-text-${kpi.kpi_values_id}"></div>
                   </div>
+
                   <div class="ca-ai-card ca-ev-card"
                        onclick="formApplyField('evidence_${kpi.kpi_values_id}',this)">
                     <div class="ca-ai-card-label">
@@ -1150,346 +1976,796 @@ app.get("/form", async (req, res) => {
               </div>
             </div>
 
-            <!-- Input fields -->
+            <div class="ca-dates-grid">
+              <div class="ca-field">
+                <label class="ca-label" for="start_date_${kpi.kpi_values_id}">
+                  📅 Start Date <span class="ca-required">*</span>
+                </label>
+                <input
+                  type="date"
+                  id="start_date_${kpi.kpi_values_id}"
+                  name="start_date_${kpi.kpi_values_id}"
+                  class="ca-date-input"
+                  value=""
+                  ${showCA ? 'required' : ''}
+                />
+              </div>
+
+              <div class="ca-field">
+                <label class="ca-label" for="end_date_${kpi.kpi_values_id}">
+                  🏁 End Date <span class="ca-required">*</span>
+                </label>
+                <input
+                  type="date"
+                  id="end_date_${kpi.kpi_values_id}"
+                  name="end_date_${kpi.kpi_values_id}"
+                  class="ca-date-input"
+                  value=""
+                  ${showCA ? 'required' : ''}
+                />
+              </div>
+
+              <div class="ca-field">
+                <label class="ca-label" for="deadline_${kpi.kpi_values_id}">
+                  ⏰ Deadline <span class="ca-required">*</span>
+                </label>
+                <input
+                  type="date"
+                  id="deadline_${kpi.kpi_values_id}"
+                  name="deadline_${kpi.kpi_values_id}"
+                  class="ca-date-input"
+                  value=""
+                  ${showCA ? 'required' : ''}
+                />
+              </div>
+            </div>
+
             <div class="ca-field">
               <label class="ca-label" for="root_cause_${kpi.kpi_values_id}">
                 🔍 Root Cause Analysis <span class="ca-required">*</span>
               </label>
-              <textarea id="root_cause_${kpi.kpi_values_id}"
-                        name="root_cause_${kpi.kpi_values_id}"
-                        class="ca-textarea root-cause-input"
-                        data-kpi-values-id="${kpi.kpi_values_id}"
-                        placeholder="Click 'Generate Suggestion' or describe the root cause manually..."
-                        ${showCA ? 'required' : ''}>${existingRC}</textarea>
+              <textarea
+                id="root_cause_${kpi.kpi_values_id}"
+                name="root_cause_${kpi.kpi_values_id}"
+                class="ca-textarea root-cause-input"
+                data-kpi-values-id="${kpi.kpi_values_id}"
+                placeholder="Click 'Generate Suggestion' or describe the root cause manually..."
+                ${showCA ? 'required' : ''}
+              ></textarea>
             </div>
 
             <div class="ca-field">
               <label class="ca-label" for="impl_solution_${kpi.kpi_values_id}">
                 🔧 Implemented Solution <span class="ca-required">*</span>
               </label>
-              <textarea id="impl_solution_${kpi.kpi_values_id}"
-                        name="impl_solution_${kpi.kpi_values_id}"
-                        class="ca-textarea impl-solution-input"
-                        data-kpi-values-id="${kpi.kpi_values_id}"
-                        placeholder="Click 'Generate Suggestion' or describe the solution taken..."
-                        ${showCA ? 'required' : ''}>${existingIS}</textarea>
+              <textarea
+                id="impl_solution_${kpi.kpi_values_id}"
+                name="impl_solution_${kpi.kpi_values_id}"
+                class="ca-textarea impl-solution-input"
+                data-kpi-values-id="${kpi.kpi_values_id}"
+                placeholder="Click 'Generate Suggestion' or describe the solution taken..."
+                ${showCA ? 'required' : ''}
+              ></textarea>
             </div>
 
             <div class="ca-field">
               <label class="ca-label" for="evidence_${kpi.kpi_values_id}">
                 📎 Evidence of Improvement <span class="ca-required">*</span>
               </label>
-              <textarea id="evidence_${kpi.kpi_values_id}"
-                        name="evidence_${kpi.kpi_values_id}"
-                        class="ca-textarea evidence-input"
-                        data-kpi-values-id="${kpi.kpi_values_id}"
-                        placeholder="Provide evidence showing the improvement..."
-                        ${showCA ? 'required' : ''}>${existingEV}</textarea>
+              <textarea
+                id="evidence_${kpi.kpi_values_id}"
+                name="evidence_${kpi.kpi_values_id}"
+                class="ca-textarea evidence-input"
+                data-kpi-values-id="${kpi.kpi_values_id}"
+                placeholder="Provide evidence showing the improvement..."
+                ${showCA ? 'required' : ''}
+              ></textarea>
             </div>
           </div>
           <!-- ===== END CORRECTIVE ACTION PANEL ===== -->
 
           <div class="comment-section">
-            <div class="comment-label">Manager Comment <span style="font-size:11px;color:#888;">(Optional)</span></div>
-            <textarea name="comment_${kpi.kpi_values_id}" class="comment-input"
-                      placeholder="Add your comment...">${kpi.latest_comment || ''}</textarea>
+            <div class="comment-label">
+              Manager Comment <span style="font-size:11px;color:#888;">(Optional)</span>
+            </div>
+            <textarea
+              name="comment_${kpi.kpi_values_id}"
+              class="comment-input"
+              placeholder="Add your comment..."
+            >${kpi.latest_comment || ''}</textarea>
           </div>
-        </div>`;
+        </div>
+      `;
     });
 
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Form - Week ${week}</title>
-      <style>
-        body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;
-          background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
-          background-size:cover;background-position:center;background-attachment:fixed;
-          padding:20px;margin:0;min-height:100vh;}
-        .container{max-width:800px;margin:0 auto;background:rgba(255,255,255,0.95);
-          border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.2);overflow:hidden;}
-        .header{background:#0078D7;color:white;padding:20px;text-align:center;}
-        .form-section{padding:30px;}
-        .info-section{background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #0078D7;}
-        .info-row{display:flex;margin-bottom:15px;align-items:center;}
-        .info-label{font-weight:600;color:#333;width:120px;font-size:14px;}
-        .info-value{flex:1;padding:8px 12px;background:white;border:1px solid #ddd;border-radius:4px;}
-        .kpi-card{background:#fff;border:1px solid #e1e5e9;border-radius:6px;padding:20px;margin-bottom:20px;}
-        .kpi-header{
-         display:flex;
-         justify-content:space-between;
-         align-items:center;
-         margin-bottom:4px;
-        }
-        .kpi-title{font-weight:600;color:#333;margin-bottom:5px;font-size:15px;}
-       .kpi-title{
-        font-weight:600;
-        color:#333;
-        font-size:15px;
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>KPI Form - Week ${week}</title>
+        <style>
+          body{
+            font-family:'Segoe UI',sans-serif;
+            background:#f4f6f9;
+            background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
+            background-size:cover;
+            background-position:center;
+            background-attachment:fixed;
+            padding:20px;
+            margin:0;
+            min-height:100vh;
+          }
+          .container{
+            max-width:800px;
+            margin:0 auto;
+            background:rgba(255,255,255,0.95);
+            border-radius:8px;
+            box-shadow:0 4px 20px rgba(0,0,0,0.2);
+            overflow:hidden;
+          }
+          .header{
+            background:#0078D7;
+            color:white;
+            padding:20px;
+            text-align:center;
+          }
+          .form-section{padding:30px;}
+          .info-section{
+            background:#f8f9fa;
+            padding:20px;
+            border-radius:6px;
+            margin-bottom:25px;
+            border-left:4px solid #0078D7;
+          }
+          .info-row{
+            display:flex;
+            margin-bottom:15px;
+            align-items:center;
+          }
+          .info-label{
+            font-weight:600;
+            color:#333;
+            width:120px;
+            font-size:14px;
+          }
+          .info-value{
+            flex:1;
+            padding:8px 12px;
+            background:white;
+            border:1px solid #ddd;
+            border-radius:4px;
+          }
+          .kpi-card{
+            background:#fff;
+            border:1px solid #e1e5e9;
+            border-radius:6px;
+            padding:20px;
+            margin-bottom:20px;
+          }
+          .kpi-header{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            margin-bottom:4px;
+          }
+          .kpi-title{
+            font-weight:600;
+            color:#333;
+            font-size:15px;
+          }
+          .kpi-limits{
+            display:flex;
+            gap:8px;
+          }
+          .limit-badge{
+            font-size:11px;
+            font-weight:700;
+            padding:3px 10px;
+            border-radius:999px;
+            border:1px solid transparent;
+          }
+          .limit-badge.low{
+            background:#ffebee;
+            color:#c62828;
+            border-color:#ef9a9a;
+          }
+          .limit-badge.high{
+            background:#e8f5e9;
+            color:#1b5e20;
+            border-color:#a5d6a7;
+          }
+          .kpi-subtitle{
+            color:#666;
+            font-size:13px;
+            margin-bottom:10px;
+          }
+          .kpi-input{
+            width:100%;
+            padding:10px 12px;
+            border:1px solid #ddd;
+            border-radius:4px;
+            font-size:14px;
+            box-sizing:border-box;
+          }
+          .kpi-input:focus{
+            border-color:#0078D7;
+            outline:none;
+          }
+          .submit-btn{
+            background:#0078D7;
+            color:white;
+            border:none;
+            padding:12px 30px;
+            border-radius:4px;
+            font-size:16px;
+            font-weight:600;
+            cursor:pointer;
+            display:block;
+            width:100%;
+            margin-top:20px;
+          }
+
+          .ca-container{
+            margin-top:16px;
+            background:linear-gradient(135deg,#fff5f5,#fff8f0);
+            border:2px solid #f28b82;
+            border-radius:10px;
+            display:none;
+            overflow:hidden;
+          }
+          .ca-container.visible{display:block;}
+          .ca-header{
+            font-weight:700;
+            color:#c62828;
+            font-size:14px;
+            padding:14px 16px;
+            display:flex;
+            align-items:center;
+            gap:10px;
+            flex-wrap:wrap;
+            background:rgba(211,47,47,0.05);
+          }
+          .ca-status-badge{
+            font-size:11px;
+            font-weight:600;
+            padding:3px 10px;
+            border-radius:12px;
+            margin-left:auto;
+          }
+          .ca-status-open{
+            background:#ffebee;
+            color:#c62828;
+            border:1px solid #ef9a9a;
+          }
+          .ca-status-waiting-for-validation{
+            background:#fff3e0;
+            color:#e65100;
+            border:1px solid #ffcc02;
+          }
+
+          .ca-ai-box{
+            margin:14px 14px 0;
+            border:none;  
+            border-radius:10px;
+            background:linear-gradient(135deg,#f5f3ff,#ede9fe);
+            overflow:hidden;
+          }
+          .ca-ai-header{
+            display:flex;
+            align-items:center;
+            gap:8px;
+            padding:10px 14px;
+            background:rgba(109,40,217,0.08);
+            border-bottom:1px solid #ddd6fe;
+          }
+          .ca-ai-title{
+            font-size:13px;
+            font-weight:700;
+            color:#5b21b6;
+            flex:1;
+          }
+          .ca-gen-btn{
+            display:inline-flex;
+            align-items:center;
+            gap:5px;
+            padding:7px 14px;
+            background:linear-gradient(135deg,#7c3aed,#6d28d9);
+            color:white;
+            border:none;
+            border-radius:18px;
+            font-size:12px;
+            font-weight:600;
+            cursor:pointer;
+            transition:all 0.2s;
+            box-shadow:0 2px 6px rgba(109,40,217,0.35);
+          }
+          .ca-gen-btn:hover:not(:disabled){
+            background:linear-gradient(135deg,#6d28d9,#5b21b6);
+            transform:translateY(-1px);
+          }
+          .ca-gen-btn:disabled{
+            opacity:0.65;
+            cursor:not-allowed;
+            transform:none;
+          }
+          .ca-gen-btn.loading .ca-gen-icon{
+            animation:caGenSpin 1s linear infinite;
+            display:inline-block;
+          }
+          @keyframes caGenSpin{to{transform:rotate(360deg);}}
+
+          .ca-suggestion-content{padding:12px 14px;}
+          .ca-ai-row{
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:10px;
+          }
+          @media(max-width:600px){
+            .ca-ai-row{grid-template-columns:1fr;}
+          }
+
+          .ca-ai-card{
+            background:white;
+            border-radius:8px;
+            padding:12px;
+            cursor:pointer;
+            transition:transform 0.15s,box-shadow 0.15s;
+            border:1.5px solid transparent;
+          }
+          .ca-ai-card:hover{
+            transform:translateY(-2px);
+            box-shadow:0 4px 12px rgba(0,0,0,0.1);
+          }
+          .ca-ai-card.applied{
+            border-color:#4ade80 !important;
+            background:#f0fdf4;
+          }
+          .ca-rc-card{border-top:3px solid #ef4444;}
+          .ca-sol-card{border-top:3px solid #f59e0b;}
+          .ca-ev-card{border-top:3px solid #3b82f6;}
+          .ca-ai-card-label{
+            font-size:10px;
+            font-weight:700;
+            text-transform:uppercase;
+            letter-spacing:0.5px;
+            margin-bottom:7px;
+            display:flex;
+            align-items:center;
+            gap:5px;
+          }
+          .ca-rc-card .ca-ai-card-label{color:#dc2626;}
+          .ca-sol-card .ca-ai-card-label{color:#d97706;}
+          .ca-ev-card .ca-ai-card-label{color:#2563eb;}
+          .ca-apply-hint{
+            margin-left:auto;
+            font-size:9px;
+            font-weight:500;
+            color:#9ca3af;
+            text-transform:none;
+            letter-spacing:0;
+          }
+          .ca-ai-card-text{
+            font-size:12px;
+            color:#374151;
+            line-height:1.5;
+          }
+          .ca-sugg-error{
+            padding:10px 14px;
+            font-size:12px;
+            color:#92400e;
+            background:#fff7ed;
+          }
+
+         .ca-dates-grid{
+         display:grid;
+         grid-template-columns:repeat(3,1fr);
+         gap:12px;
+         padding:0 14px 14px;
+         align-items:start;
+          }
+
+       .ca-dates-grid .ca-field{
+        margin-top:0 !important;
+        margin-bottom:0;
+        padding:0;
          }
 
-       .kpi-limits{
-        display:flex;
-        gap:8px;
-        }
+       .ca-dates-grid .ca-field:first-child{
+         margin-top:-6px;
+         }
 
-      .limit-badge{
-       font-size:11px;
-       font-weight:700;
-       padding:3px 10px;
-       border-radius:999px;
-       border:1px solid transparent;
-      }
 
-     .limit-badge.low{
-      background:#ffebee;
-      color:#c62828;
-      border-color:#ef9a9a;
-     }
-
-    .limit-badge.high{
-     background:#e8f5e9;
-     color:#1b5e20;
-     border-color:#a5d6a7;
-        }
-        .kpi-subtitle{color:#666;font-size:13px;margin-bottom:10px;}
-        .kpi-input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;box-sizing:border-box;}
-        .kpi-input:focus{border-color:#0078D7;outline:none;}
-        .submit-btn{background:#0078D7;color:white;border:none;padding:12px 30px;border-radius:4px;
-          font-size:16px;font-weight:600;cursor:pointer;display:block;width:100%;margin-top:20px;}
-        .unit-label{color:#888;font-size:12px;margin-top:5px;}
-        .low-limit-warning{color:#dc3545;font-size:12px;margin-top:5px;font-weight:600;}
-
-        /* ===== Corrective Action Panel ===== */
-        .ca-container{
-          margin-top:16px;
-          background:linear-gradient(135deg,#fff5f5,#fff8f0);
-          border:2px solid #f28b82;
-          border-radius:10px;
-          display:none;
-          overflow:hidden;
-        }
-        .ca-container.visible{display:block;}
-        .ca-header{
-          font-weight:700;color:#c62828;font-size:14px;
-          padding:14px 16px 14px;
-          border-bottom:1px dashed #f28b82;
-          display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-          background:rgba(211,47,47,0.05);
-        }
-        .ca-status-badge{
-          font-size:11px;font-weight:600;padding:3px 10px;border-radius:12px;margin-left:auto;
-        }
-        .ca-status-open{background:#ffebee;color:#c62828;border:1px solid #ef9a9a;}
-        .ca-status-waiting-for-validation{background:#fff3e0;color:#e65100;border:1px solid #ffcc02;}
-
-        /* AI box inside CA panel */
-        .ca-ai-box{margin:14px 14px 0;border:1.5px solid #c4b5fd;border-radius:10px;
-          background:linear-gradient(135deg,#f5f3ff,#ede9fe);overflow:hidden;}
-        .ca-ai-header{display:flex;align-items:center;gap:8px;padding:10px 14px;
-          background:rgba(109,40,217,0.08);border-bottom:1px solid #ddd6fe;}
-        .ca-ai-title{font-size:13px;font-weight:700;color:#5b21b6;flex:1;}
-        .ca-gen-btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;
-          background:linear-gradient(135deg,#7c3aed,#6d28d9);color:white;border:none;
-          border-radius:18px;font-size:12px;font-weight:600;cursor:pointer;
-          transition:all 0.2s;box-shadow:0 2px 6px rgba(109,40,217,0.35);}
-        .ca-gen-btn:hover:not(:disabled){background:linear-gradient(135deg,#6d28d9,#5b21b6);
-          transform:translateY(-1px);}
-        .ca-gen-btn:disabled{opacity:0.65;cursor:not-allowed;transform:none;}
-        .ca-gen-btn.loading .ca-gen-icon{animation:caGenSpin 1s linear infinite;display:inline-block;}
-        @keyframes caGenSpin{to{transform:rotate(360deg);}}
-        .ca-suggestion-content{padding:12px 14px;}
-        .ca-ai-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
-        @media(max-width:600px){.ca-ai-row{grid-template-columns:1fr;}}
-        .ca-ai-card{background:white;border-radius:8px;padding:12px;cursor:pointer;
-          transition:transform 0.15s,box-shadow 0.15s;border:1.5px solid transparent;}
-        .ca-ai-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.1);}
-        .ca-ai-card.applied{border-color:#4ade80!important;background:#f0fdf4;}
-        .ca-rc-card{border-top:3px solid #ef4444;}
-        .ca-sol-card{border-top:3px solid #f59e0b;}
-        .ca-ev-card{border-top:3px solid #3b82f6;}
-        .ca-ai-card-label{font-size:10px;font-weight:700;text-transform:uppercase;
-          letter-spacing:0.5px;margin-bottom:7px;display:flex;align-items:center;gap:5px;}
-        .ca-rc-card .ca-ai-card-label{color:#dc2626;}
-        .ca-sol-card .ca-ai-card-label{color:#d97706;}
-        .ca-ev-card .ca-ai-card-label{color:#2563eb;}
-        .ca-apply-hint{margin-left:auto;font-size:9px;font-weight:500;color:#9ca3af;
-          text-transform:none;letter-spacing:0;}
-        .ca-ai-card-text{font-size:12px;color:#374151;line-height:1.5;}
-        .ca-sugg-error{padding:10px 14px;font-size:12px;color:#92400e;background:#fff7ed;}
-
-        .ca-field{margin-bottom:14px;padding:0 14px;}
-        .ca-field:first-of-type{margin-top:14px;}
-        .ca-field:last-of-type{margin-bottom:14px;}
-        .ca-label{display:block;font-weight:600;font-size:13px;color:#555;margin-bottom:6px;}
-        .ca-required{color:#dc3545;}
-        .ca-textarea{
-          width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:6px;
-          min-height:80px;resize:vertical;font-family:inherit;font-size:13px;
-          background:#fff;box-sizing:border-box;transition:border-color 0.2s;
-        }
-        .ca-textarea:focus{border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.12);}
-        .ca-textarea.error{border-color:#dc3545;background:#fff5f5;}
-        .ca-textarea.highlight{animation:caHighlight 1.8s forwards;}
-        @keyframes caHighlight{0%{background:#dcfce7;border-color:#16a34a;}100%{background:#fff;border-color:#f28b82;}}
-
-        .comment-section{margin-top:15px;}
-        .comment-label{font-weight:600;color:#555;margin-bottom:8px;font-size:13px;}
-        .comment-input{width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;
-          min-height:70px;resize:vertical;font-family:inherit;box-sizing:border-box;}
-        .loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);
-          z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:20px;}
-        .loading-overlay.active{display:flex;}
-        .spinner{width:56px;height:56px;border:6px solid rgba(255,255,255,0.3);
-          border-top-color:#fff;border-radius:50%;animation:spin 0.9s linear infinite;}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .loading-text{color:#fff;font-size:18px;font-weight:600;}
-      </style></head><body>
-      <div class="loading-overlay" id="loadingOverlay">
-        <div class="spinner"></div>
-        <div class="loading-text">Submitting KPI Values...</div>
-      </div>
-      <div class="container">
-        <div class="header">
-          <h2 style="color:white;font-size:22px;margin:0;">KPI Submission - ${week}</h2>
-        </div>
-        <div class="form-section">
-          <div class="info-section">
-            <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
-            <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
-            <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
-            <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
-          </div>
-          <div class="kpi-section">
-            <h3 style="color:#0078D7;margin-bottom:20px;border-bottom:2px solid #0078D7;padding-bottom:8px;">KPI Values</h3>
-            <form action="/redirect" method="POST" id="kpiForm" novalidate>
-              <input type="hidden" name="responsible_id" value="${responsible_id}" />
-              <input type="hidden" name="week" value="${week}" />
-              ${kpiCardsHtml}
-              <button type="submit" class="submit-btn">Submit KPI Values</button>
-            </form>
-          </div>
-        </div>
-      </div>
-      <script>
-        // ===== FORM AI SUGGESTION FUNCTIONS =====
-        function formApplyField(fieldId, card) {
-          const text  = card.querySelector('.ca-ai-card-text').textContent.trim();
-          const field = document.getElementById(fieldId);
-          if (!field || !text) return;
-          field.value = text;
-          field.classList.remove('highlight');
-          void field.offsetWidth;
-          field.classList.add('highlight');
-          field.scrollIntoView({ behavior:'smooth', block:'center' });
-          card.classList.add('applied');
-          const hint = card.querySelector('.ca-apply-hint');
-          if (hint) hint.textContent = '✓ Applied';
-        }
-
-        async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
-          const btn     = document.getElementById('ca-gen-btn-' + kvId);
-          const suggDiv = document.getElementById('ca-sugg-' + kvId);
-          const errDiv  = document.getElementById('ca-err-' + kvId);
-
-          suggDiv.style.display = 'none';
-          errDiv.style.display  = 'none';
-
-          // Reset applied state
-          suggDiv.querySelectorAll('.ca-ai-card').forEach(c => {
-            c.classList.remove('applied');
-            const hint = c.querySelector('.ca-apply-hint');
-            if (hint) hint.textContent = 'Click to apply ↓';
-          });
-
-          btn.disabled = true;
-          btn.classList.add('loading');
-          btn.querySelector('.ca-gen-icon').textContent = '⏳';
-          btn.querySelector('.ca-gen-text').textContent = 'Generating...';
-
-          try {
-            const res = await fetch(
-              '/generate-ca-suggestion?kpi_id=' + kpiId +
-              '&responsible_id=' + responsibleId +
-              '&week=' + encodeURIComponent(week)
-            );
-            if (!res.ok) throw new Error('Request failed');
-            const data = await res.json();
-            if (data.error || !data.suggestion) throw new Error(data.error || 'No suggestion');
-
-            const s = data.suggestion;
-            document.getElementById('ca-rc-text-'  + kvId).textContent = s.root_cause       || '';
-            document.getElementById('ca-sol-text-' + kvId).textContent = s.immediate_action || '';
-            document.getElementById('ca-ev-text-'  + kvId).textContent = s.evidence         || '';
-            suggDiv.style.display = 'block';
-          } catch (err) {
-            errDiv.style.display = 'block';
-          } finally {
-            btn.disabled = false;
-            btn.classList.remove('loading');
-            btn.querySelector('.ca-gen-icon').textContent = '🔄';
-            btn.querySelector('.ca-gen-text').textContent = 'Regenerate';
+          .ca-date-input{
+            width:100%;
+            padding:10px 12px;
+            border:1.5px solid #f28b82;
+            border-radius:6px;
+            font-size:13px;
+            font-family:inherit;
+            background:#fff;
+            box-sizing:border-box;
           }
-        }
+          .ca-date-input:focus{
+            border-color:#d32f2f;
+            outline:none;
+            box-shadow:0 0 0 3px rgba(211,47,47,0.12);
+          }
+          @media(max-width:700px){
+            .ca-dates-grid{grid-template-columns:1fr;}
+          }
 
-        // Show/hide corrective action panel based on value vs low limit
-        function checkLowLimit(input) {
-          const card = input.closest('.kpi-card');
-          const llStr = card.dataset.lowLimit;
-          let ll = null;
-          if (llStr && llStr !== '' && llStr !== 'null' && !isNaN(parseFloat(llStr))) ll = parseFloat(llStr);
-          const val = parseFloat(input.value);
-          const kvId = input.dataset.kpiValuesId;
-          const caPanel = document.getElementById('ca_container_' + kvId);
+          .ca-field{
+            margin-bottom:14px;
+            padding:0 14px;
+          }
+          .ca-field:first-of-type{margin-top:14px;}
+          .ca-field:last-of-type{margin-bottom:14px;}
+          .ca-label{
+            display:block;
+            font-weight:600;
+            font-size:13px;
+            color:#555;
+            margin-bottom:6px;
+          }
+          .ca-required{color:#dc3545;}
+          .ca-textarea{
+            width:100%;
+            padding:10px 12px;
+            border:1.5px solid #f28b82;
+            border-radius:6px;
+            min-height:80px;
+            resize:vertical;
+            font-family:inherit;
+            font-size:13px;
+            background:#fff;
+            box-sizing:border-box;
+            transition:border-color 0.2s;
+          }
+          .ca-textarea:focus{
+            border-color:#d32f2f;
+            outline:none;
+            box-shadow:0 0 0 3px rgba(211,47,47,0.12);
+          }
+          .ca-textarea.error,
+          .ca-date-input.error{
+            border-color:#dc3545;
+            background:#fff5f5;
+          }
+          .ca-textarea.highlight{
+            animation:caHighlight 1.8s forwards;
+          }
+          @keyframes caHighlight{
+            0%{background:#dcfce7;border-color:#16a34a;}
+            100%{background:#fff;border-color:#f28b82;}
+          }
 
-          if (caPanel && ll !== null && !isNaN(val)) {
-            const isBelow = val < ll;
-            caPanel.classList.toggle('visible', isBelow);
+          .comment-section{margin-top:15px;}
+          .comment-label{
+            font-weight:600;
+            color:#555;
+            margin-bottom:8px;
+            font-size:13px;
+          }
+          .comment-input{
+            width:100%;
+            padding:10px;
+            border:1px solid #ddd;
+            border-radius:4px;
+            min-height:70px;
+            resize:vertical;
+            font-family:inherit;
+            box-sizing:border-box;
+          }
 
-            // Toggle required on the three textareas
-            ['root_cause_','impl_solution_','evidence_'].forEach(prefix => {
-              const ta = document.getElementById(prefix + kvId);
-              if (ta) ta.required = isBelow;
+          .loading-overlay{
+            display:none;
+            position:fixed;
+            inset:0;
+            background:rgba(0,0,0,0.6);
+            z-index:9999;
+            flex-direction:column;
+            align-items:center;
+            justify-content:center;
+            gap:20px;
+          }
+          .loading-overlay.active{display:flex;}
+          .spinner{
+            width:56px;
+            height:56px;
+            border:6px solid rgba(255,255,255,0.3);
+            border-top-color:#fff;
+            border-radius:50%;
+            animation:spin 0.9s linear infinite;
+          }
+          @keyframes spin{to{transform:rotate(360deg)}}
+          .loading-text{
+            color:#fff;
+            font-size:18px;
+            font-weight:600;
+          }
+
+          .modal-overlay{
+            position:fixed;
+            top:0;
+            left:0;
+            width:100%;
+            height:100%;
+            background:rgba(0,0,0,0.6);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            z-index:10000;
+            opacity:0;
+            pointer-events:none;
+            transition:all 0.25s ease;
+          }
+          .modal-overlay.active{
+            opacity:1;
+            pointer-events:all;
+          }
+          .modal-box{
+            background:white;
+            border-radius:12px;
+            padding:30px 25px;
+            width:90%;
+            max-width:420px;
+            text-align:center;
+            box-shadow:0 10px 40px rgba(0,0,0,0.25);
+            transform:translateY(20px);
+            transition:transform 0.25s ease;
+          }
+          .modal-overlay.active .modal-box{
+            transform:translateY(0);
+          }
+          .modal-icon{
+            font-size:42px;
+            margin-bottom:10px;
+          }
+          .modal-box h3{
+            margin:10px 0;
+            font-size:20px;
+            color:#333;
+          }
+          .modal-box p{
+            color:#666;
+            font-size:14px;
+            margin-bottom:25px;
+          }
+          .modal-actions{
+            display:flex;
+            gap:12px;
+            justify-content:center;
+          }
+          .btn-cancel{
+            padding:10px 20px;
+            border:1px solid #ccc;
+            background:white;
+            border-radius:6px;
+            cursor:pointer;
+            font-weight:600;
+          }
+          .btn-confirm{
+            padding:10px 20px;
+            border:none;
+            background:linear-gradient(135deg, #0078D7, #005ea6);
+            color:white;
+            border-radius:6px;
+            cursor:pointer;
+            font-weight:600;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="loading-overlay" id="loadingOverlay">
+          <div class="spinner"></div>
+          <div class="loading-text">Submitting KPI Values...</div>
+        </div>
+
+        <div id="confirmModal" class="modal-overlay">
+          <div class="modal-box">
+            <div class="modal-icon">⚠️</div>
+            <h3>Confirm Submission</h3>
+            <p>Are you sure you want to submit your KPI values?</p>
+
+            <div class="modal-actions">
+              <button id="cancelBtn" type="button" class="btn-cancel">Cancel</button>
+              <button id="confirmBtn" type="button" class="btn-confirm">Yes, Submit</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="container">
+          <div class="header">
+            <h2 style="color:white;font-size:22px;margin:0;">KPI Submission - ${week}</h2>
+          </div>
+
+          <div class="form-section">
+            <div class="info-section">
+              <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
+              <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
+              <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
+              <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
+            </div>
+
+            <div class="kpi-section">
+              <h3 style="color:#0078D7;margin-bottom:20px;border-bottom:2px solid #0078D7;padding-bottom:8px;">KPI Values</h3>
+
+              <form action="/redirect" method="POST" id="kpiForm" novalidate>
+                <input type="hidden" name="responsible_id" value="${responsible_id}" />
+                <input type="hidden" name="week" value="${week}" />
+                ${kpiCardsHtml}
+                <button type="submit" class="submit-btn">Submit KPI Values</button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <script>
+          function formApplyField(fieldId, card) {
+            const text = card.querySelector('.ca-ai-card-text').textContent.trim();
+            const field = document.getElementById(fieldId);
+            if (!field || !text) return;
+
+            field.value = text;
+            field.classList.remove('highlight');
+            void field.offsetWidth;
+            field.classList.add('highlight');
+            field.scrollIntoView({ behavior:'smooth', block:'center' });
+
+            card.classList.add('applied');
+            const hint = card.querySelector('.ca-apply-hint');
+            if (hint) hint.textContent = '✓ Applied';
+          }
+
+          async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
+            const btn = document.getElementById('ca-gen-btn-' + kvId);
+            const suggDiv = document.getElementById('ca-sugg-' + kvId);
+            const errDiv = document.getElementById('ca-err-' + kvId);
+
+            suggDiv.style.display = 'none';
+            errDiv.style.display = 'none';
+
+            suggDiv.querySelectorAll('.ca-ai-card').forEach(c => {
+              c.classList.remove('applied');
+              const hint = c.querySelector('.ca-apply-hint');
+              if (hint) hint.textContent = 'Click to apply ↓';
             });
-          }
-        }
 
-        document.querySelectorAll('.value-input').forEach(i => {
-          i.addEventListener('input', function(){ checkLowLimit(this); });
-          checkLowLimit(i);
-        });
+            btn.disabled = true;
+            btn.classList.add('loading');
+            btn.querySelector('.ca-gen-icon').textContent = '⏳';
+            btn.querySelector('.ca-gen-text').textContent = 'Generating...';
 
-        document.getElementById('kpiForm').addEventListener('submit', function(e) {
-          let hasError = false;
+            try {
+              const res = await fetch(
+                '/generate-ca-suggestion?kpi_id=' + kpiId +
+                '&responsible_id=' + responsibleId +
+                '&week=' + encodeURIComponent(week)
+              );
 
-          // Validate numeric value inputs
-          this.querySelectorAll('input.value-input[required]').forEach(input => {
-            if (!input.value.trim() || isNaN(input.value.trim())) {
-              e.preventDefault(); hasError = true;
-              input.style.borderColor = '#dc3545';
-              const err = input.nextElementSibling;
-              if (err && err.classList.contains('field-error')) err.style.display = 'block';
+              if (!res.ok) throw new Error('Request failed');
+              const data = await res.json();
+              if (data.error || !data.suggestion) throw new Error(data.error || 'No suggestion');
+
+              const s = data.suggestion;
+              document.getElementById('ca-rc-text-' + kvId).textContent = s.root_cause || '';
+              document.getElementById('ca-sol-text-' + kvId).textContent = s.immediate_action || '';
+              document.getElementById('ca-ev-text-' + kvId).textContent = s.evidence || '';
+              suggDiv.style.display = 'block';
+            } catch (err) {
+              errDiv.style.display = 'block';
+            } finally {
+              btn.disabled = false;
+              btn.classList.remove('loading');
+              btn.querySelector('.ca-gen-icon').textContent = '🔄';
+              btn.querySelector('.ca-gen-text').textContent = 'Regenerate';
             }
-          });
+          }
 
-          // Validate corrective action textareas when panel is visible
-          document.querySelectorAll('.ca-container.visible').forEach(panel => {
-            panel.querySelectorAll('.ca-textarea').forEach(ta => {
-              if (!ta.value.trim()) {
-                e.preventDefault(); hasError = true;
-                ta.classList.add('error');
-              } else {
-                ta.classList.remove('error');
-              }
+          function checkLowLimit(input) {
+            const card = input.closest('.kpi-card');
+            const llStr = card.dataset.lowLimit;
+            let ll = null;
+
+            if (llStr && llStr !== '' && llStr !== 'null' && !isNaN(parseFloat(llStr))) {
+              ll = parseFloat(llStr);
+            }
+
+            const val = parseFloat(input.value);
+            const kvId = input.dataset.kpiValuesId;
+            const caPanel = document.getElementById('ca_container_' + kvId);
+
+            if (caPanel && ll !== null && !isNaN(val)) {
+              const isBelow = val < ll;
+              caPanel.classList.toggle('visible', isBelow);
+
+              ['root_cause_', 'impl_solution_', 'evidence_', 'start_date_', 'end_date_', 'deadline_'].forEach(prefix => {
+                const el = document.getElementById(prefix + kvId);
+                if (el) el.required = isBelow;
+              });
+            }
+          }
+
+          document.querySelectorAll('.value-input').forEach(i => {
+            i.addEventListener('input', function () {
+              checkLowLimit(this);
             });
+            checkLowLimit(i);
           });
 
-          if (!hasError) document.getElementById('loadingOverlay').classList.add('active');
-        });
+          const form = document.getElementById('kpiForm');
+          const modal = document.getElementById('confirmModal');
+          const confirmBtn = document.getElementById('confirmBtn');
+          const cancelBtn = document.getElementById('cancelBtn');
+          const loadingOverlay = document.getElementById('loadingOverlay');
 
-        // Clear error state on typing
-        document.querySelectorAll('.ca-textarea').forEach(ta => {
-          ta.addEventListener('input', function(){ this.classList.remove('error'); });
-        });
-      </script></body></html>`);
+          let formToSubmit = null;
+
+          if (form && modal && confirmBtn && cancelBtn) {
+            form.addEventListener('submit', function (e) {
+              e.preventDefault();
+
+              let hasError = false;
+
+              this.querySelectorAll('input.value-input[required]').forEach(input => {
+                if (!input.value.trim() || isNaN(input.value.trim())) {
+                  hasError = true;
+                  input.style.borderColor = '#dc3545';
+                } else {
+                  input.style.borderColor = '#ddd';
+                }
+              });
+
+              document.querySelectorAll('.ca-container.visible').forEach(panel => {
+                panel.querySelectorAll('.ca-textarea, .ca-date-input').forEach(field => {
+                  if (!field.value.trim()) {
+                    hasError = true;
+                    field.classList.add('error');
+                  } else {
+                    field.classList.remove('error');
+                  }
+                });
+              });
+
+              document.querySelectorAll('.ca-container.visible').forEach(panel => {
+                const startInput = panel.querySelector('input[id^="start_date_"]');
+                const endInput = panel.querySelector('input[id^="end_date_"]');
+                const deadlineInput = panel.querySelector('input[id^="deadline_"]');
+
+                if (startInput && endInput && startInput.value && endInput.value && endInput.value < startInput.value) {
+                  hasError = true;
+                  endInput.classList.add('error');
+                }
+
+                if (startInput && deadlineInput && startInput.value && deadlineInput.value && deadlineInput.value < startInput.value) {
+                  hasError = true;
+                  deadlineInput.classList.add('error');
+                }
+              });
+
+              if (hasError) return;
+
+              formToSubmit = this;
+              modal.classList.add('active');
+            });
+
+            confirmBtn.addEventListener('click', () => {
+              modal.classList.remove('active');
+              if (loadingOverlay) loadingOverlay.classList.add('active');
+              if (formToSubmit) formToSubmit.submit();
+            });
+
+            cancelBtn.addEventListener('click', () => {
+              modal.classList.remove('active');
+            });
+          }
+        </script>
+      </body>
+      </html>
+    `);
   } catch (err) {
+    console.error("Error loading form:", err);
     res.send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
@@ -1498,85 +2774,247 @@ app.get("/form", async (req, res) => {
 app.get("/dashboard", async (req, res) => {
   try {
     const { responsible_id } = req.query;
+
     const resResp = await pool.query(
       `SELECT r.*, p.name AS plant_name, d.name AS department_name
-       FROM public."Responsible" r JOIN public."Plant" p ON r.plant_id = p.plant_id
+       FROM public."Responsible" r
+       JOIN public."Plant" p ON r.plant_id = p.plant_id
        JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`, [responsible_id]);
+       WHERE r.responsible_id = $1`,
+      [responsible_id]
+    );
+
     const responsible = resResp.rows[0];
     if (!responsible) throw new Error("Responsible not found");
+
     const kpiRes = await pool.query(
       `SELECT DISTINCT ON (h.week, h.kpi_id)
-              h.hist_id, h.kpi_values_id, h.new_value as value, h.week,
-              h.kpi_id, h.updated_at,
-              k.subject, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
-              k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency,
-              k.definition, k.calculation_on, k.target_auto_adjustment,
-              k.high_limit, k.low_limit
-       FROM public.kpi_values_hist26 h JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
+              h.hist_id,
+              h.kpi_values_id,
+              h.new_value as value,
+              h.week,
+              h.kpi_id,
+              h.updated_at,
+              k.subject,
+              k.indicator_sub_title,
+              k.unit,
+              k.target,
+              k.min,
+              k.max,
+              k.tolerance_type,
+              k.up_tolerance,
+              k.low_tolerance,
+              k.frequency,
+              k.definition,
+              k.calculation_on,
+              k.target_auto_adjustment,
+              k.high_limit,
+              k.low_limit
+       FROM public.kpi_values_hist26 h
+       JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
        WHERE h.responsible_id = $1
-       ORDER BY h.week DESC, h.kpi_id ASC, h.updated_at DESC`, [responsible_id]);
-    const weekMap = new Map();
-    kpiRes.rows.forEach(kpi => {
-      if (!weekMap.has(kpi.week)) weekMap.set(kpi.week, []);
-      weekMap.get(kpi.week).push(kpi);
+       ORDER BY h.week DESC, h.kpi_id ASC, h.updated_at DESC`,
+      [responsible_id]
+    );
+
+    const monthMap = new Map();
+
+    kpiRes.rows.forEach((kpi) => {
+      if (!kpi.updated_at) return;
+
+      const date = new Date(kpi.updated_at);
+      const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+
+      if (!monthMap.has(monthKey)) monthMap.set(monthKey, []);
+      monthMap.get(monthKey).push(kpi);
     });
-    let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Dashboard</title>
-      <style>body{font-family:'Segoe UI',sans-serif;background:#f4f6f9;
-        background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
-        background-size:cover;background-position:center;background-attachment:fixed;padding:20px;margin:0;}
-      .container{max-width:900px;margin:0 auto;}
-      .header{background:#0078D7;color:white;padding:20px;text-align:center;border-radius:8px 8px 0 0;}
-      .content{background:#fff;padding:30px;border-radius:0 0 8px 8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}
-      .info-section{background:#f8f9fa;padding:20px;border-radius:6px;margin-bottom:25px;border-left:4px solid #0078D7;}
-      .info-row{display:flex;margin-bottom:10px;}
-      .info-label{width:120px;font-weight:600;color:#333;}
-      .info-value{flex:1;background:white;padding:8px 12px;border:1px solid #ddd;border-radius:4px;}
-      .week-section{margin-bottom:30px;border:1px solid #e1e5e9;border-radius:8px;padding:20px;background:#fafbfc;}
-      .week-title{color:#0078D7;font-size:20px;margin-bottom:15px;font-weight:600;
-        border-bottom:2px solid #0078D7;padding-bottom:8px;}
-      .kpi-card{background:#fff;border:1px solid #e1e5e9;border-radius:6px;padding:15px;margin-bottom:15px;}
-      .kpi-title{font-weight:600;color:#333;margin-bottom:5px;font-size:16px;}
-      .kpi-date{color:#999;font-size:11px;margin-top:3px;font-style:italic;}
-      </style></head><body>
-      <div class="container">
-        <div class="header"><h1>KPI Dashboard - ${responsible.name}</h1></div>
-        <div class="content">
-          <div class="info-section">
-            <div class="info-row"><div class="info-label">Responsible</div><div class="info-value">${responsible.name}</div></div>
-            <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
-            <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
-          </div>`;
-    if (weekMap.size === 0) {
+
+    const sortedMonthEntries = Array.from(monthMap.entries()).sort((a, b) => {
+      const [yearA, monthA] = a[0].split("-").map(Number);
+      const [yearB, monthB] = b[0].split("-").map(Number);
+      return new Date(yearB, monthB) - new Date(yearA, monthA);
+    });
+
+    let html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>KPI Dashboard</title>
+  <style>
+    body{
+      font-family:'Segoe UI',sans-serif;
+      background:#f4f6f9;
+      background-image:url('https://images.unsplash.com/photo-1486262715619-67b85e0b08d3?w=1600');
+      background-size:cover;
+      background-position:center;
+      background-attachment:fixed;
+      padding:20px;
+      margin:0;
+    }
+    .container{max-width:900px;margin:0 auto;}
+    .header{
+      background:#0078D7;
+      color:white;
+      padding:20px;
+      text-align:center;
+      border-radius:8px 8px 0 0;
+    }
+    .content{
+      background:#fff;
+      padding:30px;
+      border-radius:0 0 8px 8px;
+      box-shadow:0 2px 10px rgba(0,0,0,0.1);
+    }
+    .info-section{
+      background:#f8f9fa;
+      padding:20px;
+      border-radius:6px;
+      margin-bottom:25px;
+      border-left:4px solid #0078D7;
+    }
+    .info-row{display:flex;margin-bottom:10px;}
+    .info-label{width:120px;font-weight:600;color:#333;}
+    .info-value{
+      flex:1;
+      background:white;
+      padding:8px 12px;
+      border:1px solid #ddd;
+      border-radius:4px;
+    }
+    .month-section{
+      margin-bottom:30px;
+      border:1px solid #e1e5e9;
+      border-radius:8px;
+      padding:20px;
+      background:#fafbfc;
+    }
+    .month-title{
+      color:#0078D7;
+      font-size:20px;
+      margin-bottom:15px;
+      font-weight:600;
+      border-bottom:2px solid #0078D7;
+      padding-bottom:8px;
+    }
+    .kpi-card{
+      background:#fff;
+      border:1px solid #e1e5e9;
+      border-radius:6px;
+      padding:15px;
+      margin-bottom:15px;
+    }
+    .kpi-title{
+      font-weight:600;
+      color:#333;
+      margin-bottom:5px;
+      font-size:16px;
+    }
+    .kpi-date{
+      color:#999;
+      font-size:11px;
+      margin-top:3px;
+      font-style:italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>KPI Dashboard - ${responsible.name}</h1>
+    </div>
+
+    <div class="content">
+      <div class="info-section">
+        <div class="info-row">
+          <div class="info-label">Responsible</div>
+          <div class="info-value">${responsible.name}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Group</div>
+          <div class="info-value">${responsible.plant_name}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Department</div>
+          <div class="info-value">${responsible.department_name}</div>
+        </div>
+      </div>`;
+
+    if (sortedMonthEntries.length === 0) {
       html += `<div style="color:#999;font-style:italic;">No KPI data available yet.</div>`;
     } else {
-      for (const [week, items] of weekMap) {
-        html += `<div class="week-section"><div class="week-title">📅 Week ${week}</div>`;
-        items.forEach(kpi => {
+      for (const [monthKey, items] of sortedMonthEntries) {
+        const [year, month] = monthKey.split("-").map(Number);
+        const date = new Date(year, month);
+        const monthName = date.toLocaleString("en-GB", { month: "long" });
+        const monthLabel = `${monthName}-${year}`;
+
+        html += `<div class="month-section"><div class="month-title">📅 ${monthLabel}</div>`;
+
+        items.forEach((kpi) => {
           const hasValue = kpi.value !== null && kpi.value !== undefined && kpi.value !== '';
-          const dotColor = hasValue ? getDotColor(kpi.value, kpi.low_limit, kpi.high_limit) : '#6c757d';
+          const dotColor = hasValue
+            ? getDotColor(kpi.value, kpi.low_limit, kpi.high_limit)
+            : '#6c757d';
+
           const submitted = kpi.updated_at
-            ? new Date(kpi.updated_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+            ? new Date(kpi.updated_at).toLocaleString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })
+            : '';
+
           html += `
             <div class="kpi-card">
               <div class="kpi-title">${kpi.subject}</div>
-              ${kpi.indicator_sub_title ? `<div style="color:#666;font-size:13px;font-style:italic;">${kpi.indicator_sub_title}</div>` : ''}
+              ${kpi.indicator_sub_title
+                ? `<div style="color:#666;font-size:13px;font-style:italic;">${kpi.indicator_sub_title}</div>`
+                : ''}
+
               <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;">
-                ${kpi.target ? `<div><span style="font-weight:600;color:#495057;">Target: </span>
-                  <span style="color:#28a745;font-weight:700;">${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}</span></div>` : ''}
-                <div><span style="font-weight:600;color:#495057;">Actual: </span>
+                ${kpi.target
+                  ? `<div>
+                      <span style="font-weight:600;color:#495057;">Target: </span>
+                      <span style="color:#28a745;font-weight:700;">
+                        ${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}
+                      </span>
+                    </div>`
+                  : ''}
+
+                <div>
+                  <span style="font-weight:600;color:#495057;">Actual: </span>
                   <span style="font-size:20px;font-weight:700;color:${dotColor};">
-                    ${hasValue ? kpi.value : 'Not filled'} ${kpi.unit || ''}</span></div>
+                    ${hasValue ? kpi.value : 'Not filled'} ${kpi.unit || ''}
+                  </span>
+                </div>
               </div>
-              ${kpi.high_limit ? `<div style="font-size:12px;color:#ff9800;">🔺 High Limit: ${kpi.high_limit} ${kpi.unit || ''}</div>` : ''}
-              ${kpi.low_limit ? `<div style="font-size:12px;color:#dc3545;">🔻 Low Limit: ${kpi.low_limit} ${kpi.unit || ''}</div>` : ''}
-              ${submitted ? `<div class="kpi-date">Last updated: ${submitted}</div>` : ''}
+
+              ${kpi.high_limit
+                ? `<div style="font-size:12px;color:#ff9800;">🔺 High Limit: ${kpi.high_limit} ${kpi.unit || ''}</div>`
+                : ''}
+
+              ${kpi.low_limit
+                ? `<div style="font-size:12px;color:#dc3545;">🔻 Low Limit: ${kpi.low_limit} ${kpi.unit || ''}</div>`
+                : ''}
+
+              ${submitted
+                ? `<div class="kpi-date">Last updated: ${submitted}</div>`
+                : ''}
             </div>`;
         });
+
         html += `</div>`;
       }
     }
-    html += `</div></div></body></html>`;
+
+    html += `
+    </div>
+  </div>
+</body>
+</html>`;
+
     res.send(html);
   } catch (err) {
     res.status(500).send(`<h2 style="color:red;">Error: ${err.message}</h2>`);
@@ -2370,75 +3808,76 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
   }
 };
 // ---------- Cron: weekly KPI submission email ----------
-// let cronRunning = false;
-// cron.schedule("30 10 1 * *", async () => {
-//   const lockId = "send_kpi_weekly_email_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (cronRunning) return;
-//     cronRunning = true;
-//     const now = new Date();
-//     const startOfYear = new Date(now.getFullYear(), 0, 1);
-//     const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
-//     const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-//     const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
-//     const resps = await pool.query(
-//       `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
-//        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
-//       [forcedWeek]
-//     );
-//     for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
-//     console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
-//   } catch (err) {
-//     console.error("❌ Scheduled email error:", err.message);
-//   } finally {
-//     cronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let cronRunning = false;
+cron.schedule("20 9 * * *", async () => {
+  const lockId = "send_kpi_weekly_email_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (cronRunning) return;
+    cronRunning = true;
+    const now = new Date();
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
+    const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
+    const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
+    const resps = await pool.query(
+      `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
+       JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
+      [forcedWeek]
+    );
+    for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
+    console.log(`✅ KPI emails sent to ${resps.rows.length} responsibles`);
+  } catch (err) {
+    console.error("❌ Scheduled email error:", err.message);
+  } finally {
+    cronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
+
 
 // ---------- Cron: weekly reports ----------
-// let reportCronRunning = false;
-// cron.schedule("00 9 * * 4", async () => {
-//   const lockId = "weekly_kpi_report_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (reportCronRunning) return;
-//     reportCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const previousWeek = `${year}-Week${weekNumber - 1}`;
-//     const resps = await pool.query(
-//       `SELECT DISTINCT r.responsible_id, r.email, r.name
-//        FROM public."Responsible" r JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
-//        WHERE r.email IS NOT NULL AND r.email != ''
-//        GROUP BY r.responsible_id, r.email, r.name HAVING COUNT(h.hist_id) > 0`
-//     );
-//     for (const [index, resp] of resps.rows.entries()) {
-//       try {
-//         await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
-//       } catch (err) {
-//         console.error(`Failed for ${resp.name}:`, err.message);
-//       }
-//     }
-//     console.log(`✅ Weekly reports sent`);
-//   } catch (error) {
-//     console.error("❌ Report cron error:", error.message);
-//   } finally {
-//     reportCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let reportCronRunning = false;
+cron.schedule("17 11 * * *", async () => {
+  const lockId = "weekly_kpi_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (reportCronRunning) return;
+    reportCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const previousWeek = `${year}-Week${weekNumber - 1}`;
+    const resps = await pool.query(
+      `SELECT DISTINCT r.responsible_id, r.email, r.name
+       FROM public."Responsible" r JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
+       WHERE r.email IS NOT NULL AND r.email != ''
+       GROUP BY r.responsible_id, r.email, r.name HAVING COUNT(h.hist_id) > 0`
+    );
+    for (const [index, resp] of resps.rows.entries()) {
+      try {
+        await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`Failed for ${resp.name}:`, err.message);
+      }
+    }
+    console.log(`✅ Weekly reports sent`);
+  } catch (error) {
+    console.error("❌ Report cron error:", error.message);
+  } finally {
+    reportCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 // ============================================================
 // createIndividualKPIChart
@@ -3425,47 +4864,47 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 };
 
 // ---------- Cron: weekly manager/plant report ----------
-// let managerCronRunning = false;
-// cron.schedule("00 10 * * 4", async () => {
-//   const lockId = "department_report_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (managerCronRunning) return;
-//     managerCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const currentWeek = `${year}-Week${weekNumber}`;
-//     console.log(`📊 [Manager Report] Sending reports for week ${currentWeek}...`);
-//     const plantsRes = await pool.query(
-//       `SELECT plant_id, name, manager_email FROM public."Plant"
-//        WHERE manager_email IS NOT NULL AND manager_email != ''`
-//     );
-//     console.log(`📋 Found ${plantsRes.rows.length} plants with manager emails`);
-//     for (const plant of plantsRes.rows) {
-//       try {
-//         await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-//         console.log(`  ✅ Report sent for plant: ${plant.name}`);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
-//       } catch (err) {
-//         console.error(`  ❌ Failed for plant ${plant.name}:`, err.message);
-//       }
-//     }
-//     console.log(`✅ [Manager Report] All plant reports sent`);
-//   } catch (error) {
-//     console.error("❌ [Manager Report] Cron error:", error.message);
-//   } finally {
-//     managerCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let managerCronRunning = false;
+cron.schedule("06 10 * * *", async () => {
+  const lockId = "department_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (managerCronRunning) return;
+    managerCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const currentWeek = `${year}-Week${weekNumber}`;
+    console.log(`📊 [Manager Report] Sending reports for week ${currentWeek}...`);
+    const plantsRes = await pool.query(
+      `SELECT plant_id, name, manager_email FROM public."Plant"
+       WHERE manager_email IS NOT NULL AND manager_email != ''`
+    );
+    console.log(`📋 Found ${plantsRes.rows.length} plants with manager emails`);
+    for (const plant of plantsRes.rows) {
+      try {
+        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+        console.log(`  ✅ Report sent for plant: ${plant.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`  ❌ Failed for plant ${plant.name}:`, err.message);
+      }
+    }
+    console.log(`✅ [Manager Report] All plant reports sent`);
+  } catch (error) {
+    console.error("❌ [Manager Report] Cron error:", error.message);
+  } finally {
+    managerCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
