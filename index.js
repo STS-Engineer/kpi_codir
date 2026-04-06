@@ -38,23 +38,160 @@ cron.schedule('34 09 * * 1', async () => {
 });
 
 // ============================================================
-// DOT COLOR HELPER
-// red    = below low_limit
-// orange = within 10% above low_limit (close to it)
-// green  = fine
+// KPI DIRECTION + STATUS HELPERS
+// up   = higher is better
+// down = lower is better
 // ============================================================
-const getDotColor = (value, lowLimit, highLimit) => {
-  const val = parseFloat(value);
-  if (isNaN(val)) return '#6c757d';
-  const low = (lowLimit !== null && lowLimit !== undefined &&
-    lowLimit !== '' && lowLimit !== 'None')
-    ? parseFloat(lowLimit) : null;
-  if (low !== null) {
-    if (val < low) return '#dc3545';        // red
-    if (val < low * 1.10) return '#ff9800'; // orange
+const KPI_DIRECTION_OVERRIDES = Object.freeze({
+  // Add explicit overrides here if a KPI direction should not be inferred.
+  // Example: 11: "down"
+});
+
+const DOWN_DIRECTION_PATTERNS = [
+  /\bclaims?\b/i,
+  /\bbacklog\b/i,
+  /\bstock\b/i,
+  /\binventory\b/i,
+  /\bcosts?\b/i,
+  /\bfees?\b/i,
+  /\bmore than\b/i,
+  /\bdelay\b/i,
+  /\blate\b/i,
+];
+
+const parseMetricNumber = (value) => {
+  if (value === null || value === undefined || value === '' || value === 'None') {
+    return null;
   }
-  return '#28a745'; // green
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
 };
+
+const normalizeKpiDirection = (value) => {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return null;
+
+  if (
+    text === 'up' ||
+    text === 'higher' ||
+    text === 'higher is better' ||
+    text === 'increase' ||
+    text === 'increasing' ||
+    text === 'maximize' ||
+    text === 'max'
+  ) {
+    return 'up';
+  }
+
+  if (
+    text === 'down' ||
+    text === 'lower' ||
+    text === 'lower is better' ||
+    text === 'decrease' ||
+    text === 'decreasing' ||
+    text === 'minimize' ||
+    text === 'min'
+  ) {
+    return 'down';
+  }
+
+  return null;
+};
+
+const getKpiBounds = (lowLimit, highLimit) => {
+  const low = parseMetricNumber(lowLimit);
+  const high = parseMetricNumber(highLimit);
+  const bounds = [low, high].filter((value) => value !== null);
+
+  if (!bounds.length) {
+    return { lowerBound: null, upperBound: null };
+  }
+
+  return {
+    lowerBound: Math.min(...bounds),
+    upperBound: Math.max(...bounds)
+  };
+};
+
+const inferKpiDirection = (kpi = {}) => {
+  const explicitDirection = normalizeKpiDirection(
+    kpi.good_direction ||
+    kpi.goodDirection ||
+    kpi.direction ||
+    kpi.performance_direction
+  );
+  if (explicitDirection) return explicitDirection;
+
+  const overrideKey = String(kpi.kpi_id ?? kpi.kpiId ?? kpi.id ?? '');
+  const overrideDirection = normalizeKpiDirection(KPI_DIRECTION_OVERRIDES[overrideKey]);
+  if (overrideDirection) return overrideDirection;
+
+  const { lowerBound, upperBound } = getKpiBounds(
+    kpi.low_limit ?? kpi.lowLimit,
+    kpi.high_limit ?? kpi.highLimit
+  );
+  const target = parseMetricNumber(kpi.target);
+
+  if (target !== null && lowerBound !== null && upperBound !== null) {
+    if (target <= lowerBound) return 'down';
+    if (target >= upperBound) return 'up';
+  }
+
+  const searchableText = [
+    kpi.subject,
+    kpi.title,
+    kpi.indicator_sub_title,
+    kpi.subtitle
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  if (DOWN_DIRECTION_PATTERNS.some((pattern) => pattern.test(searchableText))) {
+    return 'down';
+  }
+
+  return 'up';
+};
+
+const getKpiStatus = (value, lowLimit, highLimit, direction = 'up') => {
+  const val = parseMetricNumber(value);
+  const resolvedDirection = normalizeKpiDirection(direction) || 'up';
+  const { lowerBound, upperBound } = getKpiBounds(lowLimit, highLimit);
+
+  if (val === null) {
+    return {
+      color: '#6c757d',
+      isGood: null,
+      direction: resolvedDirection,
+      lowerBound,
+      upperBound
+    };
+  }
+
+  if (resolvedDirection === 'down') {
+    return {
+      color: upperBound !== null && val > upperBound ? '#dc3545' : '#28a745',
+      isGood: !(upperBound !== null && val > upperBound),
+      direction: resolvedDirection,
+      lowerBound,
+      upperBound
+    };
+  }
+
+  return {
+    color: lowerBound !== null && val < lowerBound ? '#dc3545' : '#28a745',
+    isGood: !(lowerBound !== null && val < lowerBound),
+    direction: resolvedDirection,
+    lowerBound,
+    upperBound
+  };
+};
+
+const needsCorrectiveAction = (value, lowLimit, highLimit, direction = 'up') =>
+  getKpiStatus(value, lowLimit, highLimit, direction).isGood === false;
+
+const getDotColor = (value, lowLimit, highLimit, direction = 'up') =>
+  getKpiStatus(value, lowLimit, highLimit, direction).color;
 
 // ---------- IMPROVED Job Lock Helper with PostgreSQL Advisory Locks ----------
 const acquireJobLock = async (lockId, ttlMinutes = 9) => {
@@ -94,6 +231,110 @@ const createTransporter = () =>
       pass: "shnlgdyfbcztbhxn",
     },
   });
+
+const getOpenAIClient = () => {
+  if (!process.env.SECRET_KEY) {
+    throw new Error("OpenAI API key is not configured");
+  }
+
+  const OpenAI = require("openai");
+  return new OpenAI({ apiKey: process.env.SECRET_KEY });
+};
+
+const formatInputDate = (dateValue) => {
+  if (!dateValue) return "";
+  const d = new Date(dateValue);
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString().split("T")[0];
+};
+
+const normalizeText = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+};
+
+const buildAssistantKpiContext = (kpis = []) =>
+  kpis.slice(0, 30).map((kpi) => ({
+    kpi_id: kpi.kpi_id ?? null,
+    kpi_values_id: kpi.kpi_values_id ?? null,
+    title: normalizeText(kpi.title || kpi.subject) || "Untitled KPI",
+    subtitle: normalizeText(kpi.subtitle || kpi.indicator_sub_title),
+    unit: normalizeText(kpi.unit),
+    current_value: normalizeText(kpi.current_value ?? kpi.value),
+    target: normalizeText(kpi.target),
+    low_limit: normalizeText(kpi.low_limit),
+    high_limit: normalizeText(kpi.high_limit),
+    week: normalizeText(kpi.week),
+    comment: normalizeText(kpi.comment),
+    corrective_action_status: normalizeText(kpi.corrective_action_status || kpi.ca_status),
+    root_cause: normalizeText(kpi.root_cause),
+    implemented_solution: normalizeText(kpi.implemented_solution),
+    evidence: normalizeText(kpi.evidence),
+    good_direction: normalizeText(kpi.good_direction) || inferKpiDirection(kpi),
+    due_date: normalizeText(kpi.due_date),
+    responsible: normalizeText(kpi.responsible)
+  }));
+
+const generateKpiAssistantReply = async ({
+  responsible,
+  week,
+  selectedKpiId,
+  kpis,
+  message
+}) => {
+  const openai = getOpenAIClient();
+  const assistantKpis = buildAssistantKpiContext(kpis);
+  const selectedKpi = assistantKpis.find((kpi) =>
+    String(kpi.kpi_id) === String(selectedKpiId) ||
+    String(kpi.kpi_values_id) === String(selectedKpiId)
+  ) || null;
+
+  const prompt = `
+You are an AI KPI assistant for a manufacturing performance form.
+
+You help a plant/department responsible understand KPI status, target gaps, low-limit risks, and corrective actions.
+
+RULES
+- Base your answer only on the KPI context below and the user question.
+- If data is missing, say that clearly instead of inventing values.
+- Give practical manufacturing-oriented guidance.
+- Keep the answer concise and easy to act on.
+- If a KPI is selected, prioritize that KPI while still using the wider page context when useful.
+
+PAGE CONTEXT
+- Responsible: ${responsible?.name || "N/A"}
+- Plant: ${responsible?.plant_name || "N/A"}
+- Department: ${responsible?.department_name || "N/A"}
+- Week: ${week || "N/A"}
+
+SELECTED KPI
+${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
+
+ALL KPI SNAPSHOT
+${JSON.stringify(assistantKpis, null, 2)}
+
+USER QUESTION
+${message}
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: "You are a concise KPI assistant for manufacturing teams."
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    temperature: 0.35,
+    max_tokens: 700
+  });
+
+  return completion.choices[0]?.message?.content?.trim() || "";
+};
 
 
 
@@ -137,9 +378,8 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
            ca.implemented_solution AS ca_implemented_solution,
            ca.evidence         AS ca_evidence,
            ca.status           AS ca_status,
-           ca.start_date       AS ca_start_date,
-           ca.end_date         AS ca_end_date,
-           ca.deadline         AS ca_deadline
+           ca.due_date         AS ca_due_date,
+           ca.responsible      AS ca_responsible_name
     FROM public.kpi_values kv
     JOIN "Kpi" k ON kv.kpi_id = k.kpi_id
     LEFT JOIN public.corrective_actions ca
@@ -252,7 +492,7 @@ const upsertCorrectiveAction = async (
   responsibleId,
   kpiId,
   week,
-  { rootCause, implementedSolution, evidence, startDate, endDate, deadline }
+  { rootCause, implementedSolution, evidence, dueDate, responsibleName }
 ) => {
   try {
     const result = await pool.query(
@@ -260,13 +500,14 @@ const upsertCorrectiveAction = async (
        SET root_cause = $4::text,
            implemented_solution = $5::text,
            evidence = $6::text,
-           start_date = $7::date,
-           end_date = $8::date,
-           deadline = $9::date,
+           due_date = $7::date,
+           responsible = $8::text,
            status = CASE
              WHEN $4::text IS NOT NULL
               AND $5::text IS NOT NULL
               AND $6::text IS NOT NULL
+              AND $7::date IS NOT NULL
+              AND NULLIF(BTRIM($8::text), '') IS NOT NULL
              THEN 'Waiting for validation'
              ELSE status
            END,
@@ -282,9 +523,8 @@ const upsertCorrectiveAction = async (
         rootCause || null,
         implementedSolution || null,
         evidence || null,
-        startDate || null,
-        endDate || null,
-        deadline || null
+        dueDate || null,
+        responsibleName || null
       ]
     );
 
@@ -294,14 +534,16 @@ const upsertCorrectiveAction = async (
          (
            responsible_id, kpi_id, week,
            root_cause, implemented_solution, evidence,
-           start_date, end_date, deadline, status
+           due_date, responsible, status
          )
          VALUES (
-           $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::date,$9::date,
+           $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::text,
            CASE
              WHEN $4::text IS NOT NULL
               AND $5::text IS NOT NULL
               AND $6::text IS NOT NULL
+              AND $7::date IS NOT NULL
+              AND NULLIF(BTRIM($8::text), '') IS NOT NULL
              THEN 'Waiting for validation'
              ELSE 'Open'
            END
@@ -313,9 +555,8 @@ const upsertCorrectiveAction = async (
           rootCause || null,
           implementedSolution || null,
           evidence || null,
-          startDate || null,
-          endDate || null,
-          deadline || null
+          dueDate || null,
+          responsibleName || null
         ]
       );
     }
@@ -331,8 +572,8 @@ const upsertCorrectiveAction = async (
 // ============================================================
 const generateCASuggestions = async (kpi) => {
   try {
-    const OpenAI = require("openai");
-    const openai = new OpenAI({ apiKey: process.env.SECRET_KEY });
+    const openai = getOpenAIClient();
+    const goodDirection = inferKpiDirection(kpi);
 
     const currentVal = parseFloat(kpi.value || 0);
     const targetVal = parseFloat(kpi.target || 0);
@@ -358,6 +599,7 @@ KPI CONTEXT
 - Target: ${targetVal || "N/A"}
 - Low limit: ${kpi.low_limit || "N/A"}
 - High limit: ${kpi.high_limit || "N/A"}
+- Good direction: ${goodDirection === "down" ? "Down (lower is better)" : "Up (higher is better)"}
 - Gap to target: ${gapToTarget}
 - Gap to low limit: ${gapToLow}
 
@@ -422,7 +664,8 @@ app.get("/generate-ca-suggestion", async (req, res) => {
 
     const kpiRes = await pool.query(
       `SELECT k.kpi_id, k.subject, k.indicator_sub_title,
-              k.unit, k.target, kv.value
+              k.unit, k.target, k.definition, k.calculation_on,
+              k.frequency, k.low_limit, k.high_limit, kv.value
        FROM public."Kpi" k
        LEFT JOIN public.kpi_values kv
          ON kv.kpi_id = k.kpi_id
@@ -447,6 +690,50 @@ app.get("/generate-ca-suggestion", async (req, res) => {
   } catch (err) {
     console.error("Error generating CA suggestion:", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/kpi-ai-assistant", async (req, res) => {
+  try {
+    const {
+      responsible_id,
+      week,
+      selected_kpi_id,
+      message,
+      kpis
+    } = req.body || {};
+
+    const cleanMessage = String(message || "").trim();
+    if (!cleanMessage) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    let responsible = null;
+    if (responsible_id) {
+      const responsibleRes = await pool.query(
+        `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
+                p.name AS plant_name, d.name AS department_name
+         FROM public."Responsible" r
+         JOIN public."Plant" p ON r.plant_id = p.plant_id
+         JOIN public."Department" d ON r.department_id = d.department_id
+         WHERE r.responsible_id = $1`,
+        [responsible_id]
+      );
+      responsible = responsibleRes.rows[0] || null;
+    }
+
+    const reply = await generateKpiAssistantReply({
+      responsible,
+      week,
+      selectedKpiId: selected_kpi_id,
+      kpis: Array.isArray(kpis) ? kpis : [],
+      message: cleanMessage
+    });
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("KPI AI assistant error:", err.message);
+    res.status(500).json({ error: err.message || "Could not generate AI response" });
   }
 });
 
@@ -495,12 +782,12 @@ app.get("/corrective-actions-list", async (req, res) => {
        WHERE ca.responsible_id = $1
        ORDER BY
          CASE
-           WHEN ca.deadline IS NULL THEN 1
-           WHEN ca.deadline < CURRENT_DATE
+           WHEN ca.due_date IS NULL THEN 1
+           WHEN ca.due_date < CURRENT_DATE
                 AND ca.status NOT IN ('Closed', 'Completed') THEN 0
            ELSE 1
          END,
-         ca.deadline ASC NULLS LAST,
+         ca.due_date ASC NULLS LAST,
          ca.created_date DESC`,
       [responsible_id]
     );
@@ -538,11 +825,11 @@ app.get("/corrective-actions-list", async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        const deadlineDate = a.deadline ? new Date(a.deadline) : null;
+        const dueDate = a.due_date ? new Date(a.due_date) : null;
         const isOverdue =
-          deadlineDate &&
-          !isNaN(deadlineDate.getTime()) &&
-          deadlineDate < today &&
+          dueDate &&
+          !isNaN(dueDate.getTime()) &&
+          dueDate < today &&
           !["Closed", "Completed"].includes(a.status);
 
         const currentVal = a.value !== null && a.value !== undefined && a.value !== ""
@@ -598,16 +885,12 @@ app.get("/corrective-actions-list", async (req, res) => {
                   <strong>${escapeHtml(a.week)}</strong>
                 </div>
                 <div class="meta-item">
-                  <span>Start Date</span>
-                  <strong>${formatDate(a.start_date)}</strong>
-                </div>
-                <div class="meta-item">
-                  <span>End Date</span>
-                  <strong>${formatDate(a.end_date)}</strong>
+                  <span>Responsible</span>
+                  <strong>${escapeHtml(a.responsible || responsible.name || "—")}</strong>
                 </div>
                 <div class="meta-item ${isOverdue ? "deadline-overdue" : ""}">
-                  <span>Deadline</span>
-                  <strong>${formatDate(a.deadline)}</strong>
+                  <span>Due Date</span>
+                  <strong>${formatDate(a.due_date)}</strong>
                 </div>
                 <div class="meta-item">
                   <span>Created</span>
@@ -621,9 +904,9 @@ app.get("/corrective-actions-list", async (req, res) => {
 
               <div class="ca-footer">
                 <div class="deadline-badge ${isOverdue ? "deadline-badge-overdue" : ""}">
-                  ${a.deadline
-            ? (isOverdue ? "⛔ Overdue" : "⏰ Deadline set")
-            : "🕒 No deadline"}
+                  ${a.due_date
+            ? (isOverdue ? "⛔ Overdue" : "📅 Due date set")
+            : "🕒 No due date"}
                 </div>
 
                 <a class="view-btn"
@@ -948,13 +1231,6 @@ app.get("/corrective-action-form", async (req, res) => {
 
     const ed = existingCARes.rows[0] || {};
 
-    const formatInputDate = (dateValue) => {
-      if (!dateValue) return "";
-      const d = new Date(dateValue);
-      if (isNaN(d.getTime())) return "";
-      return d.toISOString().split("T")[0];
-    };
-
     const escapeHtml = (value) =>
       String(value ?? "")
         .replace(/&/g, "&amp;")
@@ -963,15 +1239,14 @@ app.get("/corrective-action-form", async (req, res) => {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
 
-    const today = new Date();
-    const defaultStartDate = formatInputDate(ed.start_date) || today.toISOString().split("T")[0];
-
-    const defaultDeadline = (() => {
-      if (ed.deadline) return formatInputDate(ed.deadline);
+    const defaultDueDate = (() => {
+      if (ed.due_date) return formatInputDate(ed.due_date);
       const d = new Date();
       d.setDate(d.getDate() + 7);
       return d.toISOString().split("T")[0];
     })();
+
+    const defaultResponsibleName = escapeHtml(ed.responsible || responsible.name || "");
 
     res.send(`
       <!DOCTYPE html>
@@ -1057,7 +1332,7 @@ app.get("/corrective-action-form", async (req, res) => {
             color:#374151;
             font-size:14px;
           }
-          textarea,input[type="date"]{
+          textarea,input[type="date"],input[type="text"]{
             width:100%;
             padding:14px 15px;
             border:1px solid #d1d5db;
@@ -1071,14 +1346,14 @@ app.get("/corrective-action-form", async (req, res) => {
             min-height:120px;
             resize:vertical;
           }
-          textarea:focus,input[type="date"]:focus{
+          textarea:focus,input[type="date"]:focus,input[type="text"]:focus{
             outline:none;
             border-color:#2563eb;
             box-shadow:0 0 0 4px rgba(37,99,235,0.10);
           }
           .dates-grid{
             display:grid;
-            grid-template-columns:repeat(3,1fr);
+            grid-template-columns:repeat(2,1fr);
             gap:14px;
           }
           .status-line{
@@ -1201,55 +1476,44 @@ app.get("/corrective-action-form", async (req, res) => {
               ${ed.corrective_action_id
         ? `<input type="hidden" name="corrective_action_id" value="${escapeHtml(ed.corrective_action_id)}">`
         : ""}
-     <div class="dates-grid">
-      <div class="form-group">
-      <label for="start_date">📅 Start Date *</label>
-      <input
-      type="date"
-      id="start_date"
-      name="start_date"
-      required
-      value=""
-    >
-  </div>
+              <div class="dates-grid">
+                <div class="form-group">
+                  <label for="due_date">📅 Due Date *</label>
+                  <input
+                    type="date"
+                    id="due_date"
+                    name="due_date"
+                    required
+                    value="${defaultDueDate}"
+                  >
+                  <div class="hint">Set the final due date for this corrective action.</div>
+                </div>
 
-  <div class="form-group">
-    <label for="end_date">🏁 End Date *</label>
-    <input
-      type="date"
-      id="end_date"
-      name="end_date"
-      required
-      value=""
-    >
-  </div>
-
-  <div class="form-group">
-    <label for="deadline">⏰ Deadline *</label>
-    <input
-      type="date"
-      id="deadline"
-      name="deadline"
-      required
-      value=""
-    >
-    <div class="hint">Set the final due date for this corrective action.</div>
-  </div>
-</div>
+                <div class="form-group">
+                  <label for="responsible">👤 Responsible *</label>
+                  <input
+                    type="text"
+                    id="responsible"
+                    name="responsible"
+                    required
+                    value="${defaultResponsibleName}"
+                  >
+                </div>
+              </div>
 
 <div class="form-group">
   <label for="root_cause">🔍 Root Cause Analysis *</label>
-  <textarea id="root_cause" name="root_cause" required></textarea>
+  <textarea id="root_cause" name="root_cause" required>${escapeHtml(ed.root_cause || "")}</textarea>
 </div>
 
 <div class="form-group">
   <label for="implemented_solution">🔧 Implemented Solution *</label>
-  <textarea id="implemented_solution" name="implemented_solution" required></textarea>
+  <textarea id="implemented_solution" name="implemented_solution" required>${escapeHtml(ed.implemented_solution || "")}</textarea>
 </div>
 
 <div class="form-group">
   <label for="evidence">📊 Evidence of Improvement *</label>
-  <textarea id="evidence" name="evidence" required></textarea>
+  <textarea id="evidence" name="evidence" required>${escapeHtml(ed.evidence || "")}</textarea>
 </div>
               <div class="actions">
                 <button type="submit" class="submit-btn">Submit Corrective Action</button>
@@ -1263,36 +1527,54 @@ app.get("/corrective-action-form", async (req, res) => {
         </div>
 
         <script>
-          const startDateInput = document.getElementById('start_date');
-          const endDateInput = document.getElementById('end_date');
-          const deadlineInput = document.getElementById('deadline');
-
-          function validateDates() {
-            const startDate = startDateInput.value;
-            const endDate = endDateInput.value;
-            const deadline = deadlineInput.value;
-
-            endDateInput.setCustomValidity('');
-            deadlineInput.setCustomValidity('');
-
-            if (startDate && endDate && endDate < startDate) {
-              endDateInput.setCustomValidity('End date must be greater than or equal to start date');
-            }
-
-            if (startDate && deadline && deadline < startDate) {
-              deadlineInput.setCustomValidity('Deadline must be greater than or equal to start date');
-            }
+          const responsibleInput = document.getElementById('responsible');
+          if (responsibleInput) {
+            responsibleInput.addEventListener('blur', () => {
+              responsibleInput.value = responsibleInput.value.trim();
+            });
           }
-
-          startDateInput.addEventListener('change', validateDates);
-          endDateInput.addEventListener('change', validateDates);
-          deadlineInput.addEventListener('change', validateDates);
         </script>
       </body>
       </html>
     `);
   } catch (err) {
     console.error("Error loading corrective action form:", err);
+    res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
+  }
+});
+
+app.post("/submit-corrective-action", async (req, res) => {
+  try {
+    const {
+      responsible_id,
+      kpi_id,
+      week,
+      root_cause,
+      implemented_solution,
+      evidence,
+      due_date,
+      responsible
+    } = req.body || {};
+
+    if (!responsible_id || !kpi_id || !week) {
+      return res.status(400).send("Missing responsible_id, kpi_id, or week");
+    }
+
+    const saved = await upsertCorrectiveAction(responsible_id, kpi_id, week, {
+      rootCause: normalizeText(root_cause),
+      implementedSolution: normalizeText(implemented_solution),
+      evidence: normalizeText(evidence),
+      dueDate: due_date || null,
+      responsibleName: normalizeText(responsible)
+    });
+
+    if (!saved) {
+      return res.status(500).send("Could not save corrective action");
+    }
+
+    res.redirect(`/corrective-actions-list?responsible_id=${encodeURIComponent(responsible_id)}`);
+  } catch (err) {
+    console.error("Error submitting corrective action:", err);
     res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
@@ -1348,6 +1630,13 @@ app.get("/corrective-actions-bulk", async (req, res) => {
       const pctGap = action.target && action.value
         ? (((parseFloat(action.target) - parseFloat(action.value)) / parseFloat(action.target)) * 100).toFixed(1)
         : null;
+      const defaultDueDate = formatInputDate(action.due_date);
+      const defaultResponsibleName = action.responsible || responsible.name || "";
+      const safeResponsibleName = String(defaultResponsibleName)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 
       return `
         <div class="kpi-section">
@@ -1454,6 +1743,34 @@ app.get("/corrective-actions-bulk", async (req, res) => {
               >${action.evidence || ''}</textarea>
               <div class="help-text">Provide data, metrics, or observations demonstrating effectiveness</div>
             </div>
+
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="due_date_${action.corrective_action_id}">
+                  📅 Due Date <span class="required">*</span>
+                </label>
+                <input
+                  type="date"
+                  name="due_date_${action.corrective_action_id}"
+                  id="due_date_${action.corrective_action_id}"
+                  value="${defaultDueDate}"
+                  required
+                >
+              </div>
+
+              <div class="form-group">
+                <label for="responsible_${action.corrective_action_id}">
+                  👤 Responsible <span class="required">*</span>
+                </label>
+                <input
+                  type="text"
+                  name="responsible_${action.corrective_action_id}"
+                  id="responsible_${action.corrective_action_id}"
+                  value="${safeResponsibleName}"
+                  required
+                >
+              </div>
+            </div>
           </div>
         </div>`;
     }).join('');
@@ -1539,13 +1856,15 @@ app.get("/corrective-actions-bulk", async (req, res) => {
           .ai-card-text{font-size:13px;color:#374151;line-height:1.55;}
           /* Form fields */
           .form-fields{padding:20px;}
+          .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
           .form-group{margin-bottom:18px;}
           label{display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;}
           .required{color:#dc2626;margin-left:3px;}
-          textarea{width:100%;padding:11px 14px;border:1.5px solid #d1d5db;border-radius:6px;
+          textarea,input[type="date"],input[type="text"]{width:100%;padding:11px 14px;border:1.5px solid #d1d5db;border-radius:6px;
             font-size:13px;font-family:inherit;resize:vertical;min-height:80px;
             transition:border-color 0.2s;}
-          textarea:focus{border-color:#7c3aed;outline:none;
+          input[type="date"],input[type="text"]{min-height:auto;}
+          textarea:focus,input[type="date"]:focus,input[type="text"]:focus{border-color:#7c3aed;outline:none;
             box-shadow:0 0 0 3px rgba(124,58,237,0.1);}
           textarea.highlight{animation:highlightFade 1.8s forwards;}
           @keyframes highlightFade{
@@ -1556,7 +1875,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             color:white;border:none;border-radius:8px;font-size:17px;font-weight:700;
             cursor:pointer;margin-top:8px;transition:opacity 0.15s;}
           .submit-btn:hover{opacity:0.9;}
-          @media(max-width:640px){.ai-suggestion-row{grid-template-columns:1fr;}}
+          @media(max-width:640px){.ai-suggestion-row,.form-grid{grid-template-columns:1fr;}}
         </style>
       </head>
       <body>
@@ -1660,18 +1979,35 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
     const ids = Array.isArray(corrective_action_ids) ? corrective_action_ids : [corrective_action_ids];
     let completedCount = 0;
     for (const caId of ids) {
-      const rootCause = formData[`root_cause_${caId}`];
-      const solution = formData[`solution_${caId}`];
-      const evidence = formData[`evidence_${caId}`];
-      if (rootCause && solution && evidence) {
+      const rootCause = normalizeText(formData[`root_cause_${caId}`]);
+      const solution = normalizeText(formData[`solution_${caId}`]);
+      const evidence = normalizeText(formData[`evidence_${caId}`]);
+      const dueDate = formData[`due_date_${caId}`] || null;
+      const responsibleName = normalizeText(formData[`responsible_${caId}`]);
+      if (rootCause || solution || evidence || dueDate || responsibleName) {
         await pool.query(
           `UPDATE public.corrective_actions
-           SET root_cause=$1, implemented_solution=$2, evidence=$3,
-               status='Waiting for validation', updated_date=NOW()
-           WHERE corrective_action_id=$4`,
-          [rootCause, solution, evidence, caId]
+           SET root_cause=$1,
+               implemented_solution=$2,
+               evidence=$3,
+               due_date=$4::date,
+               responsible=$5::text,
+               status = CASE
+                 WHEN $1::text IS NOT NULL
+                  AND $2::text IS NOT NULL
+                  AND $3::text IS NOT NULL
+                  AND $4::date IS NOT NULL
+                  AND NULLIF(BTRIM($5::text), '') IS NOT NULL
+                 THEN 'Waiting for validation'
+                 ELSE status
+               END,
+               updated_date=NOW()
+           WHERE corrective_action_id=$6`,
+          [rootCause, solution, evidence, dueDate, responsibleName, caId]
         );
-        completedCount++;
+        if (rootCause && solution && evidence && dueDate && responsibleName) {
+          completedCount++;
+        }
       }
     }
     res.send(`
@@ -1728,17 +2064,19 @@ app.post("/redirect", async (req, res) => {
       .filter(([k]) => k.startsWith("evidence_"))
       .reduce((acc, [k, v]) => { acc[k.replace("evidence_", "")] = v; return acc; }, {});
 
-    const startDates = Object.entries(values)
-      .filter(([k]) => k.startsWith("start_date_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("start_date_", "")] = v; return acc; }, {});
+    const dueDates = Object.entries(values)
+      .filter(([k]) => k.startsWith("due_date_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("due_date_", "")] = v; return acc; }, {});
 
-    const endDates = Object.entries(values)
-      .filter(([k]) => k.startsWith("end_date_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("end_date_", "")] = v; return acc; }, {});
+    const actionResponsibles = Object.entries(values)
+      .filter(([k]) => k.startsWith("responsible_"))
+      .reduce((acc, [k, v]) => { acc[k.replace("responsible_", "")] = v; return acc; }, {});
 
-    const deadlines = Object.entries(values)
-      .filter(([k]) => k.startsWith("deadline_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("deadline_", "")] = v; return acc; }, {});
+    const responsibleRes = await pool.query(
+      `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
+      [responsible_id]
+    );
+    const defaultResponsibleName = responsibleRes.rows[0]?.name || null;
 
     const targetUpdates = [];
     let correctiveActionsCount = 0;
@@ -1752,20 +2090,26 @@ app.post("/redirect", async (req, res) => {
 
       const { value: old_value, kpi_id } = oldRes.rows[0];
 
-      // Fetch kpi low_limit to determine if corrective action is needed
+      // Fetch KPI limits to determine if corrective action is needed
       const kpiInfoRes = await pool.query(
-        `SELECT low_limit FROM public."Kpi" WHERE kpi_id = $1`, [kpi_id]
+        `SELECT kpi_id, subject, indicator_sub_title, target, low_limit, high_limit
+         FROM public."Kpi"
+         WHERE kpi_id = $1`,
+        [kpi_id]
       );
-      const kpiInfo = kpiInfoRes.rows[0];
-      const lowLimit = kpiInfo && kpiInfo.low_limit !== null ? parseFloat(kpiInfo.low_limit) : null;
+      const kpiInfo = kpiInfoRes.rows[0] || {};
+      const lowLimit = parseMetricNumber(kpiInfo.low_limit);
+      const highLimit = parseMetricNumber(kpiInfo.high_limit);
+      const goodDirection = inferKpiDirection(kpiInfo);
       const numValue = parseFloat(item.value);
 
-      const rc = rootCauses[item.kpi_values_id] || '';
-      const is_ = implSolutions[item.kpi_values_id] || '';
-      const ev = evidences[item.kpi_values_id] || '';
-      const sd = startDates[item.kpi_values_id] || null;
-      const ed = endDates[item.kpi_values_id] || null;
-      const dl = deadlines[item.kpi_values_id] || null;
+      const rc = normalizeText(rootCauses[item.kpi_values_id]);
+      const is_ = normalizeText(implSolutions[item.kpi_values_id]);
+      const ev = normalizeText(evidences[item.kpi_values_id]);
+      const dueDate = dueDates[item.kpi_values_id] || null;
+      const actionResponsible =
+        normalizeText(actionResponsibles[item.kpi_values_id]) ||
+        normalizeText(defaultResponsibleName);
       await pool.query(
         `INSERT INTO public.kpi_values_hist26
          (kpi_values_id, responsible_id, kpi_id, week, old_value, new_value, comment)
@@ -1780,18 +2124,20 @@ app.post("/redirect", async (req, res) => {
       );
 
       // -------------------------------------------------------
-      // Save corrective action if value is below low_limit AND
-      // the user filled in the corrective action fields
+      // Save corrective action if the KPI is outside the good-direction limit
+      // and the user filled in the corrective action fields
       // -------------------------------------------------------
-      if (lowLimit !== null && !isNaN(numValue) && numValue < lowLimit) {
-        if (rc || is_ || ev) {
+      if (
+        !isNaN(numValue) &&
+        needsCorrectiveAction(numValue, lowLimit, highLimit, goodDirection)
+      ) {
+        if (rc || is_ || ev || dueDate || actionResponsible) {
           await upsertCorrectiveAction(responsible_id, kpi_id, week, {
-            rootCause: rc || null,
-            implementedSolution: is_ || null,
-            evidence: ev || null,
-            startDate: sd,
-            endDate: ed,
-            deadline: dl,
+            rootCause: rc,
+            implementedSolution: is_,
+            evidence: ev,
+            dueDate,
+            responsibleName: actionResponsible
           });
           correctiveActionsCount++;
         } else {
@@ -1804,9 +2150,9 @@ app.post("/redirect", async (req, res) => {
           if (existing.rows.length === 0) {
             await pool.query(
               `INSERT INTO public.corrective_actions
-             (responsible_id, kpi_id, week, status, start_date, deadline)
-              VALUES ($1, $2, $3, 'Open', CURRENT_DATE, CURRENT_DATE + INTERVAL '7 day')`,
-              [responsible_id, kpi_id, week]
+             (responsible_id, kpi_id, week, status, due_date, responsible)
+              VALUES ($1, $2, $3, 'Open', CURRENT_DATE + 7, $4)`,
+              [responsible_id, kpi_id, week, actionResponsible]
             );
           }
         }
@@ -1864,82 +2210,221 @@ app.get("/form", async (req, res) => {
       return res.send("<p>No KPIs found for this week.</p>");
     }
 
-    let kpiCardsHtml = '';
+    const histRes = await pool.query(
+      `
+      SELECT DISTINCT ON (kpi_id, week)
+        kpi_id,
+        week,
+        new_value,
+        updated_at
+      FROM public.kpi_values_hist26
+      WHERE responsible_id = $1
+        AND new_value IS NOT NULL
+        AND new_value <> ''
+      ORDER BY kpi_id, week, updated_at DESC
+      `,
+      [responsible_id]
+    );
 
-    kpis.forEach(kpi => {
+    const historyByKpi = {};
+    histRes.rows.forEach((row) => {
+      if (!historyByKpi[row.kpi_id]) historyByKpi[row.kpi_id] = [];
+      historyByKpi[row.kpi_id].push({
+        week: row.week,
+        value: parseFloat(row.new_value)
+      });
+    });
+
+    function weekLabelToDate(weekStr) {
+      const m = String(weekStr || "").match(/^(\d{4})-Week(\d{1,2})$/);
+      if (!m) return new Date(0);
+      const year = parseInt(m[1], 10);
+      const weekNum = parseInt(m[2], 10);
+      return new Date(year, 0, 1 + (weekNum - 1) * 7);
+    }
+
+    function weekToMonthLabel(weekStr) {
+      const d = weekLabelToDate(weekStr);
+      if (isNaN(d.getTime())) return weekStr || "";
+      return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+    }
+
+    let kpiCardsHtml = "";
+
+    kpis.forEach((kpi) => {
       let lowLimit = null;
       if (
         kpi.low_limit &&
-        kpi.low_limit !== 'None' &&
-        kpi.low_limit !== 'null' &&
-        kpi.low_limit !== '' &&
+        kpi.low_limit !== "None" &&
+        kpi.low_limit !== "null" &&
+        kpi.low_limit !== "" &&
         !isNaN(parseFloat(kpi.low_limit))
       ) {
         lowLimit = parseFloat(kpi.low_limit);
       }
 
-      const currentValue = kpi.value && kpi.value !== '' ? parseFloat(kpi.value) : null;
-      const showCA = lowLimit !== null && currentValue !== null && currentValue < lowLimit;
+      let highLimit = null;
+      if (
+        kpi.high_limit &&
+        kpi.high_limit !== "None" &&
+        kpi.high_limit !== "null" &&
+        kpi.high_limit !== "" &&
+        !isNaN(parseFloat(kpi.high_limit))
+      ) {
+        highLimit = parseFloat(kpi.high_limit);
+      }
 
-      const existingRC = kpi.ca_root_cause || '';
-      const existingIS = kpi.ca_implemented_solution || '';
-      const existingEV = kpi.ca_evidence || '';
-      const caStatus = kpi.ca_status || '';
+      let targetValue = null;
+      if (
+        kpi.target &&
+        kpi.target !== "None" &&
+        kpi.target !== "null" &&
+        kpi.target !== "" &&
+        !isNaN(parseFloat(kpi.target))
+      ) {
+        targetValue = parseFloat(kpi.target);
+      }
 
-      const startDateValue = kpi.ca_start_date
-        ? new Date(kpi.ca_start_date).toISOString().split('T')[0]
-        : '';
+      const currentValue =
+        kpi.value && kpi.value !== "" && !isNaN(parseFloat(kpi.value))
+          ? parseFloat(kpi.value)
+          : null;
 
-      const endDateValue = kpi.ca_end_date
-        ? new Date(kpi.ca_end_date).toISOString().split('T')[0]
-        : '';
+      const goodDirection = inferKpiDirection(kpi);
+      const showCA = currentValue !== null &&
+        needsCorrectiveAction(currentValue, lowLimit, highLimit, goodDirection);
 
-      const deadlineValue = kpi.ca_deadline
-        ? new Date(kpi.ca_deadline).toISOString().split('T')[0]
-        : '';
+      const existingRC = kpi.ca_root_cause || "";
+      const existingIS = kpi.ca_implemented_solution || "";
+      const existingEV = kpi.ca_evidence || "";
+      const caStatus = kpi.ca_status || "";
+
+      const dueDateValue = kpi.ca_due_date
+        ? new Date(kpi.ca_due_date).toISOString().split("T")[0]
+        : "";
+
+      const responsibleValue = kpi.ca_responsible_name || responsible.name || "";
+      const safeResponsibleValue = String(responsibleValue)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+      const safeCaStatusClass = String(caStatus || "")
+        .toLowerCase()
+        .replace(/\s+/g, "-");
+
+      const rawHistory = historyByKpi[kpi.kpi_id] || [];
+      const sortedHistory = rawHistory
+        .filter((h) => !isNaN(h.value))
+        .sort((a, b) => weekLabelToDate(a.week) - weekLabelToDate(b.week));
+
+      const monthMap = {};
+      sortedHistory.forEach((item) => {
+        const monthLabel = weekToMonthLabel(item.week);
+        if (!monthMap[monthLabel]) {
+          monthMap[monthLabel] = { sum: 0, count: 0 };
+        }
+        monthMap[monthLabel].sum += item.value;
+        monthMap[monthLabel].count += 1;
+      });
+
+      let historyLabels = Object.keys(monthMap);
+      let historyValues = historyLabels.map((label) => {
+        const m = monthMap[label];
+        return Number((m.sum / m.count).toFixed(2));
+      });
+
+      if (!historyLabels.length) {
+        historyLabels = [weekToMonthLabel(week)];
+        historyValues = [currentValue];
+      } else {
+        const currentMonthLabel = weekToMonthLabel(week);
+        const currentMonthIndex = historyLabels.indexOf(currentMonthLabel);
+
+        if (currentMonthIndex === -1) {
+          historyLabels.push(currentMonthLabel);
+          historyValues.push(currentValue);
+        } else if (currentValue !== null) {
+          historyValues[currentMonthIndex] = currentValue;
+        }
+      }
 
       kpiCardsHtml += `
-        <div class="kpi-card" data-kpi-id="${kpi.kpi_id}" data-low-limit="${lowLimit !== null ? lowLimit : ''}">
+        <div class="kpi-card"
+             data-kpi-id="${kpi.kpi_id}"
+             data-kpi-values-id="${kpi.kpi_values_id}"
+             data-low-limit="${lowLimit !== null ? lowLimit : ""}"
+             data-high-limit="${highLimit !== null ? highLimit : ""}"
+             data-good-direction="${goodDirection}"
+             data-target="${targetValue !== null ? targetValue : ""}"
+             data-history-labels='${JSON.stringify(historyLabels)}'
+             data-history-values='${JSON.stringify(historyValues)}'
+             data-current-week="${week}"
+             data-unit="${kpi.unit || ""}">
+
           <div class="kpi-header">
-            <div class="kpi-title">${kpi.subject}</div>
-
-            <div class="kpi-limits">
-              ${lowLimit !== null ? `<span class="limit-badge low">Low: ${lowLimit} ${kpi.unit || ''}</span>` : ''}
-
-              ${(kpi.high_limit &&
-          kpi.high_limit !== 'None' &&
-          kpi.high_limit !== 'null' &&
-          kpi.high_limit !== '' &&
-          !isNaN(parseFloat(kpi.high_limit)))
-          ? `<span class="limit-badge high">High: ${parseFloat(kpi.high_limit)} ${kpi.unit || ''}</span>`
-          : ''
-        }
+            <div>
+              <div class="kpi-title">${kpi.subject}</div>
+              ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ""}
             </div>
           </div>
 
-          ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ''}
+         <div class="kpi-split-layout">
+        <div class="kpi-right-panel kpi-chart-trigger"
+             data-kpi-values-id="${kpi.kpi_values_id}"
+             role="button"
+             tabindex="0"
+             title="Click to expand chart"
+             aria-label="Expand KPI chart">
+           <canvas id="chart_${kpi.kpi_values_id}"></canvas>
+            </div>
+
+          <div class="kpi-left-panel">
+
 
           <input
-            type="number"
+           type="number"
             step="any"
-            name="value_${kpi.kpi_values_id}"
-            value=""
-            placeholder="Enter value"
+             name="value_${kpi.kpi_values_id}"
+            value="${kpi.value ?? ""}"
+             placeholder="Enter value"
             class="kpi-input value-input"
             data-kpi-values-id="${kpi.kpi_values_id}"
-            data-low-limit="${lowLimit !== null ? lowLimit : ''}"
-            required
+           required
           />
 
-          <!-- ===== CORRECTIVE ACTION PANEL ===== -->
-          <div class="ca-container ${showCA ? 'visible' : ''}" id="ca_container_${kpi.kpi_values_id}">
+    <div class="kpi-mini-stats">
+      <div class="mini-stat-card">
+        <div class="mini-stat-label">HIGH LIMIT</div>
+        <div class="mini-stat-value high">${highLimit !== null ? highLimit : "—"}</div>
+        <div class="mini-stat-unit">${kpi.unit || ""}</div>
+      </div>
+
+       <div class="mini-stat-card">
+        <div class="mini-stat-label">TARGET</div>
+        <div class="mini-stat-value target">${targetValue !== null ? targetValue : "—"}</div>
+        <div class="mini-stat-unit">${kpi.unit || ""}</div>
+           </div>
+
+         <div class="mini-stat-card">
+          <div class="mini-stat-label">LOW LIMIT</div>
+           <div class="mini-stat-value low">${lowLimit !== null ? lowLimit : "—"}</div>
+           <div class="mini-stat-unit">${kpi.unit || ""}</div>
+            </div>
+           </div>
+           </div>
+          </div>
+
+          <div class="ca-container ${showCA ? "visible" : ""}" id="ca_container_${kpi.kpi_values_id}">
             <div class="ca-header">
-              ⚠️ Value is below low limit — corrective action required
-              ${caStatus ? `<span class="ca-status-badge ca-status-${caStatus.toLowerCase().replace(/ /g, '-')}">${caStatus}</span>` : ''}
+              ${goodDirection === "down"
+          ? "⚠️ Value is above the upper limit — corrective action required"
+          : "⚠️ Value is below the lower limit — corrective action required"}
+              ${caStatus ? `<span class="ca-status-badge ca-status-${safeCaStatusClass}">${caStatus}</span>` : ""}
             </div>
 
             <div class="ca-ai-box" id="ca-ai-box-${kpi.kpi_values_id}">
-        
               <div class="ca-suggestion-content" id="ca-sugg-${kpi.kpi_values_id}" style="display:none;">
                 <div class="ca-ai-row">
                   <div class="ca-ai-card ca-rc-card"
@@ -1978,44 +2463,30 @@ app.get("/form", async (req, res) => {
 
             <div class="ca-dates-grid">
               <div class="ca-field">
-                <label class="ca-label" for="start_date_${kpi.kpi_values_id}">
-                  📅 Start Date <span class="ca-required">*</span>
+                <label class="ca-label" for="due_date_${kpi.kpi_values_id}">
+                  📅 Due Date <span class="ca-required">*</span>
                 </label>
                 <input
                   type="date"
-                  id="start_date_${kpi.kpi_values_id}"
-                  name="start_date_${kpi.kpi_values_id}"
+                  id="due_date_${kpi.kpi_values_id}"
+                  name="due_date_${kpi.kpi_values_id}"
                   class="ca-date-input"
-                  value=""
-                  ${showCA ? 'required' : ''}
+                  value="${dueDateValue}"
+                  ${showCA ? "required" : ""}
                 />
               </div>
 
               <div class="ca-field">
-                <label class="ca-label" for="end_date_${kpi.kpi_values_id}">
-                  🏁 End Date <span class="ca-required">*</span>
+                <label class="ca-label" for="responsible_${kpi.kpi_values_id}">
+                  👤 Responsible <span class="ca-required">*</span>
                 </label>
                 <input
-                  type="date"
-                  id="end_date_${kpi.kpi_values_id}"
-                  name="end_date_${kpi.kpi_values_id}"
-                  class="ca-date-input"
-                  value=""
-                  ${showCA ? 'required' : ''}
-                />
-              </div>
-
-              <div class="ca-field">
-                <label class="ca-label" for="deadline_${kpi.kpi_values_id}">
-                  ⏰ Deadline <span class="ca-required">*</span>
-                </label>
-                <input
-                  type="date"
-                  id="deadline_${kpi.kpi_values_id}"
-                  name="deadline_${kpi.kpi_values_id}"
-                  class="ca-date-input"
-                  value=""
-                  ${showCA ? 'required' : ''}
+                  type="text"
+                  id="responsible_${kpi.kpi_values_id}"
+                  name="responsible_${kpi.kpi_values_id}"
+                  class="ca-text-input"
+                  value="${safeResponsibleValue}"
+                  ${showCA ? "required" : ""}
                 />
               </div>
             </div>
@@ -2029,9 +2500,9 @@ app.get("/form", async (req, res) => {
                 name="root_cause_${kpi.kpi_values_id}"
                 class="ca-textarea root-cause-input"
                 data-kpi-values-id="${kpi.kpi_values_id}"
-                placeholder="Click 'Generate Suggestion' or describe the root cause manually..."
-                ${showCA ? 'required' : ''}
-              ></textarea>
+                placeholder="Describe the root cause..."
+                ${showCA ? "required" : ""}
+              >${existingRC}</textarea>
             </div>
 
             <div class="ca-field">
@@ -2043,9 +2514,9 @@ app.get("/form", async (req, res) => {
                 name="impl_solution_${kpi.kpi_values_id}"
                 class="ca-textarea impl-solution-input"
                 data-kpi-values-id="${kpi.kpi_values_id}"
-                placeholder="Click 'Generate Suggestion' or describe the solution taken..."
-                ${showCA ? 'required' : ''}
-              ></textarea>
+                placeholder="Describe the implemented solution..."
+                ${showCA ? "required" : ""}
+              >${existingIS}</textarea>
             </div>
 
             <div class="ca-field">
@@ -2058,11 +2529,10 @@ app.get("/form", async (req, res) => {
                 class="ca-textarea evidence-input"
                 data-kpi-values-id="${kpi.kpi_values_id}"
                 placeholder="Provide evidence showing the improvement..."
-                ${showCA ? 'required' : ''}
-              ></textarea>
+                ${showCA ? "required" : ""}
+              >${existingEV}</textarea>
             </div>
           </div>
-          <!-- ===== END CORRECTIVE ACTION PANEL ===== -->
 
           <div class="comment-section">
             <div class="comment-label">
@@ -2072,7 +2542,7 @@ app.get("/form", async (req, res) => {
               name="comment_${kpi.kpi_values_id}"
               class="comment-input"
               placeholder="Add your comment..."
-            >${kpi.latest_comment || ''}</textarea>
+            >${kpi.latest_comment || ""}</textarea>
           </div>
         </div>
       `;
@@ -2096,14 +2566,16 @@ app.get("/form", async (req, res) => {
             margin:0;
             min-height:100vh;
           }
-          .container{
-            max-width:800px;
-            margin:0 auto;
-            background:rgba(255,255,255,0.95);
-            border-radius:8px;
-            box-shadow:0 4px 20px rgba(0,0,0,0.2);
-            overflow:hidden;
-          }
+
+        .container{
+          max-width:1500px;
+          width:96%;
+          margin:0 auto;
+          background:rgba(255,255,255,0.95);
+          border-radius:8px;
+          box-shadow:0 4px 20px rgba(0,0,0,0.2);
+          overflow:hidden;
+           }
           .header{
             background:#0078D7;
             color:white;
@@ -2149,31 +2621,28 @@ app.get("/form", async (req, res) => {
             align-items:center;
             margin-bottom:4px;
           }
+          .kpi-ai-trigger{
+            display:inline-flex;
+            align-items:center;
+            gap:8px;
+            border:none;
+            border-radius:999px;
+            padding:10px 14px;
+            background:linear-gradient(135deg,#0f6cbd,#4ea1ff);
+            color:white;
+            font-size:12px;
+            font-weight:700;
+            cursor:pointer;
+            box-shadow:0 10px 20px rgba(15,108,189,0.18);
+          }
+          .kpi-ai-trigger:hover{
+            opacity:.95;
+            transform:translateY(-1px);
+          }
           .kpi-title{
             font-weight:600;
             color:#333;
             font-size:15px;
-          }
-          .kpi-limits{
-            display:flex;
-            gap:8px;
-          }
-          .limit-badge{
-            font-size:11px;
-            font-weight:700;
-            padding:3px 10px;
-            border-radius:999px;
-            border:1px solid transparent;
-          }
-          .limit-badge.low{
-            background:#ffebee;
-            color:#c62828;
-            border-color:#ef9a9a;
-          }
-          .limit-badge.high{
-            background:#e8f5e9;
-            color:#1b5e20;
-            border-color:#a5d6a7;
           }
           .kpi-subtitle{
             color:#666;
@@ -2204,6 +2673,194 @@ app.get("/form", async (req, res) => {
             display:block;
             width:100%;
             margin-top:20px;
+          }
+
+       .kpi-split-layout{
+           display:grid;
+           grid-template-columns:1fr 380px; /* graph first, value panel second */
+           gap:20px;
+           align-items:stretch;
+           margin-top:16px;
+           }
+          .kpi-left-panel,
+          .kpi-right-panel{
+            background:#fafafa;
+            border:1px solid #e5e7eb;
+            border-radius:12px;
+            padding:16px;
+          }
+          .kpi-limits-top{
+            display:flex;
+            gap:8px;
+            flex-wrap:wrap;
+            margin-bottom:14px;
+          }
+          .limit-badge{
+            font-size:11px;
+            font-weight:700;
+            padding:3px 10px;
+            border-radius:999px;
+            border:1px solid transparent;
+          }
+          .limit-badge.low{
+            background:#ffebee;
+            color:#c62828;
+            border-color:#ef9a9a;
+          }
+          .limit-badge.high{
+            background:#e8f5e9;
+            color:#1b5e20;
+            border-color:#a5d6a7;
+          }
+          .kpi-mini-stats{
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:12px;
+            margin-top:14px;
+          }
+          .mini-stat-card{
+            background:white;
+            border:1px solid #e5e7eb;
+            border-radius:12px;
+            padding:14px 10px;
+            text-align:center;
+          }
+          .mini-stat-label{
+            font-size:11px;
+            color:#6b7280;
+            text-transform:uppercase;
+            margin-bottom:6px;
+            font-weight:700;
+          }
+          .mini-stat-value{
+            font-size:20px;
+            font-weight:800;
+            line-height:1.2;
+          }
+          .mini-stat-value.high{ color:#f59e0b; }
+          .mini-stat-value.target{ color:#16a34a; }
+          .mini-stat-value.low{ color:#ef4444; }
+          .mini-stat-unit{
+            font-size:12px;
+            color:#94a3b8;
+            margin-top:4px;
+          }
+          .kpi-right-panel{
+           min-height:480px;
+           display:flex;
+           align-items:center;
+          justify-content:center;
+           position:relative;
+          }
+          .kpi-chart-trigger{
+            cursor:zoom-in;
+            transition:border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+          }
+          .kpi-chart-trigger:hover{
+            border-color:#bfdbfe;
+            box-shadow:0 12px 28px rgba(37,99,235,0.10);
+          }
+          .kpi-chart-trigger:focus-visible{
+            outline:3px solid rgba(37,99,235,0.2);
+            outline-offset:2px;
+          }
+
+          .kpi-right-panel canvas{
+           width:100% !important;
+           height:380px !important;
+           display:block;
+           }
+
+          body.chart-modal-open{
+            overflow:hidden;
+          }
+          .chart-modal-overlay{
+            position:fixed;
+            inset:0;
+            padding:24px;
+            background:rgba(15,23,42,0.58);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            z-index:10003;
+            opacity:0;
+            pointer-events:none;
+            transition:opacity 0.22s ease;
+          }
+          .chart-modal-overlay.active{
+            opacity:1;
+            pointer-events:auto;
+          }
+          .chart-modal-box{
+            width:min(96vw, 1700px);
+            height:min(92vh, 980px);
+            background:#fff;
+            border-radius:20px;
+            box-shadow:0 28px 80px rgba(15,23,42,0.28);
+            display:flex;
+            flex-direction:column;
+            overflow:hidden;
+            transform:translateY(18px) scale(0.98);
+            transition:transform 0.22s ease;
+          }
+          .chart-modal-overlay.active .chart-modal-box{
+            transform:translateY(0) scale(1);
+          }
+          .chart-modal-header{
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:16px;
+            padding:24px 28px 18px;
+            border-bottom:1px solid #e5e7eb;
+          }
+          .chart-modal-header h3{
+            margin:0;
+            color:#0f172a;
+            font-size:32px;
+            line-height:1.15;
+          }
+          .chart-modal-header p{
+            margin:8px 0 0;
+            color:#64748b;
+            font-size:15px;
+          }
+          .chart-modal-close{
+            width:44px;
+            height:44px;
+            border:none;
+            border-radius:999px;
+            background:#f8fafc;
+            color:#334155;
+            font-size:28px;
+            line-height:1;
+            cursor:pointer;
+            flex-shrink:0;
+            transition:background 0.2s ease, color 0.2s ease;
+          }
+          .chart-modal-close:hover{
+            background:#e2e8f0;
+            color:#0f172a;
+          }
+          .chart-modal-body{
+            flex:1;
+            min-height:0;
+            padding:20px 24px 24px;
+            background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);
+          }
+          .chart-modal-stage{
+            height:100%;
+            min-height:0;
+            background:#fff;
+            border:1px solid #dbe4f0;
+            border-radius:16px;
+            padding:20px;
+            box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);
+          }
+          .chart-modal-stage canvas{
+            width:100% !important;
+            height:100% !important;
+            display:block;
           }
 
           .ca-container{
@@ -2246,65 +2903,17 @@ app.get("/form", async (req, res) => {
 
           .ca-ai-box{
             margin:14px 14px 0;
-            border:none;  
+            border:none;
             border-radius:10px;
             background:linear-gradient(135deg,#f5f3ff,#ede9fe);
             overflow:hidden;
           }
-          .ca-ai-header{
-            display:flex;
-            align-items:center;
-            gap:8px;
-            padding:10px 14px;
-            background:rgba(109,40,217,0.08);
-            border-bottom:1px solid #ddd6fe;
-          }
-          .ca-ai-title{
-            font-size:13px;
-            font-weight:700;
-            color:#5b21b6;
-            flex:1;
-          }
-          .ca-gen-btn{
-            display:inline-flex;
-            align-items:center;
-            gap:5px;
-            padding:7px 14px;
-            background:linear-gradient(135deg,#7c3aed,#6d28d9);
-            color:white;
-            border:none;
-            border-radius:18px;
-            font-size:12px;
-            font-weight:600;
-            cursor:pointer;
-            transition:all 0.2s;
-            box-shadow:0 2px 6px rgba(109,40,217,0.35);
-          }
-          .ca-gen-btn:hover:not(:disabled){
-            background:linear-gradient(135deg,#6d28d9,#5b21b6);
-            transform:translateY(-1px);
-          }
-          .ca-gen-btn:disabled{
-            opacity:0.65;
-            cursor:not-allowed;
-            transform:none;
-          }
-          .ca-gen-btn.loading .ca-gen-icon{
-            animation:caGenSpin 1s linear infinite;
-            display:inline-block;
-          }
-          @keyframes caGenSpin{to{transform:rotate(360deg);}}
-
           .ca-suggestion-content{padding:12px 14px;}
           .ca-ai-row{
             display:grid;
             grid-template-columns:repeat(3,1fr);
             gap:10px;
           }
-          @media(max-width:600px){
-            .ca-ai-row{grid-template-columns:1fr;}
-          }
-
           .ca-ai-card{
             background:white;
             border-radius:8px;
@@ -2357,26 +2966,20 @@ app.get("/form", async (req, res) => {
             background:#fff7ed;
           }
 
-         .ca-dates-grid{
-         display:grid;
-         grid-template-columns:repeat(3,1fr);
-         gap:12px;
-         padding:0 14px 14px;
-         align-items:start;
+          .ca-dates-grid{
+            display:grid;
+            grid-template-columns:repeat(2,1fr);
+            gap:12px;
+            padding:0 14px 14px;
+            align-items:start;
           }
-
-       .ca-dates-grid .ca-field{
-        margin-top:0 !important;
-        margin-bottom:0;
-        padding:0;
-         }
-
-       .ca-dates-grid .ca-field:first-child{
-         margin-top:-6px;
-         }
-
-
-          .ca-date-input{
+          .ca-dates-grid .ca-field{
+            margin-top:0 !important;
+            margin-bottom:0;
+            padding:0;
+          }
+          .ca-date-input,
+          .ca-text-input{
             width:100%;
             padding:10px 12px;
             border:1.5px solid #f28b82;
@@ -2386,21 +2989,16 @@ app.get("/form", async (req, res) => {
             background:#fff;
             box-sizing:border-box;
           }
-          .ca-date-input:focus{
+          .ca-date-input:focus,
+          .ca-text-input:focus{
             border-color:#d32f2f;
             outline:none;
             box-shadow:0 0 0 3px rgba(211,47,47,0.12);
           }
-          @media(max-width:700px){
-            .ca-dates-grid{grid-template-columns:1fr;}
-          }
-
           .ca-field{
             margin-bottom:14px;
             padding:0 14px;
           }
-          .ca-field:first-of-type{margin-top:14px;}
-          .ca-field:last-of-type{margin-bottom:14px;}
           .ca-label{
             display:block;
             font-weight:600;
@@ -2428,7 +3026,8 @@ app.get("/form", async (req, res) => {
             box-shadow:0 0 0 3px rgba(211,47,47,0.12);
           }
           .ca-textarea.error,
-          .ca-date-input.error{
+          .ca-date-input.error,
+          .ca-text-input.error{
             border-color:#dc3545;
             background:#fff5f5;
           }
@@ -2554,6 +3153,197 @@ app.get("/form", async (req, res) => {
             cursor:pointer;
             font-weight:600;
           }
+          .assistant-shell{
+            position:fixed;
+            right:90px;
+            bottom:24px;
+            z-index:10001;
+          }
+          .assistant-launcher{
+            width:64px;
+            height:64px;
+            border:none;
+            border-radius:999px;
+            background:linear-gradient(135deg,#2f87d6,#ff944d);
+            color:white;
+            box-shadow:0 18px 35px rgba(15,23,42,0.26);
+            font-size:30px;
+            cursor:pointer;
+          }
+          .assistant-panel{
+            width:min(92vw,460px);
+            height:min(72vh,620px);
+            background:rgba(255,255,255,0.98);
+            border:1px solid #dbe7f4;
+            border-radius:26px;
+            box-shadow:0 30px 60px rgba(15,23,42,0.22);
+            overflow:hidden;
+            display:none;
+            flex-direction:column;
+            margin-bottom:18px;
+            backdrop-filter:blur(12px);
+          }
+          .assistant-shell.open .assistant-panel{
+            display:flex;
+          }
+          .assistant-header{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            padding:18px 20px;
+            border-bottom:1px solid #e5edf6;
+            background:linear-gradient(180deg,#ffffff,#f6fbff);
+          }
+          .assistant-title-wrap{
+            display:flex;
+            align-items:center;
+            gap:12px;
+          }
+          .assistant-avatar{
+            width:42px;
+            height:42px;
+            border-radius:999px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:#eef6ff;
+            color:#0f6cbd;
+            font-size:22px;
+            border:1px solid #c6def5;
+          }
+          .assistant-title{
+            font-size:16px;
+            font-weight:800;
+            color:#0f6cbd;
+          }
+          .assistant-focus{
+            margin-top:4px;
+            font-size:12px;
+            color:#5b6b7b;
+          }
+          .assistant-close{
+            border:none;
+            background:transparent;
+            color:#5b6b7b;
+            font-size:24px;
+            cursor:pointer;
+            line-height:1;
+          }
+          .assistant-messages{
+            flex:1;
+            padding:18px;
+            overflow:auto;
+            background:linear-gradient(180deg,#ffffff,#f8fbff 55%,#ffffff);
+            display:flex;
+            flex-direction:column;
+            gap:14px;
+          }
+          .assistant-message{
+            max-width:85%;
+            padding:14px 16px;
+            border-radius:20px;
+            line-height:1.55;
+            font-size:14px;
+            white-space:pre-wrap;
+          }
+          .assistant-message.assistant{
+            align-self:flex-start;
+            background:#eef4fb;
+            color:#1f2a37;
+            border:1px solid #d7e2ee;
+          }
+          .assistant-message.user{
+            align-self:flex-end;
+            background:#0f6cbd;
+            color:white;
+          }
+          .assistant-composer{
+            padding:16px;
+            border-top:1px solid #e5edf6;
+            background:#fbfdff;
+          }
+          .assistant-form{
+            display:flex;
+            align-items:flex-end;
+            gap:12px;
+            padding:8px;
+            border:2px solid #8cc4f3;
+            border-radius:18px;
+            background:white;
+            box-shadow:0 8px 18px rgba(15,108,189,0.08);
+          }
+          .assistant-input{
+            flex:1;
+            border:none;
+            resize:none;
+            min-height:48px;
+            max-height:140px;
+            font:inherit;
+            padding:10px 12px;
+            background:transparent;
+          }
+          .assistant-input:focus{
+            outline:none;
+          }
+          .assistant-send{
+            width:48px;
+            height:48px;
+            border:none;
+            border-radius:14px;
+            background:linear-gradient(135deg,#5aa7e8,#79b8ee);
+            color:white;
+            font-size:22px;
+            cursor:pointer;
+            flex-shrink:0;
+          }
+          .assistant-status{
+            margin-bottom:10px;
+            font-size:12px;
+            color:#6a7a8a;
+          }
+
+          @media (max-width: 900px){
+            .kpi-split-layout{
+              grid-template-columns:1fr;
+            }
+            .kpi-mini-stats{
+              grid-template-columns:1fr;
+            }
+            .chart-modal-overlay{
+              padding:14px;
+            }
+            .chart-modal-box{
+              width:100%;
+              height:min(90vh, 900px);
+            }
+            .chart-modal-header{
+              padding:18px 18px 14px;
+            }
+            .chart-modal-header h3{
+              font-size:24px;
+            }
+            .chart-modal-body{
+              padding:14px;
+            }
+            .chart-modal-stage{
+              padding:14px;
+            }
+          }
+
+          @media(max-width:700px){
+            .ca-dates-grid{grid-template-columns:1fr;}
+          }
+
+          @media(max-width:600px){
+            .ca-ai-row{grid-template-columns:1fr;}
+            .assistant-shell{
+              right:16px;
+              bottom:16px;
+            }
+            .assistant-panel{
+              height:min(76vh,620px);
+            }
+          }
         </style>
       </head>
       <body>
@@ -2571,6 +3361,23 @@ app.get("/form", async (req, res) => {
             <div class="modal-actions">
               <button id="cancelBtn" type="button" class="btn-cancel">Cancel</button>
               <button id="confirmBtn" type="button" class="btn-confirm">Yes, Submit</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="chartModal" class="chart-modal-overlay" aria-hidden="true">
+          <div class="chart-modal-box" role="dialog" aria-modal="true" aria-labelledby="chartModalTitle">
+            <div class="chart-modal-header">
+              <div>
+                <h3 id="chartModalTitle">KPI Trend</h3>
+                <p id="chartModalSubtitle">Monthly KPI performance overview</p>
+              </div>
+              <button id="chartModalClose" type="button" class="chart-modal-close" aria-label="Close expanded chart">&times;</button>
+            </div>
+            <div class="chart-modal-body">
+              <div class="chart-modal-stage">
+                <canvas id="chartModalCanvas"></canvas>
+              </div>
             </div>
           </div>
         </div>
@@ -2601,163 +3408,947 @@ app.get("/form", async (req, res) => {
           </div>
         </div>
 
+        <div class="assistant-shell" id="assistantShell">
+          <div class="assistant-panel" id="assistantPanel">
+            <div class="assistant-header">
+              <div class="assistant-title-wrap">
+                <div class="assistant-avatar">🤖</div>
+                <div>
+                  <div class="assistant-title">AI Assistant</div>
+                  <div class="assistant-focus" id="assistantFocus">All KPIs on this form</div>
+                </div>
+              </div>
+              <button type="button" class="assistant-close" id="assistantClose">×</button>
+            </div>
+
+            <div class="assistant-messages" id="assistantMessages"></div>
+
+            <div class="assistant-composer">
+              <div class="assistant-status" id="assistantStatus">Ask about KPI trends, target gaps, or corrective actions.</div>
+              <form class="assistant-form" id="assistantForm">
+                <textarea
+                  class="assistant-input"
+                  id="assistantInput"
+                  placeholder="Type your message"
+                  rows="1"
+                ></textarea>
+                <button type="submit" class="assistant-send" id="assistantSend">➤</button>
+              </form>
+            </div>
+          </div>
+
+       <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+       <span style="
+        background:linear-gradient(135deg,#2f87d6,#ff944d);
+        color:white;
+         font-size:20px;
+         font-weight:700;
+         padding:3px 10px;
+         border-radius:999px;
+         box-shadow:0 4px 12px rgba(15,23,42,0.2);
+         letter-spacing:0.5px;
+         white-space:nowrap;
+        ">AI Support</span>
+         <button type="button" class="assistant-launcher" id="assistantLauncher">🤖</button>
+        </div>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script>
           function formApplyField(fieldId, card) {
-            const text = card.querySelector('.ca-ai-card-text').textContent.trim();
+            const text = card.querySelector(".ca-ai-card-text").textContent.trim();
             const field = document.getElementById(fieldId);
             if (!field || !text) return;
 
             field.value = text;
-            field.classList.remove('highlight');
+            field.classList.remove("highlight");
             void field.offsetWidth;
-            field.classList.add('highlight');
-            field.scrollIntoView({ behavior:'smooth', block:'center' });
+            field.classList.add("highlight");
+            field.scrollIntoView({ behavior:"smooth", block:"center" });
 
-            card.classList.add('applied');
-            const hint = card.querySelector('.ca-apply-hint');
-            if (hint) hint.textContent = '✓ Applied';
+            card.classList.add("applied");
+            const hint = card.querySelector(".ca-apply-hint");
+            if (hint) hint.textContent = "✓ Applied";
           }
 
-          async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
-            const btn = document.getElementById('ca-gen-btn-' + kvId);
-            const suggDiv = document.getElementById('ca-sugg-' + kvId);
-            const errDiv = document.getElementById('ca-err-' + kvId);
+          const assistantShell = document.getElementById("assistantShell");
+          const assistantLauncher = document.getElementById("assistantLauncher");
+          const assistantClose = document.getElementById("assistantClose");
+          const assistantMessages = document.getElementById("assistantMessages");
+          const assistantFocus = document.getElementById("assistantFocus");
+          const assistantStatus = document.getElementById("assistantStatus");
+          const assistantForm = document.getElementById("assistantForm");
+          const assistantInput = document.getElementById("assistantInput");
+          const assistantSend = document.getElementById("assistantSend");
 
-            suggDiv.style.display = 'none';
-            errDiv.style.display = 'none';
+          const assistantState = {
+            selectedKpiId: null,
+            booted: false,
+            pending: false
+          };
 
-            suggDiv.querySelectorAll('.ca-ai-card').forEach(c => {
-              c.classList.remove('applied');
-              const hint = c.querySelector('.ca-apply-hint');
-              if (hint) hint.textContent = 'Click to apply ↓';
+          function escapeAssistantText(text) {
+            return String(text || "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#39;")
+              .split("\\n").join("<br>");
+          }
+
+          function addAssistantMessage(role, text) {
+            if (!assistantMessages) return;
+            const msg = document.createElement("div");
+            msg.className = "assistant-message " + role;
+            msg.innerHTML = escapeAssistantText(text);
+            assistantMessages.appendChild(msg);
+            assistantMessages.scrollTop = assistantMessages.scrollHeight;
+          }
+
+          function setAssistantStatus(text) {
+            if (assistantStatus) assistantStatus.textContent = text;
+          }
+
+          function getKpiCardById(kvId) {
+            return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+          }
+
+          function getTextContent(node) {
+            return node && typeof node.textContent === "string" ? node.textContent : "";
+          }
+
+          function getTrimmedText(node) {
+            const text = getTextContent(node);
+            return text ? text.trim() : "";
+          }
+
+          function getInputValue(node) {
+            return node && typeof node.value === "string" ? node.value : "";
+          }
+
+          function getTrimmedValue(node) {
+            const value = getInputValue(node);
+            return value ? value.trim() : "";
+          }
+
+          function collectAssistantKpis() {
+            return Array.from(document.querySelectorAll(".kpi-card")).map(card => {
+              const kvId = card.dataset.kpiValuesId;
+              const valueInput = card.querySelector(".value-input");
+              const title = getTrimmedText(card.querySelector(".kpi-title"));
+              const subtitle = getTrimmedText(card.querySelector(".kpi-subtitle"));
+              const comment = getTrimmedValue(card.querySelector('textarea[name^="comment_"]'));
+              const rootCause = getTrimmedValue(document.getElementById("root_cause_" + kvId));
+              const implementedSolution = getTrimmedValue(document.getElementById("impl_solution_" + kvId));
+              const evidence = getTrimmedValue(document.getElementById("evidence_" + kvId));
+              const dueDate = getInputValue(document.getElementById("due_date_" + kvId));
+              const responsibleName = getTrimmedValue(document.getElementById("responsible_" + kvId));
+              const statusBadge = card.querySelector(".ca-status-badge");
+
+              return {
+                kpi_id: card.dataset.kpiId,
+                kpi_values_id: kvId,
+                title,
+                subtitle,
+                good_direction: card.dataset.goodDirection || "",
+                current_value: getInputValue(valueInput),
+                target: card.dataset.target || "",
+                low_limit: card.dataset.lowLimit || "",
+                high_limit: card.dataset.highLimit || "",
+                unit: card.dataset.unit || "",
+                week: card.dataset.currentWeek || "",
+                comment,
+                root_cause: rootCause,
+                implemented_solution: implementedSolution,
+                evidence,
+                due_date: dueDate,
+                responsible: responsibleName,
+                corrective_action_status: getTrimmedText(statusBadge)
+              };
+            });
+          }
+
+          function refreshAssistantFocus() {
+            if (!assistantFocus) return;
+            if (!assistantState.selectedKpiId) {
+              assistantFocus.textContent = "All KPIs on this form";
+              return;
+            }
+
+            const card = getKpiCardById(assistantState.selectedKpiId);
+            const title = (card ? getTrimmedText(card.querySelector(".kpi-title")) : "") || "Selected KPI";
+            assistantFocus.textContent = "Focused on: " + title;
+          }
+
+          function openAssistant() {
+            if (!assistantShell) return;
+            assistantShell.classList.add("open");
+            if (assistantLauncher) assistantLauncher.textContent = "×";
+            refreshAssistantFocus();
+
+            if (!assistantState.booted) {
+              addAssistantMessage(
+                "assistant",
+                "Hello I'am your Assitant for the key performance indicators feel free to ask me about anything related to the kpis."
+              );
+              assistantState.booted = true;
+            }
+
+            if (assistantInput) assistantInput.focus();
+          }
+
+          function closeAssistant() {
+            if (!assistantShell) return;
+            assistantShell.classList.remove("open");
+            if (assistantLauncher) assistantLauncher.textContent = "🤖";
+          }
+
+          function openAssistantForKpi(kvId) {
+            assistantState.selectedKpiId = kvId;
+            openAssistant();
+            const card = getKpiCardById(kvId);
+            const title = (card ? getTrimmedText(card.querySelector(".kpi-title")) : "") || "Selected KPI";
+            setAssistantStatus("Focused on " + title + ". Ask a question about this KPI.");
+          }
+
+          async function sendAssistantPrompt(message) {
+            const cleanMessage = String(message || "").trim();
+            if (!cleanMessage || assistantState.pending) return;
+
+            assistantState.pending = true;
+            if (assistantSend) assistantSend.disabled = true;
+
+            addAssistantMessage("user", cleanMessage);
+            setAssistantStatus("Thinking...");
+
+            try {
+              const res = await fetch("/kpi-ai-assistant", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  responsible_id: "${responsible_id}",
+                  week: "${week}",
+                  selected_kpi_id: assistantState.selectedKpiId,
+                  kpis: collectAssistantKpis(),
+                  message: cleanMessage
+                })
+              });
+
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || "Request failed");
+
+              addAssistantMessage("assistant", data.reply || "I could not generate a response.");
+              setAssistantStatus("AI assistant is ready.");
+            } catch (err) {
+              addAssistantMessage("assistant", "I could not answer right now. Please try again.");
+              setAssistantStatus("AI assistant is unavailable.");
+            } finally {
+              assistantState.pending = false;
+              if (assistantSend) assistantSend.disabled = false;
+            }
+          }
+
+          if (assistantLauncher) {
+            assistantLauncher.addEventListener("click", () => {
+              if (assistantShell && assistantShell.classList.contains("open")) {
+                closeAssistant();
+              } else {
+                assistantState.selectedKpiId = null;
+                openAssistant();
+              }
+            });
+          }
+
+          if (assistantClose) {
+            assistantClose.addEventListener("click", () => {
+              closeAssistant();
+            });
+          }
+
+          if (assistantInput) {
+            assistantInput.addEventListener("input", () => {
+              assistantInput.style.height = "auto";
+              assistantInput.style.height = Math.min(assistantInput.scrollHeight, 140) + "px";
             });
 
-            btn.disabled = true;
-            btn.classList.add('loading');
-            btn.querySelector('.ca-gen-icon').textContent = '⏳';
-            btn.querySelector('.ca-gen-text').textContent = 'Generating...';
+            assistantInput.addEventListener("keydown", (event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (assistantForm && typeof assistantForm.requestSubmit === "function") {
+                  assistantForm.requestSubmit();
+                } else if (assistantSend) {
+                  assistantSend.click();
+                }
+              }
+            });
+          }
+
+          if (assistantForm) {
+            assistantForm.addEventListener("submit", async (event) => {
+              event.preventDefault();
+              const prompt = getInputValue(assistantInput);
+              if (assistantInput) {
+                assistantInput.value = "";
+                assistantInput.style.height = "auto";
+              }
+              await sendAssistantPrompt(prompt);
+            });
+          }
+
+          window.formApplyField = formApplyField;
+          window.openAssistantForKpi = openAssistantForKpi;
+
+          async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
+            const btn = document.getElementById("ca-gen-btn-" + kvId);
+            const suggDiv = document.getElementById("ca-sugg-" + kvId);
+            const errDiv = document.getElementById("ca-err-" + kvId);
+
+            if (suggDiv) suggDiv.style.display = "none";
+            if (errDiv) errDiv.style.display = "none";
+
+            if (suggDiv) {
+              suggDiv.querySelectorAll(".ca-ai-card").forEach(c => {
+                c.classList.remove("applied");
+                const hint = c.querySelector(".ca-apply-hint");
+                if (hint) hint.textContent = "Click to apply ↓";
+              });
+            }
+
+            if (btn) {
+              btn.disabled = true;
+              btn.classList.add("loading");
+              const icon = btn.querySelector(".ca-gen-icon");
+              const text = btn.querySelector(".ca-gen-text");
+              if (icon) icon.textContent = "⏳";
+              if (text) text.textContent = "Generating...";
+            }
 
             try {
               const res = await fetch(
-                '/generate-ca-suggestion?kpi_id=' + kpiId +
-                '&responsible_id=' + responsibleId +
-                '&week=' + encodeURIComponent(week)
+                "/generate-ca-suggestion?kpi_id=" + kpiId +
+                "&responsible_id=" + responsibleId +
+                "&week=" + encodeURIComponent(week)
               );
 
-              if (!res.ok) throw new Error('Request failed');
+              if (!res.ok) throw new Error("Request failed");
               const data = await res.json();
-              if (data.error || !data.suggestion) throw new Error(data.error || 'No suggestion');
+              if (data.error || !data.suggestion) throw new Error(data.error || "No suggestion");
 
               const s = data.suggestion;
-              document.getElementById('ca-rc-text-' + kvId).textContent = s.root_cause || '';
-              document.getElementById('ca-sol-text-' + kvId).textContent = s.immediate_action || '';
-              document.getElementById('ca-ev-text-' + kvId).textContent = s.evidence || '';
-              suggDiv.style.display = 'block';
+              const rc = document.getElementById("ca-rc-text-" + kvId);
+              const sol = document.getElementById("ca-sol-text-" + kvId);
+              const ev = document.getElementById("ca-ev-text-" + kvId);
+
+              if (rc) rc.textContent = s.root_cause || "";
+              if (sol) sol.textContent = s.immediate_action || "";
+              if (ev) ev.textContent = s.evidence || "";
+
+              if (suggDiv) suggDiv.style.display = "block";
             } catch (err) {
-              errDiv.style.display = 'block';
+              if (errDiv) errDiv.style.display = "block";
             } finally {
-              btn.disabled = false;
-              btn.classList.remove('loading');
-              btn.querySelector('.ca-gen-icon').textContent = '🔄';
-              btn.querySelector('.ca-gen-text').textContent = 'Regenerate';
+              if (btn) {
+                btn.disabled = false;
+                btn.classList.remove("loading");
+                const icon = btn.querySelector(".ca-gen-icon");
+                const text = btn.querySelector(".ca-gen-text");
+                if (icon) icon.textContent = "🔄";
+                if (text) text.textContent = "Regenerate";
+              }
             }
           }
 
           function checkLowLimit(input) {
-            const card = input.closest('.kpi-card');
-            const llStr = card.dataset.lowLimit;
-            let ll = null;
+            const card = input.closest(".kpi-card");
+            if (!card) return;
 
-            if (llStr && llStr !== '' && llStr !== 'null' && !isNaN(parseFloat(llStr))) {
-              ll = parseFloat(llStr);
-            }
+            const rawLow = parseFloat(card.dataset.lowLimit);
+            const rawHigh = parseFloat(card.dataset.highLimit);
+            const hasLow = !isNaN(rawLow);
+            const hasHigh = !isNaN(rawHigh);
+            const lowerBound = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
+            const upperBound = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
+            const goodDirection = String(card.dataset.goodDirection || "up").toLowerCase() === "down" ? "down" : "up";
 
             const val = parseFloat(input.value);
             const kvId = input.dataset.kpiValuesId;
-            const caPanel = document.getElementById('ca_container_' + kvId);
+            const caPanel = document.getElementById("ca_container_" + kvId);
+            const isOutsideGoodRange = !isNaN(val) && (
+              goodDirection === "down"
+                ? upperBound !== null && val > upperBound
+                : lowerBound !== null && val < lowerBound
+            );
 
-            if (caPanel && ll !== null && !isNaN(val)) {
-              const isBelow = val < ll;
-              caPanel.classList.toggle('visible', isBelow);
+            if (caPanel && !isNaN(val) && (lowerBound !== null || upperBound !== null)) {
+              caPanel.classList.toggle("visible", isOutsideGoodRange);
 
-              ['root_cause_', 'impl_solution_', 'evidence_', 'start_date_', 'end_date_', 'deadline_'].forEach(prefix => {
+              ["root_cause_", "impl_solution_", "evidence_", "due_date_", "responsible_"].forEach(prefix => {
                 const el = document.getElementById(prefix + kvId);
-                if (el) el.required = isBelow;
+                if (el) el.required = isOutsideGoodRange;
+              });
+            } else if (caPanel && (isNaN(val) || (lowerBound === null && upperBound === null))) {
+              caPanel.classList.remove("visible");
+              ["root_cause_", "impl_solution_", "evidence_", "due_date_", "responsible_"].forEach(prefix => {
+                const el = document.getElementById(prefix + kvId);
+                if (el) el.required = false;
               });
             }
           }
 
-          document.querySelectorAll('.value-input').forEach(i => {
-            i.addEventListener('input', function () {
-              checkLowLimit(this);
+          const kpiCharts = {};
+          let expandedChart = null;
+          let expandedChartKpiValuesId = null;
+
+          function formatChartValue(value) {
+            const numericValue = Number(value);
+            if (!isFinite(numericValue)) return "";
+
+            const hasDecimals = Math.abs(numericValue % 1) > 0.001;
+            return numericValue.toLocaleString("en-US", {
+              minimumFractionDigits: hasDecimals ? 2 : 0,
+              maximumFractionDigits: 2
             });
-            checkLowLimit(i);
+          }
+
+          const expandedChartValueLabelsPlugin = {
+            id: "expandedChartValueLabels",
+            afterDatasetsDraw(chart) {
+              const valueDatasetIndex = chart.data.datasets.findIndex(dataset => (dataset.type || chart.config.type) !== "line");
+              if (valueDatasetIndex === -1) return;
+
+              const dataset = chart.data.datasets[valueDatasetIndex];
+              const meta = chart.getDatasetMeta(valueDatasetIndex);
+              const ctx = chart.ctx;
+
+              ctx.save();
+              ctx.fillStyle = "#334155";
+              ctx.font = "600 13px Segoe UI";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "bottom";
+
+              meta.data.forEach((barElement, index) => {
+                const rawValue = dataset.data[index];
+                const numericValue = typeof rawValue === "number" ? rawValue : parseFloat(rawValue);
+                if (isNaN(numericValue)) return;
+
+                const point = barElement.tooltipPosition();
+                ctx.fillText(formatChartValue(numericValue), point.x, point.y - 8);
+              });
+
+              ctx.restore();
+            }
+          };
+
+          function cloneChartSetting(value) {
+            return Array.isArray(value) ? value.slice() : value;
+          }
+
+          function cloneChartDataset(dataset, isPrimaryDataset) {
+            const clonedDataset = Object.assign({}, dataset);
+
+            clonedDataset.data = Array.isArray(dataset.data) ? dataset.data.slice() : dataset.data;
+            clonedDataset.backgroundColor = cloneChartSetting(dataset.backgroundColor);
+            clonedDataset.borderColor = cloneChartSetting(dataset.borderColor);
+            clonedDataset.pointBackgroundColor = cloneChartSetting(dataset.pointBackgroundColor);
+            clonedDataset.pointBorderColor = cloneChartSetting(dataset.pointBorderColor);
+            clonedDataset.borderDash = cloneChartSetting(dataset.borderDash);
+
+            if (isPrimaryDataset) {
+              clonedDataset.barThickness = 56;
+              clonedDataset.maxBarThickness = 72;
+              clonedDataset.borderRadius = 10;
+            }
+
+            return clonedDataset;
+          }
+
+          function getThresholdLines(lowLimit, target, highLimit) {
+            const lines = [];
+
+            if (!isNaN(highLimit)) {
+              lines.push({
+                value: highLimit,
+                borderColor: "#f59e0b",
+                borderDash: [6, 4],
+                borderWidth: 2
+              });
+            }
+
+            if (!isNaN(target)) {
+              lines.push({
+                value: target,
+                borderColor: "#22c55e",
+                borderDash: [4, 4],
+                borderWidth: 2
+              });
+            }
+
+            if (!isNaN(lowLimit)) {
+              lines.push({
+                value: lowLimit,
+                borderColor: "#ef4444",
+                borderDash: [6, 4],
+                borderWidth: 2
+              });
+            }
+
+            return lines;
+          }
+
+          function cloneThresholdLines(lines) {
+            return Array.isArray(lines)
+              ? lines.map((line) => ({
+                  value: line.value,
+                  borderColor: line.borderColor,
+                  borderDash: Array.isArray(line.borderDash) ? line.borderDash.slice() : [],
+                  borderWidth: line.borderWidth
+                }))
+              : [];
+          }
+
+          const kpiThresholdLinesPlugin = {
+            id: "kpiThresholdLines",
+            afterDatasetsDraw(chart, args, pluginOptions) {
+              const chartArea = chart.chartArea;
+              const yScale = chart.scales.y;
+              const lines = pluginOptions && Array.isArray(pluginOptions.lines)
+                ? pluginOptions.lines
+                : [];
+
+              if (!chartArea || !yScale || !lines.length) return;
+
+              const { left, right, top, bottom } = chartArea;
+              const ctx = chart.ctx;
+
+              ctx.save();
+
+              lines.forEach((line) => {
+                const value = Number(line.value);
+                if (!isFinite(value)) return;
+
+                const y = yScale.getPixelForValue(value);
+                if (!isFinite(y) || y < top || y > bottom) return;
+
+                ctx.beginPath();
+                ctx.setLineDash(Array.isArray(line.borderDash) ? line.borderDash : [6, 4]);
+                ctx.lineWidth = line.borderWidth || 2;
+                ctx.strokeStyle = line.borderColor || "#94a3b8";
+                ctx.moveTo(left, y);
+                ctx.lineTo(right, y);
+                ctx.stroke();
+              });
+
+              ctx.restore();
+            }
+          };
+
+          function syncExpandedChart(sourceChart) {
+            if (!expandedChart || !sourceChart) return;
+
+            expandedChart.data.labels = Array.isArray(sourceChart.data.labels)
+              ? sourceChart.data.labels.slice()
+              : [];
+            expandedChart.data.datasets = sourceChart.data.datasets.map((dataset, index) =>
+              cloneChartDataset(dataset, index === 0)
+            );
+
+            if (sourceChart.options && sourceChart.options.scales && sourceChart.options.scales.y) {
+              expandedChart.options.scales.y.min = sourceChart.options.scales.y.min;
+              expandedChart.options.scales.y.max = sourceChart.options.scales.y.max;
+            }
+
+            expandedChart.options.plugins.kpiThresholdLines.lines = cloneThresholdLines(
+              sourceChart.options &&
+              sourceChart.options.plugins &&
+              sourceChart.options.plugins.kpiThresholdLines &&
+              sourceChart.options.plugins.kpiThresholdLines.lines
+            );
+
+            expandedChart.update();
+          }
+
+          function closeChartModal() {
+            if (expandedChart) {
+              expandedChart.destroy();
+              expandedChart = null;
+            }
+
+            expandedChartKpiValuesId = null;
+
+            if (chartModal) {
+              chartModal.classList.remove("active");
+              chartModal.setAttribute("aria-hidden", "true");
+            }
+
+            document.body.classList.remove("chart-modal-open");
+          }
+
+          function openChartModal(kpiValuesId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+            if (!card || !chartModal || !chartModalCanvas) return;
+
+            if (!kpiCharts[kpiValuesId]) {
+              buildKpiChart(kpiValuesId);
+            }
+
+            const sourceChart = kpiCharts[kpiValuesId];
+            if (!sourceChart) return;
+
+            const titleNode = card.querySelector(".kpi-title");
+            const subtitleNode = card.querySelector(".kpi-subtitle");
+
+            if (chartModalTitle) {
+              chartModalTitle.textContent = titleNode ? titleNode.textContent.trim() : "KPI Trend";
+            }
+
+            if (chartModalSubtitle) {
+              chartModalSubtitle.textContent = subtitleNode
+                ? subtitleNode.textContent.trim()
+                : "Monthly KPI performance overview";
+            }
+
+            if (expandedChart) {
+              expandedChart.destroy();
+              expandedChart = null;
+            }
+
+            expandedChartKpiValuesId = kpiValuesId;
+            chartModal.classList.add("active");
+            chartModal.setAttribute("aria-hidden", "false");
+            document.body.classList.add("chart-modal-open");
+
+            requestAnimationFrame(() => {
+              if (!chartModal.classList.contains("active")) return;
+
+              expandedChart = new Chart(chartModalCanvas.getContext("2d"), {
+                type: "bar",
+                data: {
+                  labels: Array.isArray(sourceChart.data.labels) ? sourceChart.data.labels.slice() : [],
+                  datasets: sourceChart.data.datasets.map((dataset, index) =>
+                    cloneChartDataset(dataset, index === 0)
+                  )
+                },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  animation: false,
+                  interaction: {
+                    mode: "index",
+                    intersect: false
+                  },
+                  plugins: {
+                    legend: { display: false },
+                    kpiThresholdLines: {
+                      lines: cloneThresholdLines(
+                        sourceChart.options &&
+                        sourceChart.options.plugins &&
+                        sourceChart.options.plugins.kpiThresholdLines &&
+                        sourceChart.options.plugins.kpiThresholdLines.lines
+                      )
+                    }
+                  },
+                  scales: {
+                    x: {
+                      grid: { display: false },
+                      ticks: {
+                        color: "#475569",
+                        font: {
+                          size: 14,
+                          weight: "600"
+                        }
+                      }
+                    },
+                    y: {
+                      min: sourceChart.options.scales.y.min,
+                      max: sourceChart.options.scales.y.max,
+                      ticks: {
+                        color: "#64748b",
+                        font: {
+                          size: 13
+                        }
+                      },
+                      grid: {
+                        color: "#e2e8f0"
+                      }
+                    }
+                  }
+                },
+                plugins: [expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
+              });
+            });
+          }
+
+          function getPointColor(value, lowLimit, highLimit, direction) {
+            const val = parseFloat(value);
+            const rawLow = parseFloat(lowLimit);
+            const rawHigh = parseFloat(highLimit);
+            const hasLow = !isNaN(rawLow);
+            const hasHigh = !isNaN(rawHigh);
+            const lowerBound = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
+            const upperBound = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
+            const resolvedDirection = String(direction || "up").toLowerCase() === "down" ? "down" : "up";
+
+            if (isNaN(val)) return "#6b7280";
+
+            if (resolvedDirection === "down") {
+              if (upperBound !== null && val > upperBound) return "#ef4444";
+              return "#22c55e";
+            }
+
+            if (lowerBound !== null && val < lowerBound) return "#ef4444";
+            return "#22c55e";
+          }
+
+          function computeBounds(values, lowLimit, target, highLimit) {
+            const allValues = values.filter(v => !isNaN(v) && v !== null);
+
+            if (!isNaN(lowLimit)) allValues.push(lowLimit);
+            if (!isNaN(target)) allValues.push(target);
+            if (!isNaN(highLimit)) allValues.push(highLimit);
+
+            const minValue = allValues.length ? Math.min(...allValues) : 0;
+            const maxValue = allValues.length ? Math.max(...allValues) : 100;
+            const spread = Math.max(maxValue - minValue, 1);
+            const padding = Math.max(spread * 0.15, 10);
+
+            return {
+              min: minValue - padding,
+              max: maxValue + padding
+            };
+          }
+
+          function buildKpiChart(kpiValuesId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+            if (!card) return;
+
+            const canvas = document.getElementById("chart_" + kpiValuesId);
+            if (!canvas) return;
+
+            const lowLimit = parseFloat(card.dataset.lowLimit);
+            const highLimit = parseFloat(card.dataset.highLimit);
+            const target = parseFloat(card.dataset.target);
+            const goodDirection = card.dataset.goodDirection || "up";
+
+            const input = card.querySelector(".value-input");
+            if (!input) return;
+
+            const currentValue = parseFloat(input.value);
+
+            let historyLabels = [];
+            let historyValues = [];
+
+            try {
+              historyLabels = JSON.parse(card.dataset.historyLabels || "[]");
+              historyValues = JSON.parse(card.dataset.historyValues || "[]");
+            } catch (e) {
+              historyLabels = [];
+              historyValues = [];
+            }
+
+            if (!historyLabels.length || !historyValues.length) {
+              historyLabels = ["Current"];
+              historyValues = [isNaN(currentValue) ? null : currentValue];
+            }
+
+            const pointColors = historyValues.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
+            const bounds = computeBounds(historyValues, lowLimit, target, highLimit);
+
+            const datasets = [
+             {
+              label: "Value",
+              data: historyValues,
+              backgroundColor: pointColors, // color per bar
+              borderRadius: 6,
+              borderSkipped: false,
+              barThickness: 30
+             }
+            ];
+
+            kpiCharts[kpiValuesId] = new Chart(canvas.getContext("2d"), {
+              type: "bar",
+              data: {
+                labels: historyLabels,
+                datasets
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                  legend: { display: false },
+                  kpiThresholdLines: {
+                    lines: getThresholdLines(lowLimit, target, highLimit)
+                  }
+                },
+                scales: {
+                  x: {
+                    grid: { display: false }
+                  },
+                  y: {
+                    min: bounds.min,
+                    max: bounds.max
+                  }
+                }
+              },
+              plugins: [kpiThresholdLinesPlugin]
+            });
+          }
+
+          function updateKpiChart(kpiValuesId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+            if (!card) return;
+
+            const input = card.querySelector(".value-input");
+            if (!input) return;
+
+            const lowLimit = parseFloat(card.dataset.lowLimit);
+            const highLimit = parseFloat(card.dataset.highLimit);
+            const target = parseFloat(card.dataset.target);
+            const currentWeek = card.dataset.currentWeek;
+            const goodDirection = card.dataset.goodDirection || "up";
+            const val = parseFloat(input.value);
+
+            const chart = kpiCharts[kpiValuesId];
+            if (!chart) return;
+
+            let targetMonthLabel = "Current";
+
+            try {
+              const m = String(currentWeek || "").match(/^(\\d{4})-Week(\\d{1,2})$/);
+              if (m) {
+                const d = new Date(parseInt(m[1], 10), 0, 1 + (parseInt(m[2], 10) - 1) * 7);
+                targetMonthLabel = d.toLocaleString("en-US", { month: "short", year: "numeric" });
+              }
+            } catch (e) {}
+
+            const labels = chart.data.labels || [];
+            let data = chart.data.datasets[0].data || [];
+
+            let idx = labels.indexOf(targetMonthLabel);
+            if (idx === -1) {
+              labels.push(targetMonthLabel);
+              data.push(isNaN(val) ? null : val);
+            } else {
+              data[idx] = isNaN(val) ? null : val;
+            }
+
+            const pointColors = data.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
+            chart.data.datasets[0].backgroundColor = pointColors;
+            chart.data.datasets[0].pointBackgroundColor = pointColors;
+
+            const bounds = computeBounds(data, lowLimit, target, highLimit);
+            chart.options.scales.y.min = bounds.min;
+            chart.options.scales.y.max = bounds.max;
+            chart.options.plugins.kpiThresholdLines.lines = getThresholdLines(lowLimit, target, highLimit);
+
+            chart.update();
+
+            if (expandedChartKpiValuesId === kpiValuesId) {
+              syncExpandedChart(chart);
+            }
+          }
+
+          document.addEventListener("DOMContentLoaded", () => {
+            document.querySelectorAll(".value-input").forEach(input => {
+              const kvId = input.dataset.kpiValuesId;
+              checkLowLimit(input);
+              buildKpiChart(kvId);
+
+              input.addEventListener("input", function () {
+                checkLowLimit(this);
+                updateKpiChart(kvId);
+              });
+            });
+
+            document.querySelectorAll(".kpi-chart-trigger").forEach(panel => {
+              const kvId = panel.dataset.kpiValuesId;
+              if (!kvId) return;
+
+              panel.addEventListener("click", () => {
+                openChartModal(kvId);
+              });
+
+              panel.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  openChartModal(kvId);
+                }
+              });
+            });
           });
 
-          const form = document.getElementById('kpiForm');
-          const modal = document.getElementById('confirmModal');
-          const confirmBtn = document.getElementById('confirmBtn');
-          const cancelBtn = document.getElementById('cancelBtn');
-          const loadingOverlay = document.getElementById('loadingOverlay');
+          const form = document.getElementById("kpiForm");
+          const modal = document.getElementById("confirmModal");
+          const confirmBtn = document.getElementById("confirmBtn");
+          const cancelBtn = document.getElementById("cancelBtn");
+          const loadingOverlay = document.getElementById("loadingOverlay");
+          const chartModal = document.getElementById("chartModal");
+          const chartModalClose = document.getElementById("chartModalClose");
+          const chartModalTitle = document.getElementById("chartModalTitle");
+          const chartModalSubtitle = document.getElementById("chartModalSubtitle");
+          const chartModalCanvas = document.getElementById("chartModalCanvas");
 
           let formToSubmit = null;
 
           if (form && modal && confirmBtn && cancelBtn) {
-            form.addEventListener('submit', function (e) {
+            form.addEventListener("submit", function (e) {
               e.preventDefault();
 
               let hasError = false;
 
-              this.querySelectorAll('input.value-input[required]').forEach(input => {
+              this.querySelectorAll("input.value-input[required]").forEach(input => {
                 if (!input.value.trim() || isNaN(input.value.trim())) {
                   hasError = true;
-                  input.style.borderColor = '#dc3545';
+                  input.style.borderColor = "#dc3545";
                 } else {
-                  input.style.borderColor = '#ddd';
+                  input.style.borderColor = "#ddd";
                 }
               });
 
-              document.querySelectorAll('.ca-container.visible').forEach(panel => {
-                panel.querySelectorAll('.ca-textarea, .ca-date-input').forEach(field => {
+              document.querySelectorAll(".ca-container.visible").forEach(panel => {
+                panel.querySelectorAll(".ca-textarea, .ca-date-input, .ca-text-input").forEach(field => {
                   if (!field.value.trim()) {
                     hasError = true;
-                    field.classList.add('error');
+                    field.classList.add("error");
                   } else {
-                    field.classList.remove('error');
+                    field.classList.remove("error");
                   }
                 });
-              });
-
-              document.querySelectorAll('.ca-container.visible').forEach(panel => {
-                const startInput = panel.querySelector('input[id^="start_date_"]');
-                const endInput = panel.querySelector('input[id^="end_date_"]');
-                const deadlineInput = panel.querySelector('input[id^="deadline_"]');
-
-                if (startInput && endInput && startInput.value && endInput.value && endInput.value < startInput.value) {
-                  hasError = true;
-                  endInput.classList.add('error');
-                }
-
-                if (startInput && deadlineInput && startInput.value && deadlineInput.value && deadlineInput.value < startInput.value) {
-                  hasError = true;
-                  deadlineInput.classList.add('error');
-                }
               });
 
               if (hasError) return;
 
               formToSubmit = this;
-              modal.classList.add('active');
+              modal.classList.add("active");
             });
 
-            confirmBtn.addEventListener('click', () => {
-              modal.classList.remove('active');
-              if (loadingOverlay) loadingOverlay.classList.add('active');
+            confirmBtn.addEventListener("click", () => {
+              modal.classList.remove("active");
+              if (loadingOverlay) loadingOverlay.classList.add("active");
               if (formToSubmit) formToSubmit.submit();
             });
 
-            cancelBtn.addEventListener('click', () => {
-              modal.classList.remove('active');
+            cancelBtn.addEventListener("click", () => {
+              modal.classList.remove("active");
+            });
+          }
+
+          if (chartModal && chartModalClose) {
+            chartModalClose.addEventListener("click", closeChartModal);
+
+            chartModal.addEventListener("click", (event) => {
+              if (event.target === chartModal) {
+                closeChartModal();
+              }
+            });
+
+            document.addEventListener("keydown", (event) => {
+              if (event.key === "Escape" && chartModal.classList.contains("active")) {
+                closeChartModal();
+              }
             });
           }
         </script>
@@ -2769,6 +4360,8 @@ app.get("/form", async (req, res) => {
     res.send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
+
+
 
 // ---------- Dashboard ----------
 app.get("/dashboard", async (req, res) => {
@@ -2953,35 +4546,35 @@ app.get("/dashboard", async (req, res) => {
         items.forEach((kpi) => {
           const hasValue = kpi.value !== null && kpi.value !== undefined && kpi.value !== '';
           const dotColor = hasValue
-            ? getDotColor(kpi.value, kpi.low_limit, kpi.high_limit)
+            ? getDotColor(kpi.value, kpi.low_limit, kpi.high_limit, inferKpiDirection(kpi))
             : '#6c757d';
 
           const submitted = kpi.updated_at
             ? new Date(kpi.updated_at).toLocaleString('en-GB', {
-                day: '2-digit',
-                month: 'short',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-              })
+              day: '2-digit',
+              month: 'short',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            })
             : '';
 
           html += `
             <div class="kpi-card">
               <div class="kpi-title">${kpi.subject}</div>
               ${kpi.indicator_sub_title
-                ? `<div style="color:#666;font-size:13px;font-style:italic;">${kpi.indicator_sub_title}</div>`
-                : ''}
+              ? `<div style="color:#666;font-size:13px;font-style:italic;">${kpi.indicator_sub_title}</div>`
+              : ''}
 
               <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;">
                 ${kpi.target
-                  ? `<div>
+              ? `<div>
                       <span style="font-weight:600;color:#495057;">Target: </span>
                       <span style="color:#28a745;font-weight:700;">
                         ${parseFloat(kpi.target).toLocaleString()} ${kpi.unit || ''}
                       </span>
                     </div>`
-                  : ''}
+              : ''}
 
                 <div>
                   <span style="font-weight:600;color:#495057;">Actual: </span>
@@ -2992,16 +4585,16 @@ app.get("/dashboard", async (req, res) => {
               </div>
 
               ${kpi.high_limit
-                ? `<div style="font-size:12px;color:#ff9800;">🔺 High Limit: ${kpi.high_limit} ${kpi.unit || ''}</div>`
-                : ''}
+              ? `<div style="font-size:12px;color:#ff9800;">🔺 High Limit: ${kpi.high_limit} ${kpi.unit || ''}</div>`
+              : ''}
 
               ${kpi.low_limit
-                ? `<div style="font-size:12px;color:#dc3545;">🔻 Low Limit: ${kpi.low_limit} ${kpi.unit || ''}</div>`
-                : ''}
+              ? `<div style="font-size:12px;color:#dc3545;">🔻 Low Limit: ${kpi.low_limit} ${kpi.unit || ''}</div>`
+              : ''}
 
               ${submitted
-                ? `<div class="kpi-date">Last updated: ${submitted}</div>`
-                : ''}
+              ? `<div class="kpi-date">Last updated: ${submitted}</div>`
+              : ''}
             </div>`;
         });
 
@@ -3081,6 +4674,7 @@ const generateVerticalBarChart = (chartData) => {
   const {
     title, subtitle, unit, data, weekLabels, currentWeek,
     stats, target, low_limit, high_limit,
+    direction,
     tolerance_type, up_tolerance, low_tolerance,
     frequency, definition, comments = [],
     correctiveActions = []
@@ -3120,8 +4714,8 @@ const generateVerticalBarChart = (chartData) => {
     return num.toFixed(1);
   };
 
-  // Dot color helper (assumes you already have getDotColor defined)
-  const pointColors = values.map(v => getDotColor(v, cleanLow, cleanHigh));
+  const resolvedDirection = normalizeKpiDirection(direction) || 'up';
+  const pointColors = values.map(v => getDotColor(v, cleanLow, cleanHigh, resolvedDirection));
 
   const allVals = [...validData];
   if (cleanHigh !== null) allVals.push(cleanHigh);
@@ -3162,13 +4756,16 @@ const generateVerticalBarChart = (chartData) => {
 
   // STATS BOX - 3 columns (CURRENT, AVERAGE, TREND)
   // Replace the statsBox const with this:
-  const trendIcon = (() => {
-    if (cleanLow !== null) {
-      if (currentValue < cleanLow) return { icon: '↓', color: '#dc2626' };       // red - below limit
-      if (currentValue < cleanLow * 1.10) return { icon: '→', color: '#ff9800' }; // orange - near limit
+  const currentStatus = getKpiStatus(currentValue, cleanLow, cleanHigh, resolvedDirection);
+  const trendIcon = currentStatus.isGood === false
+    ? {
+      icon: resolvedDirection === 'down' ? '↑' : '↓',
+      color: '#dc2626'
     }
-    return { icon: '↑', color: '#28a745' }; // green - safe
-  })();
+    : {
+      icon: resolvedDirection === 'down' ? '↓' : '↑',
+      color: '#28a745'
+    };
 
   const statsBox = `
   <table border="0" cellpadding="0" cellspacing="0" width="100%"
@@ -3182,7 +4779,7 @@ const generateVerticalBarChart = (chartData) => {
             <!-- CURRENT -->
             <td valign="middle" style="padding-right:30px;text-align:center;">
               <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">CURRENT</div>
-              <div style="font-size:32px;font-weight:700;color:${getDotColor(currentValue, cleanLow, cleanHigh)};line-height:36px;">
+              <div style="font-size:32px;font-weight:700;color:${getDotColor(currentValue, cleanLow, cleanHigh, resolvedDirection)};line-height:36px;">
                 ${stats.current}
               </div>
               ${currentWeek ? `
@@ -3510,6 +5107,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
           subtitle: row.indicator_sub_title || '',
           unit: row.unit || '',
           target: row.target,
+          direction: inferKpiDirection(row),
           min: row.min,
           max: row.max,
           low_limit: row.low_limit,
@@ -3603,6 +5201,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
         subtitle: kpiData.subtitle,
         unit: kpiData.unit,
         target: kpiData.target,
+        direction: kpiData.direction,
         min: kpiData.min,
         max: kpiData.max,
         low_limit: kpiData.low_limit,
@@ -3809,7 +5408,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("20 9 * * *", async () => {
+cron.schedule("52 19 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -3886,6 +5485,7 @@ const createIndividualKPIChart = (kpi) => {
   const target = kpi.target && kpi.target !== 'None' ? Number(kpi.target) : null;
   const high_limit = kpi.high_limit && kpi.high_limit !== 'None' ? Number(kpi.high_limit) : null;
   const low_limit = kpi.low_limit && kpi.low_limit !== 'None' ? Number(kpi.low_limit) : null;
+  const direction = inferKpiDirection(kpi);
 
   const weeklyData = kpi.weeklyData || { weeks: [], values: [] };
   const weeks = weeklyData.weeks.slice(0, 12);
@@ -3912,30 +5512,20 @@ const createIndividualKPIChart = (kpi) => {
   const avg = values.reduce((a, b) => a + b, 0) / values.length;
   const currentValue = values[values.length - 1];
 
-  // Arrow DIRECTION = value movement (up/down/flat)
-  // Arrow DIRECTION = based on color status (green=up, red=down, orange=flat)
-  const trendColor = (() => {
-    if (low_limit !== null) {
-      if (currentValue < low_limit) return '#dc2626';
-      if (currentValue < low_limit * 1.10) return '#f97316';
-    }
-    if (high_limit !== null && currentValue > high_limit) return '#f97316';
-    return '#22c55e';
-  })();
+  const currentStatus = getKpiStatus(currentValue, low_limit, high_limit, direction);
+  const trendColor = currentStatus.isGood === false ? '#dc2626' : '#22c55e';
 
-  const trendArrow = trendColor === '#22c55e' ? '↗'
-    : trendColor === '#dc2626' ? '↘'
-      : '→';
+  const statusArrow = currentStatus.isGood === false
+    ? (direction === 'down' ? '↗' : '↘')
+    : (direction === 'down' ? '↘' : '↗');
 
 
 
-  const pointColors = values.map(v => {
-    if (low_limit !== null) {
-      if (v < low_limit) return '#dc2626';
-      if (v < low_limit * 1.10) return '#f97316';
-    }
-    return '#22c55e';
-  });
+  const pointColors = values.map((v) =>
+    getKpiStatus(v, low_limit, high_limit, direction).isGood === false
+      ? '#dc2626'
+      : '#22c55e'
+  );
 
   const weekLabels = weeks.map(w =>
     typeof w === 'string' && w.includes('-Week')
@@ -4128,7 +5718,7 @@ const createIndividualKPIChart = (kpi) => {
         </td>
         <td align="right" width="36">
           <div style="background:${trendColor};color:#fff;padding:4px 8px;border-radius:6px;
-                      font-weight:700;font-size:12px;display:inline-block;">${trendArrow}</div>
+                      font-weight:700;font-size:12px;display:inline-block;">${statusArrow}</div>
         </td>
       </tr>
     </table>
@@ -4163,12 +5753,8 @@ const createIndividualKPIChart = (kpi) => {
                   <td style="font-size:10px;color:#666;">Good direction</td>
                 </tr></table></td>
                 <td><table border="0" cellpadding="0" cellspacing="3"><tr>
-                  <td width="10" height="10" style="background:#f97316;border-radius:50%;font-size:0;">&nbsp;</td>
-                  <td style="font-size:10px;color:#666;">Near low</td>
-                </tr></table></td>
-                <td><table border="0" cellpadding="0" cellspacing="3"><tr>
                   <td width="10" height="10" style="background:#dc2626;border-radius:50%;font-size:0;">&nbsp;</td>
-                  <td style="font-size:10px;color:#666;">Below low</td>
+                  <td style="font-size:10px;color:#666;">Outside good direction</td>
                 </tr></table></td>
               </tr></table>
             </td></tr>
@@ -4343,6 +5929,7 @@ function processKPIChartData(rows) {
         id: kpiId, subject: row.subject, subtitle: row.indicator_sub_title,
         unit: row.unit || '',
         target: row.target && row.target !== 'None' ? parseFloat(row.target) : null,
+        direction: inferKpiDirection(row),
         min: row.min && row.min !== 'None' ? parseFloat(row.min) : null,
         max: row.max && row.max !== 'None' ? parseFloat(row.max) : null,
         high_limit: row.high_limit && row.high_limit !== 'None' ? parseFloat(row.high_limit) : null,
@@ -4357,7 +5944,7 @@ function processKPIChartData(rows) {
     kpi.values.push(value);
     kpi.weeks.push(row.week);
     if (row.comment && row.comment.trim()) kpi.comments.push({ week: row.week, text: row.comment, date: row.updated_at });
-    kpi.colors.push(getDotColor(value, kpi.low_limit, kpi.high_limit));
+    kpi.colors.push(getDotColor(value, kpi.low_limit, kpi.high_limit, kpi.direction));
     weeksSet.add(row.week);
   });
 
@@ -4379,10 +5966,10 @@ function processKPIChartData(rows) {
       kpi.trendIcon = cur > prev ? '↗' : cur < prev ? '↘' : '→';
       kpi.trendColor = cur > prev ? '#10b981' : cur < prev ? '#ef4444' : '#6b7280';
     } else { kpi.trend = 0; kpi.trendIcon = '→'; kpi.trendColor = '#6b7280'; }
-    if (kpi.low_limit !== null) {
+    if (kpi.low_limit !== null || kpi.high_limit !== null) {
       const latest = vals[vals.length - 1];
-      kpi.achievementVsLimit = latest >= kpi.low_limit;
-      kpi.achievementColor = getDotColor(latest, kpi.low_limit, kpi.high_limit);
+      kpi.achievementVsLimit = !needsCorrectiveAction(latest, kpi.low_limit, kpi.high_limit, kpi.direction);
+      kpi.achievementColor = getDotColor(latest, kpi.low_limit, kpi.high_limit, kpi.direction);
     }
   }
 
@@ -4533,13 +6120,10 @@ function generateKPIChartHTML(kpi, index) {
       <div style="display:flex;gap:15px;margin-top:15px;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:6px;">
           <div style="width:12px;height:12px;border-radius:50%;background:#22c55e;"></div>
-          <span style="font-size:12px;color:#6b7280;">Above low limit</span></div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <div style="width:12px;height:12px;border-radius:50%;background:#f97316;"></div>
-          <span style="font-size:12px;color:#6b7280;">Near low limit (≤10%)</span></div>
+          <span style="font-size:12px;color:#6b7280;">Within good direction</span></div>
         <div style="display:flex;align-items:center;gap:6px;">
           <div style="width:12px;height:12px;border-radius:50%;background:#ef4444;"></div>
-          <span style="font-size:12px;color:#6b7280;">Below low limit</span></div>
+          <span style="font-size:12px;color:#6b7280;">Outside good direction</span></div>
       </div>
       ${kpi.definition ? `
         <div style="margin-top:20px;padding:15px;background:#f8fafc;border-radius:12px;border-left:4px solid #667eea;">
@@ -4556,15 +6140,12 @@ function initializeChartJS(kpi, index) {
   );
   const lowLimit = kpi.low_limit != null ? parseFloat(kpi.low_limit) : null;
   const highLimit = kpi.high_limit != null ? parseFloat(kpi.high_limit) : null;
+  const direction = kpi.direction === 'down' ? 'down' : 'up';
 
-  const pointColors = JSON.stringify(kpi.values.map(v => {
-    const val = parseFloat(v);
-    if (isNaN(val)) return '#6b7280';
-    if (lowLimit !== null) {
-      if (val < lowLimit) return '#ef4444';
-      if (val < lowLimit * 1.10) return '#f97316';
-    }
-    return '#22c55e';
+  const pointColors = JSON.stringify(kpi.values.map((v) => {
+    const status = getKpiStatus(v, lowLimit, highLimit, direction);
+    if (status.isGood === null) return '#6b7280';
+    return status.isGood ? '#22c55e' : '#ef4444';
   }));
 
   const extraDatasets = [];
