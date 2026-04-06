@@ -25,17 +25,17 @@ const pool = new Pool({
 });
 
 
-// cron.schedule('25 09 * * 1', async () => {
-//   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
-//   try {
-//     await pool.query('SELECT public.update_kpi_week()');
-//     console.log('[CRON] ✅ kpi_values.week updated successfully');
-//   } catch (err) {
-//     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
-//   }
-// }, {
-//   timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
-// });
+cron.schedule('34 09 * * 1', async () => {
+  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+  try {
+    await pool.query('SELECT public.update_kpi_week()');
+    console.log('[CRON] ✅ kpi_values.week updated successfully');
+  } catch (err) {
+    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+  }
+}, {
+  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+});
 
 // ============================================================
 // KPI DIRECTION + STATUS HELPERS
@@ -2249,6 +2249,101 @@ app.get("/form", async (req, res) => {
       return d.toLocaleString("en-US", { month: "short", year: "numeric" });
     }
 
+    function monthLabelToDate(monthLabel) {
+      const d = new Date("1 " + monthLabel);
+      return isNaN(d.getTime()) ? new Date(0) : d;
+    }
+
+    function findPreviousMonthLabel(currentMonthLabel, labels) {
+      const currentDate = monthLabelToDate(currentMonthLabel);
+
+      return Array.from(new Set((labels || []).filter(Boolean)))
+        .sort((a, b) => monthLabelToDate(a) - monthLabelToDate(b))
+        .filter((label) => monthLabelToDate(label) < currentDate)
+        .pop() || null;
+    }
+
+    const encodeModalPayload = (value) =>
+      encodeURIComponent(JSON.stringify(value ?? null));
+
+    const commentsHistoryRes = await pool.query(
+      `
+      SELECT DISTINCT ON (kpi_id, week)
+        kpi_id,
+        week,
+        comment,
+        updated_at
+      FROM public.kpi_values_hist26
+      WHERE responsible_id = $1
+        AND comment IS NOT NULL
+        AND BTRIM(comment) <> ''
+      ORDER BY kpi_id, week, updated_at DESC
+      `,
+      [responsible_id]
+    );
+
+    const correctiveActionsHistoryRes = await pool.query(
+      `
+      SELECT
+        kpi_id,
+        week,
+        root_cause,
+        implemented_solution,
+        evidence,
+        status,
+        due_date,
+        responsible,
+        created_date,
+        updated_date
+      FROM public.corrective_actions
+      WHERE responsible_id = $1
+      ORDER BY kpi_id ASC, week ASC, COALESCE(updated_date, created_date) DESC
+      `,
+      [responsible_id]
+    );
+
+    const commentsByKpiMonth = {};
+    commentsHistoryRes.rows.forEach((row) => {
+      const monthLabel = weekToMonthLabel(row.week);
+      if (!commentsByKpiMonth[row.kpi_id]) commentsByKpiMonth[row.kpi_id] = {};
+      if (!commentsByKpiMonth[row.kpi_id][monthLabel]) commentsByKpiMonth[row.kpi_id][monthLabel] = [];
+
+      commentsByKpiMonth[row.kpi_id][monthLabel].push({
+        week: row.week,
+        month_label: monthLabel,
+        text: row.comment,
+        updated_at: row.updated_at
+      });
+    });
+
+    const correctiveActionsByKpiMonth = {};
+    correctiveActionsHistoryRes.rows.forEach((row) => {
+      const monthLabel = weekToMonthLabel(row.week);
+      const updatedAt = row.updated_date || row.created_date || null;
+
+      if (!correctiveActionsByKpiMonth[row.kpi_id]) correctiveActionsByKpiMonth[row.kpi_id] = {};
+
+      const existingAction = correctiveActionsByKpiMonth[row.kpi_id][monthLabel];
+      const existingTimestamp = existingAction && existingAction.updated_at
+        ? new Date(existingAction.updated_at).getTime()
+        : 0;
+      const rowTimestamp = updatedAt ? new Date(updatedAt).getTime() : 0;
+
+      if (!existingAction || rowTimestamp >= existingTimestamp) {
+        correctiveActionsByKpiMonth[row.kpi_id][monthLabel] = {
+          week: row.week,
+          month_label: monthLabel,
+          status: row.status || "",
+          root_cause: row.root_cause || "",
+          implemented_solution: row.implemented_solution || "",
+          evidence: row.evidence || "",
+          due_date: row.due_date || "",
+          responsible: row.responsible || "",
+          updated_at: updatedAt
+        };
+      }
+    });
+
     let kpiCardsHtml = "";
 
     kpis.forEach((kpi) => {
@@ -2335,11 +2430,12 @@ app.get("/form", async (req, res) => {
         return Number((m.sum / m.count).toFixed(2));
       });
 
+      const currentMonthLabel = weekToMonthLabel(week);
+
       if (!historyLabels.length) {
-        historyLabels = [weekToMonthLabel(week)];
+        historyLabels = [currentMonthLabel];
         historyValues = [currentValue];
       } else {
-        const currentMonthLabel = weekToMonthLabel(week);
         const currentMonthIndex = historyLabels.indexOf(currentMonthLabel);
 
         if (currentMonthIndex === -1) {
@@ -2349,6 +2445,24 @@ app.get("/form", async (req, res) => {
           historyValues[currentMonthIndex] = currentValue;
         }
       }
+
+      const commentMonths = Object.keys(commentsByKpiMonth[kpi.kpi_id] || {});
+      const correctiveActionMonths = Object.keys(correctiveActionsByKpiMonth[kpi.kpi_id] || {});
+      const previousMonthLabel = findPreviousMonthLabel(
+        currentMonthLabel,
+        historyLabels.concat(commentMonths, correctiveActionMonths)
+      );
+      const previousMonthAction = previousMonthLabel
+        ? correctiveActionsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || null
+        : null;
+      const previousMonthComments = previousMonthLabel
+        ? (commentsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || [])
+            .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+        : [];
+      const hasPreviousMonthDetails = Boolean(
+        previousMonthAction ||
+        (previousMonthComments && previousMonthComments.length)
+      );
 
       kpiCardsHtml += `
         <div class="kpi-card"
@@ -2361,7 +2475,10 @@ app.get("/form", async (req, res) => {
              data-history-labels='${JSON.stringify(historyLabels)}'
              data-history-values='${JSON.stringify(historyValues)}'
              data-current-week="${week}"
-             data-unit="${kpi.unit || ""}">
+             data-unit="${kpi.unit || ""}"
+             data-prev-month-label="${previousMonthLabel || ""}"
+             data-prev-month-action="${encodeModalPayload(previousMonthAction)}"
+             data-prev-month-comments="${encodeModalPayload(previousMonthComments)}">
 
           <div class="kpi-header">
             <div>
@@ -2377,22 +2494,76 @@ app.get("/form", async (req, res) => {
              tabindex="0"
              title="Click to expand chart"
              aria-label="Expand KPI chart">
+           <button
+             type="button"
+             class="chart-expand-btn"
+             data-kpi-values-id="${kpi.kpi_values_id}"
+             aria-label="Expand KPI chart"
+             title="Expand chart"
+           >
+             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+               <path d="M9 3H3v6"></path>
+               <path d="M15 3h6v6"></path>
+               <path d="M21 15v6h-6"></path>
+               <path d="M9 21H3v-6"></path>
+             </svg>
+           </button>
            <canvas id="chart_${kpi.kpi_values_id}"></canvas>
             </div>
 
           <div class="kpi-left-panel">
+            <div class="kpi-entry-card">
+              <div class="kpi-entry-top">
+                <div>
+                  <div class="kpi-entry-eyebrow">Current KPI Entry</div>
+                  <div class="kpi-entry-title">Update This Month's Value</div>
+                </div>
+                ${kpi.unit ? `<div class="kpi-entry-unit">${kpi.unit}</div>` : ""}
+              </div>
 
+              <div class="kpi-input-stack">
+                <label class="kpi-side-label" for="value_${kpi.kpi_values_id}">
+                  Current Value
+                </label>
+                <div class="kpi-input-shell ${kpi.unit ? "has-unit" : ""}">
+                  <input
+                   type="number"
+                    step="any"
+                     id="value_${kpi.kpi_values_id}"
+                     name="value_${kpi.kpi_values_id}"
+                    value="${kpi.value ?? ""}"
+                     placeholder="Enter value"
+                    class="kpi-input value-input"
+                    data-kpi-values-id="${kpi.kpi_values_id}"
+                   required
+                  />
+                  ${kpi.unit ? `<span class="kpi-input-unit">${kpi.unit}</span>` : ""}
+                </div>
+              </div>
 
-          <input
-           type="number"
-            step="any"
-             name="value_${kpi.kpi_values_id}"
-            value="${kpi.value ?? ""}"
-             placeholder="Enter value"
-            class="kpi-input value-input"
-            data-kpi-values-id="${kpi.kpi_values_id}"
-           required
-          />
+              <div class="kpi-history-panel ${hasPreviousMonthDetails ? "history-available" : "history-empty"}">
+                <div class="kpi-history-copy">
+                  <div class="kpi-history-kicker">Previous Month Review</div>
+                  <div class="kpi-history-title">
+                    ${hasPreviousMonthDetails ? previousMonthLabel : "History Not Available Yet"}
+                  </div>
+                  <div class="view-ca-note">
+                    ${hasPreviousMonthDetails
+                      ? `Review root cause, evidence, and comments from ${previousMonthLabel}.`
+                      : "No previous-month corrective action or comments have been recorded for this KPI yet."}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  class="view-ca-btn"
+                  data-kpi-values-id="${kpi.kpi_values_id}"
+                >
+                  <span>View Corrective Action</span>
+                  <span class="view-ca-btn-icon">↗</span>
+                </button>
+              </div>
+            </div>
 
     <div class="kpi-mini-stats">
       <div class="mini-stat-card">
@@ -2686,8 +2857,129 @@ app.get("/form", async (req, res) => {
           .kpi-right-panel{
             background:#fafafa;
             border:1px solid #e5e7eb;
-            border-radius:12px;
-            padding:16px;
+            border-radius:20px;
+            padding:18px;
+          }
+          .kpi-left-panel{
+            min-height:480px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            position:relative;
+            overflow:hidden;
+            background:
+              radial-gradient(circle at top right, rgba(37,99,235,0.14), transparent 34%),
+              linear-gradient(180deg,#ffffff 0%,#f7fbff 52%,#f2f7fc 100%);
+          }
+          .kpi-left-panel::before{
+            content:"";
+            position:absolute;
+            width:220px;
+            height:220px;
+            right:-90px;
+            top:-90px;
+            border-radius:50%;
+            background:radial-gradient(circle, rgba(56,189,248,0.18) 0%, rgba(56,189,248,0) 72%);
+            pointer-events:none;
+          }
+          .kpi-entry-card{
+            position:relative;
+            z-index:1;
+            width:min(100%,340px);
+            padding:24px;
+            border-radius:24px;
+            background:rgba(255,255,255,0.94);
+            border:1px solid #d8e3ee;
+            box-shadow:0 20px 40px rgba(15,23,42,0.10);
+            display:flex;
+            flex-direction:column;
+            gap:18px;
+          }
+          .kpi-entry-top{
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:12px;
+          }
+          .kpi-entry-eyebrow{
+            font-size:11px;
+            font-weight:800;
+            letter-spacing:1.1px;
+            text-transform:uppercase;
+            color:#64748b;
+          }
+          .kpi-entry-title{
+            margin-top:6px;
+            color:#0f172a;
+            font-size:18px;
+            font-weight:800;
+            line-height:1.25;
+          }
+          .kpi-entry-unit{
+            flex-shrink:0;
+            padding:8px 12px;
+            border-radius:999px;
+            background:#eff6ff;
+            color:#1d4ed8;
+            font-size:12px;
+            font-weight:800;
+            border:1px solid #bfdbfe;
+            white-space:nowrap;
+          }
+          .kpi-input-stack{
+            display:flex;
+            flex-direction:column;
+            gap:8px;
+          }
+          .kpi-side-label{
+            font-size:12px;
+            font-weight:800;
+            letter-spacing:0.9px;
+            text-transform:uppercase;
+            color:#475569;
+          }
+          .kpi-input-shell{
+            position:relative;
+          }
+          .kpi-left-panel .kpi-input{
+            width:100%;
+            margin:0;
+            min-height:58px;
+            padding:16px 18px;
+            border:1.5px solid #d6dee8;
+            border-radius:16px;
+            background:#ffffff;
+            color:#0f172a;
+            font-size:24px;
+            font-weight:800;
+            box-shadow:inset 0 1px 0 rgba(255,255,255,0.9);
+          }
+          .kpi-left-panel .kpi-input::placeholder{
+            color:#94a3b8;
+            font-size:16px;
+            font-weight:600;
+          }
+          .kpi-input-shell.has-unit .kpi-input{
+            padding-right:76px;
+          }
+          .kpi-input-unit{
+            position:absolute;
+            top:50%;
+            right:14px;
+            transform:translateY(-50%);
+            padding:6px 10px;
+            border-radius:999px;
+            background:#f8fafc;
+            border:1px solid #e2e8f0;
+            color:#64748b;
+            font-size:12px;
+            font-weight:800;
+            pointer-events:none;
+          }
+          .kpi-left-panel .kpi-input:focus{
+            border-color:#3b82f6;
+            outline:none;
+            box-shadow:0 0 0 4px rgba(59,130,246,0.12), 0 14px 30px rgba(59,130,246,0.10);
           }
           .kpi-limits-top{
             display:flex;
@@ -2712,11 +3004,85 @@ app.get("/form", async (req, res) => {
             color:#1b5e20;
             border-color:#a5d6a7;
           }
-          .kpi-mini-stats{
-            display:grid;
-            grid-template-columns:repeat(3,1fr);
+          .kpi-history-panel{
+            width:100%;
+            margin:0;
+            padding:18px;
+            border-radius:20px;
+            display:flex;
+            flex-direction:column;
+            align-items:stretch;
+            gap:14px;
+            border:1px solid #dbeafe;
+            background:linear-gradient(180deg,#f8fbff 0%,#eef6ff 100%);
+          }
+          .kpi-history-panel.history-empty{
+            border-color:#e2e8f0;
+            background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);
+          }
+          .kpi-history-copy{
+            display:flex;
+            flex-direction:column;
+            gap:6px;
+          }
+          .kpi-history-kicker{
+            font-size:11px;
+            font-weight:800;
+            letter-spacing:1px;
+            text-transform:uppercase;
+            color:#64748b;
+          }
+          .kpi-history-title{
+            font-size:18px;
+            font-weight:800;
+            line-height:1.2;
+            color:#0f172a;
+          }
+          .view-ca-btn{
+            width:100%;
+            border:none;
+            border-radius:16px;
+            padding:15px 18px;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
             gap:12px;
-            margin-top:14px;
+            background:linear-gradient(135deg,#0f6cbd 0%,#2894ff 100%);
+            color:white;
+            font-size:14px;
+            font-weight:800;
+            cursor:pointer;
+            letter-spacing:0.2px;
+            box-shadow:0 14px 30px rgba(15,108,189,0.22);
+            transition:transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+          }
+          .view-ca-btn:hover{
+            transform:translateY(-2px);
+            box-shadow:0 18px 34px rgba(15,108,189,0.26);
+          }
+          .view-ca-btn:focus-visible{
+            outline:3px solid rgba(37,99,235,0.18);
+            outline-offset:3px;
+          }
+          .view-ca-btn-icon{
+            width:32px;
+            height:32px;
+            border-radius:999px;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            background:rgba(255,255,255,0.18);
+            font-size:16px;
+            line-height:1;
+          }
+          .view-ca-note{
+            font-size:13px;
+            color:#526277;
+            line-height:1.6;
+            text-align:left;
+          }
+          .kpi-mini-stats{
+            display:none;
           }
           .mini-stat-card{
             background:white;
@@ -2746,10 +3112,10 @@ app.get("/form", async (req, res) => {
             margin-top:4px;
           }
           .kpi-right-panel{
-           min-height:480px;
+           min-height:280px;
            display:flex;
            align-items:center;
-          justify-content:center;
+           justify-content:center;
            position:relative;
           }
           .kpi-chart-trigger{
@@ -2763,6 +3129,42 @@ app.get("/form", async (req, res) => {
           .kpi-chart-trigger:focus-visible{
             outline:3px solid rgba(37,99,235,0.2);
             outline-offset:2px;
+          }
+          .chart-expand-btn{
+            position:absolute;
+            top:14px;
+            right:14px;
+            width:42px;
+            height:42px;
+            border:none;
+            border-radius:14px;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            background:rgba(255,255,255,0.92);
+            color:#1d4ed8;
+            box-shadow:0 12px 24px rgba(15,23,42,0.12);
+            cursor:pointer;
+            z-index:2;
+            transition:transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+          }
+          .chart-expand-btn:hover{
+            transform:translateY(-1px);
+            background:#eff6ff;
+            box-shadow:0 16px 28px rgba(15,23,42,0.16);
+          }
+          .chart-expand-btn:focus-visible{
+            outline:3px solid rgba(37,99,235,0.2);
+            outline-offset:3px;
+          }
+          .chart-expand-btn svg{
+            width:18px;
+            height:18px;
+            stroke:currentColor;
+            stroke-width:2;
+            fill:none;
+            stroke-linecap:round;
+            stroke-linejoin:round;
           }
 
           .kpi-right-panel canvas{
@@ -2861,6 +3263,182 @@ app.get("/form", async (req, res) => {
             width:100% !important;
             height:100% !important;
             display:block;
+          }
+
+          .history-modal-overlay{
+            position:fixed;
+            inset:0;
+            padding:24px;
+            background:rgba(15,23,42,0.58);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            z-index:10004;
+            opacity:0;
+            pointer-events:none;
+            transition:opacity 0.22s ease;
+          }
+          .history-modal-overlay.active{
+            opacity:1;
+            pointer-events:auto;
+          }
+          .history-modal-box{
+            width:min(92vw, 720px);
+            max-height:min(88vh, 860px);
+            background:#fff;
+            border-radius:22px;
+            overflow:hidden;
+            box-shadow:0 28px 80px rgba(15,23,42,0.28);
+            transform:translateY(18px) scale(0.98);
+            transition:transform 0.22s ease;
+            display:flex;
+            flex-direction:column;
+          }
+          .history-modal-overlay.active .history-modal-box{
+            transform:translateY(0) scale(1);
+          }
+          .history-modal-header{
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:16px;
+            padding:22px 24px 18px;
+            border-bottom:1px solid #e5e7eb;
+            background:linear-gradient(180deg,#ffffff,#f8fbff);
+          }
+          .history-modal-title{
+            margin:0;
+            color:#0f172a;
+            font-size:24px;
+            line-height:1.2;
+          }
+          .history-modal-subtitle{
+            margin:8px 0 0;
+            color:#64748b;
+            font-size:14px;
+          }
+          .history-modal-close{
+            width:42px;
+            height:42px;
+            border:none;
+            border-radius:999px;
+            background:#f8fafc;
+            color:#334155;
+            font-size:26px;
+            line-height:1;
+            cursor:pointer;
+            flex-shrink:0;
+          }
+          .history-modal-content{
+            padding:22px 24px 24px;
+            overflow:auto;
+            background:linear-gradient(180deg,#ffffff,#f8fafc 100%);
+          }
+          .history-meta-row{
+            display:flex;
+            flex-wrap:wrap;
+            gap:10px;
+            margin-bottom:18px;
+          }
+          .history-chip{
+            display:inline-flex;
+            align-items:center;
+            gap:8px;
+            padding:9px 12px;
+            border-radius:999px;
+            font-size:12px;
+            font-weight:800;
+            background:#eff6ff;
+            color:#1d4ed8;
+          }
+          .history-chip.status-open{
+            background:#fef2f2;
+            color:#b91c1c;
+          }
+          .history-chip.status-waiting-for-validation{
+            background:#fff7ed;
+            color:#c2410c;
+          }
+          .history-chip.status-completed,
+          .history-chip.status-closed{
+            background:#ecfdf5;
+            color:#047857;
+          }
+          .history-section{
+            background:white;
+            border:1px solid #e5e7eb;
+            border-radius:18px;
+            padding:18px;
+            box-shadow:0 8px 22px rgba(15,23,42,0.05);
+          }
+          .history-section + .history-section{
+            margin-top:16px;
+          }
+          .history-section-title{
+            margin:0 0 14px;
+            font-size:14px;
+            font-weight:900;
+            color:#111827;
+            display:flex;
+            align-items:center;
+            gap:8px;
+          }
+          .history-detail-card{
+            background:linear-gradient(135deg,#fff8f8,#fffaf5);
+            border:1px solid #fee2e2;
+            border-radius:16px;
+            padding:16px;
+          }
+          .history-detail-row + .history-detail-row{
+            margin-top:14px;
+            padding-top:14px;
+            border-top:1px solid rgba(226,232,240,0.8);
+          }
+          .history-detail-label{
+            font-size:12px;
+            font-weight:900;
+            margin-bottom:6px;
+          }
+          .history-detail-label.root{ color:#dc2626; }
+          .history-detail-label.solution{ color:#d97706; }
+          .history-detail-label.evidence{ color:#2563eb; }
+          .history-detail-text{
+            font-size:14px;
+            line-height:1.6;
+            color:#334155;
+            white-space:pre-wrap;
+          }
+          .history-comments-list{
+            display:grid;
+            gap:12px;
+          }
+          .history-comment-card{
+            border-radius:16px;
+            padding:16px;
+            background:linear-gradient(135deg,#eff6ff,#dbeafe);
+            border-left:4px solid #0f6cbd;
+          }
+          .history-comment-label{
+            font-size:12px;
+            font-weight:900;
+            color:#2563eb;
+            margin-bottom:8px;
+          }
+          .history-comment-text{
+            font-size:14px;
+            color:#1e293b;
+            line-height:1.6;
+            white-space:pre-wrap;
+          }
+          .history-empty{
+            text-align:center;
+            padding:34px 20px;
+            background:white;
+            border:1px dashed #cbd5e1;
+            border-radius:18px;
+            color:#64748b;
+            font-size:14px;
+            line-height:1.6;
           }
 
           .ca-container{
@@ -3328,6 +3906,22 @@ app.get("/form", async (req, res) => {
             .chart-modal-stage{
               padding:14px;
             }
+            .history-modal-overlay{
+              padding:14px;
+            }
+            .history-modal-box{
+              width:100%;
+              max-height:min(90vh, 860px);
+            }
+            .history-modal-header{
+              padding:18px 18px 14px;
+            }
+            .history-modal-title{
+              font-size:20px;
+            }
+            .history-modal-content{
+              padding:16px 18px 18px;
+            }
           }
 
           @media(max-width:700px){
@@ -3379,6 +3973,19 @@ app.get("/form", async (req, res) => {
                 <canvas id="chartModalCanvas"></canvas>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div id="historyModal" class="history-modal-overlay" aria-hidden="true">
+          <div class="history-modal-box" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
+            <div class="history-modal-header">
+              <div>
+                <h3 id="historyModalTitle" class="history-modal-title">Corrective Action History</h3>
+                <p id="historyModalSubtitle" class="history-modal-subtitle">Previous month details for this KPI</p>
+              </div>
+              <button id="historyModalClose" type="button" class="history-modal-close" aria-label="Close corrective action history">&times;</button>
+            </div>
+            <div id="historyModalContent" class="history-modal-content"></div>
           </div>
         </div>
 
@@ -3983,7 +4590,9 @@ app.get("/form", async (req, res) => {
               chartModal.setAttribute("aria-hidden", "true");
             }
 
-            document.body.classList.remove("chart-modal-open");
+            if (!historyModal || !historyModal.classList.contains("active")) {
+              document.body.classList.remove("chart-modal-open");
+            }
           }
 
           function openChartModal(kpiValuesId) {
@@ -4079,6 +4688,157 @@ app.get("/form", async (req, res) => {
                 plugins: [expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
               });
             });
+          }
+
+          function escapeHistoryHtml(value) {
+            return String(value || "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#39;");
+          }
+
+          function formatHistoryText(value) {
+            return escapeHistoryHtml(value).split("\\n").join("<br>");
+          }
+
+          function decodeModalPayload(value, fallbackValue) {
+            try {
+              const decoded = decodeURIComponent(value || "");
+              if (!decoded) return fallbackValue;
+              const parsed = JSON.parse(decoded);
+              return parsed === null || parsed === undefined ? fallbackValue : parsed;
+            } catch (error) {
+              return fallbackValue;
+            }
+          }
+
+          function formatHistoryWeek(weekValue) {
+            const match = String(weekValue || "").match(/^(\\d{4})-Week(\\d{1,2})$/);
+            return match ? "Week " + parseInt(match[2], 10) : escapeHistoryHtml(weekValue || "");
+          }
+
+          function getHistoryStatusClass(status) {
+            const safeStatus = String(status || "Open")
+              .trim()
+              .toLowerCase()
+              .replace(/\s+/g, "-");
+
+            return "status-" + (safeStatus || "open");
+          }
+
+          function closeHistoryModal() {
+            if (!historyModal) return;
+            historyModal.classList.remove("active");
+            historyModal.setAttribute("aria-hidden", "true");
+            if (!chartModal || !chartModal.classList.contains("active")) {
+              document.body.classList.remove("chart-modal-open");
+            }
+          }
+
+          function openHistoryModal(kpiValuesId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+            if (!card || !historyModal || !historyModalContent) return;
+
+            const titleText = (card.querySelector(".kpi-title") && card.querySelector(".kpi-title").textContent || "Corrective Action History").trim();
+            const subtitleText = (card.querySelector(".kpi-subtitle") && card.querySelector(".kpi-subtitle").textContent || "").trim();
+            const previousMonthLabel = card.dataset.prevMonthLabel || "";
+            const previousMonthAction = decodeModalPayload(card.dataset.prevMonthAction, null);
+            const previousMonthComments = decodeModalPayload(card.dataset.prevMonthComments, []);
+            const comments = Array.isArray(previousMonthComments) ? previousMonthComments : [];
+            const hasActionDetails = previousMonthAction && (
+              previousMonthAction.root_cause ||
+              previousMonthAction.implemented_solution ||
+              previousMonthAction.evidence ||
+              previousMonthAction.status
+            );
+
+            if (historyModalTitle) {
+              historyModalTitle.textContent = titleText;
+            }
+
+            if (historyModalSubtitle) {
+              historyModalSubtitle.textContent = previousMonthLabel
+                ? previousMonthLabel + (subtitleText ? " • " + subtitleText : "")
+                : "No previous month data available";
+            }
+
+            const chips = [];
+            if (previousMonthLabel) {
+              chips.push('<span class="history-chip">📅 ' + escapeHistoryHtml(previousMonthLabel) + '</span>');
+            }
+            if (previousMonthAction && previousMonthAction.week) {
+              chips.push('<span class="history-chip">🗓️ ' + formatHistoryWeek(previousMonthAction.week) + '</span>');
+            }
+            if (previousMonthAction && previousMonthAction.status) {
+              chips.push(
+                '<span class="history-chip ' + getHistoryStatusClass(previousMonthAction.status) + '">' +
+                escapeHistoryHtml(previousMonthAction.status) +
+                '</span>'
+              );
+            }
+
+            const actionRows = [];
+            if (previousMonthAction && previousMonthAction.root_cause) {
+              actionRows.push(
+                '<div class="history-detail-row">' +
+                  '<div class="history-detail-label root">🔎 Root Cause</div>' +
+                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.root_cause) + '</div>' +
+                '</div>'
+              );
+            }
+            if (previousMonthAction && previousMonthAction.implemented_solution) {
+              actionRows.push(
+                '<div class="history-detail-row">' +
+                  '<div class="history-detail-label solution">⚡ Implemented Solution</div>' +
+                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.implemented_solution) + '</div>' +
+                '</div>'
+              );
+            }
+            if (previousMonthAction && previousMonthAction.evidence) {
+              actionRows.push(
+                '<div class="history-detail-row">' +
+                  '<div class="history-detail-label evidence">📊 Evidence</div>' +
+                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.evidence) + '</div>' +
+                '</div>'
+              );
+            }
+
+            const commentsHtml = comments.length
+              ? '<div class="history-comments-list">' +
+                  comments.map((comment) =>
+                    '<div class="history-comment-card">' +
+                      '<div class="history-comment-label">' + escapeHistoryHtml(comment.month_label || previousMonthLabel || "") +
+                        (comment.week ? ' • ' + formatHistoryWeek(comment.week) : '') +
+                      '</div>' +
+                      '<div class="history-comment-text">' + formatHistoryText(comment.text || "") + '</div>' +
+                    '</div>'
+                  ).join("") +
+                '</div>'
+              : '<div class="history-empty">No comments were saved for this KPI in the previous month.</div>';
+
+            if (!hasActionDetails && !comments.length) {
+              historyModalContent.innerHTML =
+                '<div class="history-empty">No previous-month corrective action or comment history was found for this KPI.</div>';
+            } else {
+              historyModalContent.innerHTML =
+                (chips.length ? '<div class="history-meta-row">' + chips.join("") + '</div>' : "") +
+                '<div class="history-section">' +
+                  '<h4 class="history-section-title">⚠️ Corrective Actions</h4>' +
+                  (actionRows.length
+                    ? '<div class="history-detail-card">' + actionRows.join("") + '</div>'
+                    : '<div class="history-empty">No corrective action details were saved for this month.</div>') +
+                '</div>' +
+                '<div class="history-section">' +
+                  '<h4 class="history-section-title">💬 Comments</h4>' +
+                  commentsHtml +
+                '</div>';
+            }
+
+            historyModal.classList.add("active");
+            historyModal.setAttribute("aria-hidden", "false");
+            document.body.classList.add("chart-modal-open");
           }
 
           function getPointColor(value, lowLimit, highLimit, direction) {
@@ -4278,6 +5038,25 @@ app.get("/form", async (req, res) => {
                 }
               });
             });
+
+            document.querySelectorAll(".chart-expand-btn").forEach(button => {
+              const kvId = button.dataset.kpiValuesId;
+              if (!kvId) return;
+
+              button.addEventListener("click", (event) => {
+                event.stopPropagation();
+                openChartModal(kvId);
+              });
+            });
+
+            document.querySelectorAll(".view-ca-btn").forEach(button => {
+              const kvId = button.dataset.kpiValuesId;
+              if (!kvId) return;
+
+              button.addEventListener("click", () => {
+                openHistoryModal(kvId);
+              });
+            });
           });
 
           const form = document.getElementById("kpiForm");
@@ -4290,6 +5069,11 @@ app.get("/form", async (req, res) => {
           const chartModalTitle = document.getElementById("chartModalTitle");
           const chartModalSubtitle = document.getElementById("chartModalSubtitle");
           const chartModalCanvas = document.getElementById("chartModalCanvas");
+          const historyModal = document.getElementById("historyModal");
+          const historyModalClose = document.getElementById("historyModalClose");
+          const historyModalTitle = document.getElementById("historyModalTitle");
+          const historyModalSubtitle = document.getElementById("historyModalSubtitle");
+          const historyModalContent = document.getElementById("historyModalContent");
 
           let formToSubmit = null;
 
@@ -4348,6 +5132,22 @@ app.get("/form", async (req, res) => {
             document.addEventListener("keydown", (event) => {
               if (event.key === "Escape" && chartModal.classList.contains("active")) {
                 closeChartModal();
+              }
+            });
+          }
+
+          if (historyModal && historyModalClose) {
+            historyModalClose.addEventListener("click", closeHistoryModal);
+
+            historyModal.addEventListener("click", (event) => {
+              if (event.target === historyModal) {
+                closeHistoryModal();
+              }
+            });
+
+            document.addEventListener("keydown", (event) => {
+              if (event.key === "Escape" && historyModal.classList.contains("active")) {
+                closeHistoryModal();
               }
             });
           }
@@ -5408,7 +6208,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("00 10 * * *", async () => {
+cron.schedule("53 09 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
