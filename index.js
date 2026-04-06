@@ -25,17 +25,17 @@ const pool = new Pool({
 });
 
 
-cron.schedule('25 09 * * 1', async () => {
-  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
-  try {
-    await pool.query('SELECT public.update_kpi_week()');
-    console.log('[CRON] ✅ kpi_values.week updated successfully');
-  } catch (err) {
-    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
-  }
-}, {
-  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
-});
+// cron.schedule('25 09 * * 1', async () => {
+//   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+//   try {
+//     await pool.query('SELECT public.update_kpi_week()');
+//     console.log('[CRON] ✅ kpi_values.week updated successfully');
+//   } catch (err) {
+//     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+//   }
+// }, {
+//   timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+// });
 
 // ============================================================
 // KPI DIRECTION + STATUS HELPERS
@@ -5408,7 +5408,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("46 09 * * *", async () => {
+cron.schedule("00 10 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
