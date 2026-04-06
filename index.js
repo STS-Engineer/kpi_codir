@@ -2193,7 +2193,6 @@ app.post("/redirect", async (req, res) => {
           ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">📌</span><span>${n}</span></div>`).join('')}
         </div>
         <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
-        <a href="/corrective-actions-list?responsible_id=${responsible_id}" class="btn">View Corrective Actions</a>
       </div></body></html>`);
   } catch (err) {
     res.status(500).send(`<h2 style="color:red;">❌ Failed: ${err.message}</h2>`);
@@ -6208,7 +6207,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("20 11 * * *", async () => {
+cron.schedule("33 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
