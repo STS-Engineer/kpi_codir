@@ -2438,6 +2438,97 @@ app.post("/redirect", async (req, res) => {
   }
 });
 
+
+
+app.get("/api/kpi-chart-data", async (req, res) => {
+  try {
+    const { responsible_id, kpi_id, week } = req.query;
+
+    if (!responsible_id || !kpi_id || !week) {
+      return res.status(400).json({ error: "Missing responsible_id, kpi_id, or week" });
+    }
+
+    const histRes = await pool.query(
+      `
+      SELECT DISTINCT ON (week)
+        week,
+        new_value,
+        updated_at
+      FROM public.kpi_values_hist26
+      WHERE responsible_id = $1
+        AND kpi_id = $2
+        AND new_value IS NOT NULL
+        AND new_value <> ''
+      ORDER BY week, updated_at DESC
+      `,
+      [responsible_id, kpi_id]
+    );
+
+    const currentRes = await pool.query(
+      `
+      SELECT kv.value
+      FROM public.kpi_values kv
+      WHERE kv.responsible_id = $1
+        AND kv.kpi_id = $2
+        AND kv.week = $3
+      LIMIT 1
+      `,
+      [responsible_id, kpi_id, week]
+    );
+
+    function weekLabelToDate(weekStr) {
+      const m = String(weekStr || "").match(/^(\d{4})-Week(\d{1,2})$/);
+      if (!m) return new Date(0);
+      const year = parseInt(m[1], 10);
+      const weekNum = parseInt(m[2], 10);
+      return new Date(year, 0, 1 + (weekNum - 1) * 7);
+    }
+
+    function weekToMonthLabel(weekStr) {
+      const d = weekLabelToDate(weekStr);
+      if (isNaN(d.getTime())) return weekStr || "";
+      return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+    }
+
+    function monthLabelToDate(monthLabel) {
+      const d = new Date("1 " + monthLabel);
+      return isNaN(d.getTime()) ? new Date(0) : d;
+    }
+
+    const monthMap = {};
+    for (const row of histRes.rows) {
+      const value = parseFloat(row.new_value);
+      if (isNaN(value)) continue;
+
+      const monthLabel = weekToMonthLabel(row.week);
+      if (!monthMap[monthLabel]) monthMap[monthLabel] = { sum: 0, count: 0 };
+      monthMap[monthLabel].sum += value;
+      monthMap[monthLabel].count += 1;
+    }
+
+    const currentMonthLabel = weekToMonthLabel(week);
+    const currentValue = parseFloat(currentRes.rows[0]?.value);
+
+    if (!isNaN(currentValue)) {
+      monthMap[currentMonthLabel] = { sum: currentValue, count: 1 };
+    }
+
+    const labels = Object.keys(monthMap).sort(
+      (a, b) => monthLabelToDate(a) - monthLabelToDate(b)
+    );
+
+    const values = labels.map((label) => {
+      const m = monthMap[label];
+      return Number((m.sum / m.count).toFixed(2));
+    });
+
+    res.json({ labels, values, currentMonthLabel, currentValue: isNaN(currentValue) ? null : currentValue });
+  } catch (err) {
+    console.error("kpi-chart-data error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------- Form page ----------
 app.get("/form", async (req, res) => {
   try {
@@ -2636,21 +2727,36 @@ app.get("/form", async (req, res) => {
         .filter((h) => !isNaN(h.value))
         .sort((a, b) => weekLabelToDate(a.week) - weekLabelToDate(b.week));
 
-      const currentMonthLabel = weekToMonthLabel(week);
-      const monthMap = {};
-      sortedHistory.forEach((item) => {
-        const monthLabel = weekToMonthLabel(item.week);
-        if (monthLabel === currentMonthLabel) return;
-        if (!monthMap[monthLabel]) monthMap[monthLabel] = { sum: 0, count: 0 };
-        monthMap[monthLabel].sum += item.value;
-        monthMap[monthLabel].count += 1;
-      });
+   const currentMonthLabel = weekToMonthLabel(week);
+const monthMap = {};
 
-      let historyLabels = Object.keys(monthMap);
-      let historyValues = historyLabels.map((label) => {
-        const m = monthMap[label];
-        return Number((m.sum / m.count).toFixed(2));
-      });
+sortedHistory.forEach((item) => {
+  const monthLabel = weekToMonthLabel(item.week);
+
+  if (!monthMap[monthLabel]) {
+    monthMap[monthLabel] = { sum: 0, count: 0 };
+  }
+
+  monthMap[monthLabel].sum += item.value;
+  monthMap[monthLabel].count += 1;
+});
+
+// also force the current input value into the current month
+if (currentValue !== null) {
+  monthMap[currentMonthLabel] = {
+    sum: currentValue,
+    count: 1
+  };
+}
+
+let historyLabels = Object.keys(monthMap).sort(
+  (a, b) => monthLabelToDate(a) - monthLabelToDate(b)
+);
+
+let historyValues = historyLabels.map((label) => {
+  const m = monthMap[label];
+  return Number((m.sum / m.count).toFixed(2));
+});
 
       const commentMonths = Object.keys(commentsByKpiMonth[kpi.kpi_id] || {});
       const correctiveActionMonths = Object.keys(correctiveActionsByKpiMonth[kpi.kpi_id] || {});
@@ -2718,13 +2824,7 @@ app.get("/form", async (req, res) => {
 
             <div class="kpi-left-panel">
               <div class="kpi-entry-card">
-                <div class="kpi-entry-top">
-                  <div>
-                    <div class="kpi-entry-eyebrow">Current KPI Entry</div>
-                    <div class="kpi-entry-title">Update This Month's Value</div>
-                  </div>
-                  ${kpi.unit ? `<div class="kpi-entry-unit">${kpi.unit}</div>` : ""}
-                </div>
+             
 
                 <div class="kpi-input-stack">
                   <label class="kpi-side-label" for="value_${kpi.kpi_values_id}">Current Value</label>
@@ -2771,11 +2871,11 @@ app.get("/form", async (req, res) => {
                 </div>
                     <!-- ── Unified card action bar ── -->
         <div class="kpi-card-actions">
-  <div class="kpi-card-actions-left">
-    <button
-      type="button"
-      class="card-action-btn card-action-btn--ai"
-      onclick="openAssistantForKpi('${kpi.kpi_values_id}')">
+       <div class="kpi-card-actions-left">
+        <button
+        type="button"
+        class="card-action-btn card-action-btn--ai"
+        onclick="openAssistantForKpi('${kpi.kpi_values_id}')">
       <span class="ai-btn-glow"></span>
       🤖 AI Support
     </button>
@@ -4129,6 +4229,59 @@ app.get("/form", async (req, res) => {
           let expandedChart = null;
           let expandedChartKpiValuesId = null;
 
+          async function refreshKpiChartFromServer(kvId) {
+  const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+  if (!card) return;
+
+  const responsibleId = new URLSearchParams(window.location.search).get("responsible_id");
+  const week = card.dataset.currentWeek;
+  const kpiId = card.dataset.kpiId;
+
+  if (!responsibleId || !week || !kpiId) return;
+
+  const url =
+    "/api/kpi-chart-data?responsible_id=" + encodeURIComponent(responsibleId) +
+    "&kpi_id=" + encodeURIComponent(kpiId) +
+    "&week=" + encodeURIComponent(week);
+
+  const res = await fetch(url);
+  if (!res.ok) return;
+
+  const data = await res.json();
+  if (!Array.isArray(data.labels) || !Array.isArray(data.values)) return;
+
+  card.dataset.historyLabels = JSON.stringify(data.labels);
+  card.dataset.historyValues = JSON.stringify(data.values);
+
+  const input = document.getElementById("value_" + kvId);
+  if (input && data.currentValue !== null) {
+    input.value = data.currentValue;
+  }
+
+  const chart = kpiCharts[kvId];
+  if (!chart) {
+    buildKpiChart(kvId);
+    return;
+  }
+
+  chart.data.labels = data.labels;
+  chart.data.datasets[0].data = data.values;
+  updateKpiChart(kvId);
+}
+
+
+         function startRealtimeCharts() {
+  document.querySelectorAll(".kpi-card").forEach(card => {
+    const kvId = card.dataset.kpiValuesId;
+    if (!kvId) return;
+
+    refreshKpiChartFromServer(kvId);
+
+    setInterval(() => {
+      refreshKpiChartFromServer(kvId);
+    }, 30000);
+  });
+}
           function formatChartValue(value) {
             const n = Number(value);
             if (!isFinite(n)) return "";
@@ -4283,6 +4436,66 @@ app.get("/form", async (req, res) => {
             chart.update();
             if (expandedChartKpiValuesId === kvId && expandedChart) syncExpandedChart(chart);
           }
+
+         function weekLabelToDateClient(weekStr) {
+  const m = String(weekStr || "").match(/^(\d{4})-Week(\d{1,2})$/);
+  if (!m) return new Date(0);
+
+  const year = parseInt(m[1], 10);
+  const weekNum = parseInt(m[2], 10);
+  return new Date(year, 0, 1 + (weekNum - 1) * 7);
+}
+
+function weekToMonthLabelClient(weekStr) {
+  const d = weekLabelToDateClient(weekStr);
+  if (isNaN(d.getTime())) return weekStr || "";
+  return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+
+          function updateCurrentMonthBarFromInput(kvId, rawValue) {
+  const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+  const chart = kpiCharts[kvId];
+  if (!card || !chart) return;
+
+  const value = parseFloat(rawValue);
+  const currentWeek = card.dataset.currentWeek;
+  const currentMonthLabel = weekToMonthLabelClient(currentWeek);
+
+  let labels = [];
+  let values = [];
+
+  try {
+    labels = JSON.parse(card.dataset.historyLabels || "[]");
+    values = JSON.parse(card.dataset.historyValues || "[]");
+  } catch (e) {
+    labels = [];
+    values = [];
+  }
+
+  const existingIndex = labels.indexOf(currentMonthLabel);
+
+  if (isNaN(value)) {
+    if (existingIndex >= 0) {
+      values[existingIndex] = null;
+    }
+  } else {
+    if (existingIndex >= 0) {
+      values[existingIndex] = value;
+    } else {
+      labels.push(currentMonthLabel);
+      values.push(value);
+    }
+  }
+
+  card.dataset.historyLabels = JSON.stringify(labels);
+  card.dataset.historyValues = JSON.stringify(values);
+
+  chart.data.labels = labels.slice();
+  chart.data.datasets[0].data = values.slice();
+
+  updateKpiChart(kvId);
+}
 
           function syncExpandedChart(src) {
             if (!expandedChart || !src) return;
@@ -4466,15 +4679,20 @@ if (actions.length) {
           /* ═══════════════════════════════════════════════
              DOM READY
           ═══════════════════════════════════════════════ */
-          document.addEventListener("DOMContentLoaded", () => {
-            // Value inputs
-            document.querySelectorAll(".value-input").forEach(input => {
-              const kvId = input.dataset.kpiValuesId;
-              checkLowLimit(input);
-              buildKpiChart(kvId);
-              input.addEventListener("input", function() { checkLowLimit(this); updateKpiChart(kvId); });
-            });
+        document.addEventListener("DOMContentLoaded", () => {
+  // Value inputs
+  document.querySelectorAll(".value-input").forEach(input => {
+    const kvId = input.dataset.kpiValuesId;
+    checkLowLimit(input);
+    buildKpiChart(kvId);
 
+    input.addEventListener("input", function() {
+      checkLowLimit(this);
+      updateCurrentMonthBarFromInput(kvId, this.value);
+    });
+  });
+
+  startRealtimeCharts();
             // Chart expand
             document.querySelectorAll(".kpi-chart-trigger").forEach(panel => {
               const kvId = panel.dataset.kpiValuesId;
