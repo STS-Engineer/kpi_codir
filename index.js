@@ -25,17 +25,17 @@ const pool = new Pool({
 });
 
 
-// cron.schedule('34 09 * * 1', async () => {
-//   console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
-//   try {
-//     await pool.query('SELECT public.update_kpi_week()');
-//     console.log('[CRON] ✅ kpi_values.week updated successfully');
-//   } catch (err) {
-//     console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
-//   }
-// }, {
-//   timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
-// });
+cron.schedule('34 09 * * 1', async () => {
+  console.log(`[CRON] Running KPI week update — ${new Date().toISOString()}`);
+  try {
+    await pool.query('SELECT public.update_kpi_week()');
+    console.log('[CRON] ✅ kpi_values.week updated successfully');
+  } catch (err) {
+    console.error('[CRON] ❌ Failed to update kpi_values.week:', err.message);
+  }
+}, {
+  timezone: 'Africa/Tunis'   // ← ensures 14:00 Tunis local time
+});
 
 // ============================================================
 // KPI DIRECTION + STATUS HELPERS
@@ -253,6 +253,211 @@ const normalizeText = (value) => {
   return text ? text : null;
 };
 
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const toArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null) return [];
+  return [value];
+};
+
+const getCorrectiveActionSortTime = (action = {}) => {
+  const rawValue =
+    action.updated_date ??
+    action.updatedDate ??
+    action.created_date ??
+    action.createdDate ??
+    null;
+
+  const timestamp = rawValue ? new Date(rawValue).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const sortCorrectiveActions = (actions = []) =>
+  [...actions].sort((a, b) => {
+    const timeDiff = getCorrectiveActionSortTime(a) - getCorrectiveActionSortTime(b);
+    if (timeDiff !== 0) return timeDiff;
+
+    const idA = parseInt(a.corrective_action_id ?? a.correctiveActionId ?? 0, 10);
+    const idB = parseInt(b.corrective_action_id ?? b.correctiveActionId ?? 0, 10);
+    return idA - idB;
+  });
+
+const getLatestCorrectiveAction = (actions = []) => {
+  const sorted = sortCorrectiveActions(actions);
+  return sorted.length ? sorted[sorted.length - 1] : null;
+};
+
+const hasMeaningfulCorrectiveActionInput = (action = {}) =>
+  Boolean(
+    normalizeText(action.correctiveActionId ?? action.corrective_action_id) ||
+    normalizeText(action.rootCause ?? action.root_cause) ||
+    normalizeText(action.implementedSolution ?? action.implemented_solution) ||
+    normalizeText(action.evidence) ||
+    normalizeText(action.dueDate ?? action.due_date)
+  );
+
+const getCorrectiveActionStatusValue = ({
+  rootCause,
+  implementedSolution,
+  evidence,
+  dueDate,
+  responsibleName
+}) => (
+  rootCause &&
+  implementedSolution &&
+  evidence &&
+  dueDate &&
+  normalizeText(responsibleName)
+)
+    ? "Waiting for validation"
+    : "Open";
+
+const readSubmittedFieldList = (formData, fieldName) =>
+  toArray(formData?.[`${fieldName}[]`] ?? formData?.[fieldName]);
+
+const getSubmittedCorrectiveActions = (formData, kpiValuesId, defaultResponsibleName = null) => {
+  const actionIds = readSubmittedFieldList(formData, `ca_action_id_${kpiValuesId}`);
+  const rootCauses = readSubmittedFieldList(formData, `root_cause_${kpiValuesId}`);
+  const implementedSolutions = readSubmittedFieldList(formData, `impl_solution_${kpiValuesId}`);
+  const evidences = readSubmittedFieldList(formData, `evidence_${kpiValuesId}`);
+  const dueDates = readSubmittedFieldList(formData, `due_date_${kpiValuesId}`);
+  const responsibleNames = readSubmittedFieldList(formData, `responsible_${kpiValuesId}`);
+
+  const actionCount = Math.max(
+    actionIds.length,
+    rootCauses.length,
+    implementedSolutions.length,
+    evidences.length,
+    dueDates.length,
+    responsibleNames.length
+  );
+
+  return Array.from({ length: actionCount }, (_, index) => ({
+    correctiveActionId: normalizeText(actionIds[index]),
+    rootCause: normalizeText(rootCauses[index]),
+    implementedSolution: normalizeText(implementedSolutions[index]),
+    evidence: normalizeText(evidences[index]),
+    dueDate: normalizeText(dueDates[index]),
+    responsibleName:
+      normalizeText(responsibleNames[index]) ||
+      normalizeText(defaultResponsibleName)
+  }));
+};
+
+const buildCorrectiveActionEntryHtml = ({
+  kpiValuesId,
+  actionIndex,
+  action = {},
+  defaultResponsibleName = "",
+  showRequired = false
+}) => {
+  const correctiveActionId = action.corrective_action_id ?? action.correctiveActionId ?? "";
+  const rootCause = action.root_cause ?? action.rootCause ?? "";
+  const implementedSolution = action.implemented_solution ?? action.implementedSolution ?? "";
+  const evidence = action.evidence ?? "";
+  const dueDate = formatInputDate(action.due_date ?? action.dueDate);
+  const responsibleName = action.responsible ?? action.responsibleName ?? defaultResponsibleName ?? "";
+  const statusText = normalizeText(action.status) || (correctiveActionId ? "Open" : "");
+  const safeStatusClass = String(statusText || "")
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+  const requiredAttr = showRequired ? "required" : "";
+  const removeButtonClass = correctiveActionId ? "ca-remove-btn is-hidden" : "ca-remove-btn";
+
+  return `
+    <div class="ca-action-card" data-existing-action="${correctiveActionId ? "1" : "0"}">
+      <input type="hidden" name="ca_action_id_${kpiValuesId}[]" value="${escapeHtml(correctiveActionId)}" />
+
+      <div class="ca-action-head">
+        <div class="ca-action-title">
+          Action <span class="ca-action-number">${actionIndex + 1}</span>
+        </div>
+
+        <div class="ca-action-tools">
+          ${statusText ? `<span class="ca-status-badge ca-status-${safeStatusClass}">${escapeHtml(statusText)}</span>` : ""}
+          <button type="button" class="${removeButtonClass}">Remove</button>
+        </div>
+      </div>
+
+      <div class="ca-dates-grid">
+        <div class="ca-field">
+          <label class="ca-label">
+            Due Date <span class="ca-required">*</span>
+          </label>
+          <input
+            type="date"
+            name="due_date_${kpiValuesId}[]"
+            class="ca-date-input ca-required-field"
+            data-ca-field="due_date"
+            value="${escapeHtml(dueDate)}"
+            ${requiredAttr}
+          />
+        </div>
+
+        <div class="ca-field">
+          <label class="ca-label">
+            Responsible <span class="ca-required">*</span>
+          </label>
+          <input
+            type="text"
+            name="responsible_${kpiValuesId}[]"
+            class="ca-text-input ca-required-field"
+            data-ca-field="responsible"
+            value="${escapeHtml(responsibleName)}"
+            ${requiredAttr}
+          />
+        </div>
+      </div>
+
+      <div class="ca-field">
+        <label class="ca-label">
+          Root Cause Analysis <span class="ca-required">*</span>
+        </label>
+        <textarea
+          name="root_cause_${kpiValuesId}[]"
+          class="ca-textarea ca-required-field"
+          data-ca-field="root_cause"
+          placeholder="Describe the root cause..."
+          ${requiredAttr}
+        >${escapeHtml(rootCause)}</textarea>
+      </div>
+
+      <div class="ca-field">
+        <label class="ca-label">
+          Implemented Solution <span class="ca-required">*</span>
+        </label>
+        <textarea
+          name="impl_solution_${kpiValuesId}[]"
+          class="ca-textarea ca-required-field"
+          data-ca-field="impl_solution"
+          placeholder="Describe the implemented solution..."
+          ${requiredAttr}
+        >${escapeHtml(implementedSolution)}</textarea>
+      </div>
+
+      <div class="ca-field">
+        <label class="ca-label">
+          Evidence of Improvement <span class="ca-required">*</span>
+        </label>
+        <textarea
+          name="evidence_${kpiValuesId}[]"
+          class="ca-textarea ca-required-field"
+          data-ca-field="evidence"
+          placeholder="Provide evidence showing the improvement..."
+          ${requiredAttr}
+        >${escapeHtml(evidence)}</textarea>
+      </div>
+    </div>
+  `;
+};
+
 const buildAssistantKpiContext = (kpis = []) =>
   kpis.slice(0, 30).map((kpi) => ({
     kpi_id: kpi.kpi_id ?? null,
@@ -272,7 +477,18 @@ const buildAssistantKpiContext = (kpis = []) =>
     evidence: normalizeText(kpi.evidence),
     good_direction: normalizeText(kpi.good_direction) || inferKpiDirection(kpi),
     due_date: normalizeText(kpi.due_date),
-    responsible: normalizeText(kpi.responsible)
+    responsible: normalizeText(kpi.responsible),
+    corrective_actions: Array.isArray(kpi.corrective_actions)
+      ? kpi.corrective_actions.slice(0, 5).map((action) => ({
+        corrective_action_id: action.corrective_action_id ?? action.correctiveActionId ?? null,
+        root_cause: normalizeText(action.root_cause ?? action.rootCause),
+        implemented_solution: normalizeText(action.implemented_solution ?? action.implementedSolution),
+        evidence: normalizeText(action.evidence),
+        due_date: normalizeText(action.due_date ?? action.dueDate),
+        responsible: normalizeText(action.responsible ?? action.responsibleName),
+        status: normalizeText(action.status)
+      }))
+      : []
   }));
 
 const generateKpiAssistantReply = async ({
@@ -371,26 +587,51 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
            (SELECT h.comment FROM public.kpi_values_hist26 h
             WHERE h.kpi_values_id = kv.kpi_values_id
               AND h.responsible_id = $1 AND h.week = $2
-            ORDER BY h.updated_at DESC LIMIT 1) as latest_comment,
-           -- Corrective action fields from corrective_actions table
-           ca.corrective_action_id,
-           ca.root_cause       AS ca_root_cause,
-           ca.implemented_solution AS ca_implemented_solution,
-           ca.evidence         AS ca_evidence,
-           ca.status           AS ca_status,
-           ca.due_date         AS ca_due_date,
-           ca.responsible      AS ca_responsible_name
+            ORDER BY h.updated_at DESC LIMIT 1) as latest_comment
     FROM public.kpi_values kv
     JOIN "Kpi" k ON kv.kpi_id = k.kpi_id
-    LEFT JOIN public.corrective_actions ca
-           ON ca.kpi_id = kv.kpi_id
-          AND ca.responsible_id = $1
-          AND ca.week = $2
     WHERE kv.responsible_id = $1 AND kv.week = $2
     ORDER BY k.kpi_id ASC`,
     [responsibleId, week]
   );
-  return { responsible, kpis: kpiRes.rows };
+
+  const correctiveActionsRes = await pool.query(
+    `SELECT corrective_action_id, responsible_id, kpi_id, week,
+            root_cause, implemented_solution, evidence,
+            status, created_date, updated_date, due_date, responsible
+     FROM public.corrective_actions
+     WHERE responsible_id = $1 AND week = $2
+     ORDER BY kpi_id ASC, COALESCE(updated_date, created_date) ASC, corrective_action_id ASC`,
+    [responsibleId, week]
+  );
+
+  const actionsByKpiId = {};
+  correctiveActionsRes.rows.forEach((action) => {
+    if (!actionsByKpiId[action.kpi_id]) {
+      actionsByKpiId[action.kpi_id] = [];
+    }
+    actionsByKpiId[action.kpi_id].push(action);
+  });
+
+  const kpis = kpiRes.rows.map((kpi) => {
+    const correctiveActions = sortCorrectiveActions(actionsByKpiId[kpi.kpi_id] || []);
+    const latestCorrectiveAction = getLatestCorrectiveAction(correctiveActions);
+
+    return {
+      ...kpi,
+      corrective_actions: correctiveActions,
+      corrective_action_count: correctiveActions.length,
+      corrective_action_id: latestCorrectiveAction?.corrective_action_id ?? null,
+      ca_root_cause: latestCorrectiveAction?.root_cause ?? "",
+      ca_implemented_solution: latestCorrectiveAction?.implemented_solution ?? "",
+      ca_evidence: latestCorrectiveAction?.evidence ?? "",
+      ca_status: latestCorrectiveAction?.status ?? "",
+      ca_due_date: latestCorrectiveAction?.due_date ?? null,
+      ca_responsible_name: latestCorrectiveAction?.responsible ?? ""
+    };
+  });
+
+  return { responsible, kpis };
 };
 
 const generateEmailHtml = ({ responsible, week }) => {
@@ -492,74 +733,68 @@ const upsertCorrectiveAction = async (
   responsibleId,
   kpiId,
   week,
-  { rootCause, implementedSolution, evidence, dueDate, responsibleName }
+  { correctiveActionId, rootCause, implementedSolution, evidence, dueDate, responsibleName }
 ) => {
   try {
-    const result = await pool.query(
-      `UPDATE public.corrective_actions
-       SET root_cause = $4::text,
-           implemented_solution = $5::text,
-           evidence = $6::text,
-           due_date = $7::date,
-           responsible = $8::text,
-           status = CASE
-             WHEN $4::text IS NOT NULL
-              AND $5::text IS NOT NULL
-              AND $6::text IS NOT NULL
-              AND $7::date IS NOT NULL
-              AND NULLIF(BTRIM($8::text), '') IS NOT NULL
-             THEN 'Waiting for validation'
-             ELSE status
-           END,
-           updated_date = NOW()
-       WHERE responsible_id = $1
-         AND kpi_id = $2
-         AND week = $3
-       RETURNING corrective_action_id`,
+    const normalizedPayload = {
+      rootCause: normalizeText(rootCause),
+      implementedSolution: normalizeText(implementedSolution),
+      evidence: normalizeText(evidence),
+      dueDate: normalizeText(dueDate),
+      responsibleName: normalizeText(responsibleName)
+    };
+    const status = getCorrectiveActionStatusValue(normalizedPayload);
+
+    if (normalizeText(correctiveActionId)) {
+      const result = await pool.query(
+        `UPDATE public.corrective_actions
+         SET root_cause = $2::text,
+             implemented_solution = $3::text,
+             evidence = $4::text,
+             due_date = $5::date,
+             responsible = $6::text,
+             status = $7::text,
+             updated_date = NOW()
+         WHERE corrective_action_id = $1
+         RETURNING corrective_action_id`,
+        [
+          correctiveActionId,
+          normalizedPayload.rootCause,
+          normalizedPayload.implementedSolution,
+          normalizedPayload.evidence,
+          normalizedPayload.dueDate,
+          normalizedPayload.responsibleName,
+          status
+        ]
+      );
+
+      if (result.rowCount > 0) {
+        return true;
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO public.corrective_actions
+       (
+         responsible_id, kpi_id, week,
+         root_cause, implemented_solution, evidence,
+         due_date, responsible, status
+       )
+       VALUES (
+         $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::text,$9::text
+       )`,
       [
         responsibleId,
         kpiId,
         week,
-        rootCause || null,
-        implementedSolution || null,
-        evidence || null,
-        dueDate || null,
-        responsibleName || null
+        normalizedPayload.rootCause,
+        normalizedPayload.implementedSolution,
+        normalizedPayload.evidence,
+        normalizedPayload.dueDate,
+        normalizedPayload.responsibleName,
+        status
       ]
     );
-
-    if (result.rowCount === 0) {
-      await pool.query(
-        `INSERT INTO public.corrective_actions
-         (
-           responsible_id, kpi_id, week,
-           root_cause, implemented_solution, evidence,
-           due_date, responsible, status
-         )
-         VALUES (
-           $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::text,
-           CASE
-             WHEN $4::text IS NOT NULL
-              AND $5::text IS NOT NULL
-              AND $6::text IS NOT NULL
-              AND $7::date IS NOT NULL
-              AND NULLIF(BTRIM($8::text), '') IS NOT NULL
-             THEN 'Waiting for validation'
-             ELSE 'Open'
-           END
-         )`,
-        [
-          responsibleId,
-          kpiId,
-          week,
-          rootCause || null,
-          implementedSolution || null,
-          evidence || null,
-          dueDate || null,
-          responsibleName || null
-        ]
-      );
-    }
 
     return true;
   } catch (err) {
@@ -765,6 +1000,10 @@ app.get("/corrective-actions-list", async (req, res) => {
     const actionsRes = await pool.query(
       `SELECT
          ca.*,
+         ROW_NUMBER() OVER (
+           PARTITION BY ca.kpi_id, ca.week
+           ORDER BY COALESCE(ca.updated_date, ca.created_date) ASC, ca.corrective_action_id ASC
+         ) AS action_number,
          k.subject AS indicator_title,
          k.indicator_sub_title,
          k.unit,
@@ -855,6 +1094,7 @@ app.get("/corrective-actions-list", async (req, res) => {
               <div class="ca-card-top">
                 <div>
                   <div class="ca-kpi-title">${escapeHtml(a.indicator_title)}</div>
+                  <div class="ca-kpi-subtitle">Action ${escapeHtml(a.action_number || 1)}</div>
                   ${a.indicator_sub_title
             ? `<div class="ca-kpi-subtitle">${escapeHtml(a.indicator_sub_title)}</div>`
             : ""}
@@ -910,7 +1150,7 @@ app.get("/corrective-actions-list", async (req, res) => {
                 </div>
 
                 <a class="view-btn"
-                   href="/corrective-action-form?responsible_id=${encodeURIComponent(responsible_id)}&kpi_id=${encodeURIComponent(a.kpi_id)}&week=${encodeURIComponent(a.week)}">
+                   href="/corrective-action-form?responsible_id=${encodeURIComponent(responsible_id)}&kpi_id=${encodeURIComponent(a.kpi_id)}&week=${encodeURIComponent(a.week)}&corrective_action_id=${encodeURIComponent(a.corrective_action_id)}">
                   ${a.status === "Open" ? "Complete Action" : "View Corrective Action"}
                 </a>
               </div>
@@ -1173,7 +1413,7 @@ app.get("/corrective-actions-list", async (req, res) => {
 
 app.get("/corrective-action-form", async (req, res) => {
   try {
-    const { responsible_id, kpi_id, week } = req.query;
+    const { responsible_id, kpi_id, week, corrective_action_id, new_action } = req.query;
 
     if (!responsible_id || !kpi_id || !week) {
       return res.status(400).send("Missing responsible_id, kpi_id, or week");
@@ -1218,18 +1458,32 @@ app.get("/corrective-action-form", async (req, res) => {
       return res.status(404).send("KPI not found");
     }
 
-    const existingCARes = await pool.query(
-      `SELECT *
-       FROM public.corrective_actions
-       WHERE responsible_id = $1
-         AND kpi_id = $2
-         AND week = $3
-       ORDER BY created_date DESC
-       LIMIT 1`,
-      [responsible_id, kpi_id, week]
-    );
-
-    const ed = existingCARes.rows[0] || {};
+    let ed = {};
+    if (corrective_action_id) {
+      const existingCARes = await pool.query(
+        `SELECT *
+         FROM public.corrective_actions
+         WHERE corrective_action_id = $1
+           AND responsible_id = $2
+           AND kpi_id = $3
+           AND week = $4
+         LIMIT 1`,
+        [corrective_action_id, responsible_id, kpi_id, week]
+      );
+      ed = existingCARes.rows[0] || {};
+    } else if (String(new_action || "") !== "1") {
+      const existingCARes = await pool.query(
+        `SELECT *
+         FROM public.corrective_actions
+         WHERE responsible_id = $1
+           AND kpi_id = $2
+           AND week = $3
+         ORDER BY COALESCE(updated_date, created_date) DESC, corrective_action_id DESC
+         LIMIT 1`,
+        [responsible_id, kpi_id, week]
+      );
+      ed = existingCARes.rows[0] || {};
+    }
 
     const escapeHtml = (value) =>
       String(value ?? "")
@@ -1247,6 +1501,12 @@ app.get("/corrective-action-form", async (req, res) => {
     })();
 
     const defaultResponsibleName = escapeHtml(ed.responsible || responsible.name || "");
+    const actionTitle = ed.corrective_action_id
+      ? `Corrective Action #${escapeHtml(ed.corrective_action_id)}`
+      : "New Corrective Action";
+    const submitLabel = ed.corrective_action_id
+      ? "Update Corrective Action"
+      : "Create Corrective Action";
 
     res.send(`
       <!DOCTYPE html>
@@ -1424,7 +1684,7 @@ app.get("/corrective-action-form", async (req, res) => {
       <body>
         <div class="container">
           <div class="header">
-            <h1>Corrective Action Form</h1>
+            <h1>${actionTitle}</h1>
             <div class="sub">
               <div><strong>Week:</strong> ${escapeHtml(week)}</div>
               <div><strong>Responsible:</strong> ${escapeHtml(responsible.name)}</div>
@@ -1516,7 +1776,11 @@ app.get("/corrective-action-form", async (req, res) => {
   <textarea id="evidence" name="evidence" required>${escapeHtml(ed.evidence || "")}</textarea>
 </div>
               <div class="actions">
-                <button type="submit" class="submit-btn">Submit Corrective Action</button>
+                <button type="submit" class="submit-btn">${submitLabel}</button>
+                <a class="back-btn"
+                   href="/corrective-action-form?responsible_id=${encodeURIComponent(responsible_id)}&kpi_id=${encodeURIComponent(kpi_id)}&week=${encodeURIComponent(week)}&new_action=1">
+                  Add New Action
+                </a>
                 <a class="back-btn"
                    href="/corrective-actions-list?responsible_id=${encodeURIComponent(responsible_id)}">
                   Back to Corrective Actions
@@ -1549,6 +1813,7 @@ app.post("/submit-corrective-action", async (req, res) => {
       responsible_id,
       kpi_id,
       week,
+      corrective_action_id,
       root_cause,
       implemented_solution,
       evidence,
@@ -1561,6 +1826,7 @@ app.post("/submit-corrective-action", async (req, res) => {
     }
 
     const saved = await upsertCorrectiveAction(responsible_id, kpi_id, week, {
+      correctiveActionId: normalizeText(corrective_action_id),
       rootCause: normalizeText(root_cause),
       implementedSolution: normalizeText(implemented_solution),
       evidence: normalizeText(evidence),
@@ -2050,28 +2316,6 @@ app.post("/redirect", async (req, res) => {
       .filter(([k]) => k.startsWith("comment_"))
       .reduce((acc, [k, v]) => { acc[k.split("_")[1]] = v; return acc; }, {});
 
-    // Extract corrective action fields keyed by kpi_values_id
-    // Fields: root_cause_{kpi_values_id}, impl_solution_{kpi_values_id}, evidence_{kpi_values_id}
-    const rootCauses = Object.entries(values)
-      .filter(([k]) => k.startsWith("root_cause_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("root_cause_", "")] = v; return acc; }, {});
-
-    const implSolutions = Object.entries(values)
-      .filter(([k]) => k.startsWith("impl_solution_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("impl_solution_", "")] = v; return acc; }, {});
-
-    const evidences = Object.entries(values)
-      .filter(([k]) => k.startsWith("evidence_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("evidence_", "")] = v; return acc; }, {});
-
-    const dueDates = Object.entries(values)
-      .filter(([k]) => k.startsWith("due_date_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("due_date_", "")] = v; return acc; }, {});
-
-    const actionResponsibles = Object.entries(values)
-      .filter(([k]) => k.startsWith("responsible_"))
-      .reduce((acc, [k, v]) => { acc[k.replace("responsible_", "")] = v; return acc; }, {});
-
     const responsibleRes = await pool.query(
       `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
       [responsible_id]
@@ -2102,14 +2346,11 @@ app.post("/redirect", async (req, res) => {
       const highLimit = parseMetricNumber(kpiInfo.high_limit);
       const goodDirection = inferKpiDirection(kpiInfo);
       const numValue = parseFloat(item.value);
-
-      const rc = normalizeText(rootCauses[item.kpi_values_id]);
-      const is_ = normalizeText(implSolutions[item.kpi_values_id]);
-      const ev = normalizeText(evidences[item.kpi_values_id]);
-      const dueDate = dueDates[item.kpi_values_id] || null;
-      const actionResponsible =
-        normalizeText(actionResponsibles[item.kpi_values_id]) ||
-        normalizeText(defaultResponsibleName);
+      const submittedActions = getSubmittedCorrectiveActions(
+        values,
+        item.kpi_values_id,
+        defaultResponsibleName
+      );
       await pool.query(
         `INSERT INTO public.kpi_values_hist26
          (kpi_values_id, responsible_id, kpi_id, week, old_value, new_value, comment)
@@ -2131,15 +2372,13 @@ app.post("/redirect", async (req, res) => {
         !isNaN(numValue) &&
         needsCorrectiveAction(numValue, lowLimit, highLimit, goodDirection)
       ) {
-        if (rc || is_ || ev || dueDate || actionResponsible) {
-          await upsertCorrectiveAction(responsible_id, kpi_id, week, {
-            rootCause: rc,
-            implementedSolution: is_,
-            evidence: ev,
-            dueDate,
-            responsibleName: actionResponsible
-          });
-          correctiveActionsCount++;
+        const meaningfulActions = submittedActions.filter(hasMeaningfulCorrectiveActionInput);
+
+        if (meaningfulActions.length) {
+          for (const action of meaningfulActions) {
+            await upsertCorrectiveAction(responsible_id, kpi_id, week, action);
+            correctiveActionsCount++;
+          }
         } else {
           // Create an Open corrective action record (without content) if none exists
           const existing = await pool.query(
@@ -2152,7 +2391,7 @@ app.post("/redirect", async (req, res) => {
               `INSERT INTO public.corrective_actions
              (responsible_id, kpi_id, week, status, due_date, responsible)
               VALUES ($1, $2, $3, 'Open', CURRENT_DATE + 7, $4)`,
-              [responsible_id, kpi_id, week, actionResponsible]
+              [responsible_id, kpi_id, week, normalizeText(defaultResponsibleName)]
             );
           }
         }
@@ -2255,7 +2494,6 @@ app.get("/form", async (req, res) => {
 
     function findPreviousMonthLabel(currentMonthLabel, labels) {
       const currentDate = monthLabelToDate(currentMonthLabel);
-
       return Array.from(new Set((labels || []).filter(Boolean)))
         .sort((a, b) => monthLabelToDate(a) - monthLabelToDate(b))
         .filter((label) => monthLabelToDate(label) < currentDate)
@@ -2306,7 +2544,6 @@ app.get("/form", async (req, res) => {
       const monthLabel = weekToMonthLabel(row.week);
       if (!commentsByKpiMonth[row.kpi_id]) commentsByKpiMonth[row.kpi_id] = {};
       if (!commentsByKpiMonth[row.kpi_id][monthLabel]) commentsByKpiMonth[row.kpi_id][monthLabel] = [];
-
       commentsByKpiMonth[row.kpi_id][monthLabel].push({
         week: row.week,
         month_label: monthLabel,
@@ -2320,105 +2557,91 @@ app.get("/form", async (req, res) => {
       const monthLabel = weekToMonthLabel(row.week);
       const updatedAt = row.updated_date || row.created_date || null;
 
-      if (!correctiveActionsByKpiMonth[row.kpi_id]) correctiveActionsByKpiMonth[row.kpi_id] = {};
-
-      const existingAction = correctiveActionsByKpiMonth[row.kpi_id][monthLabel];
-      const existingTimestamp = existingAction && existingAction.updated_at
-        ? new Date(existingAction.updated_at).getTime()
-        : 0;
-      const rowTimestamp = updatedAt ? new Date(updatedAt).getTime() : 0;
-
-      if (!existingAction || rowTimestamp >= existingTimestamp) {
-        correctiveActionsByKpiMonth[row.kpi_id][monthLabel] = {
-          week: row.week,
-          month_label: monthLabel,
-          status: row.status || "",
-          root_cause: row.root_cause || "",
-          implemented_solution: row.implemented_solution || "",
-          evidence: row.evidence || "",
-          due_date: row.due_date || "",
-          responsible: row.responsible || "",
-          updated_at: updatedAt
-        };
+      if (!correctiveActionsByKpiMonth[row.kpi_id]) {
+        correctiveActionsByKpiMonth[row.kpi_id] = {};
       }
+
+      if (!correctiveActionsByKpiMonth[row.kpi_id][monthLabel]) {
+        correctiveActionsByKpiMonth[row.kpi_id][monthLabel] = [];
+      }
+
+      correctiveActionsByKpiMonth[row.kpi_id][monthLabel].push({
+        week: row.week,
+        month_label: monthLabel,
+        status: row.status || "",
+        root_cause: row.root_cause || "",
+        implemented_solution: row.implemented_solution || "",
+        evidence: row.evidence || "",
+        due_date: row.due_date || "",
+        responsible: row.responsible || "",
+        updated_at: updatedAt
+      });
+    });
+
+    // optional: sort newest first
+    Object.keys(correctiveActionsByKpiMonth).forEach((kpiId) => {
+      Object.keys(correctiveActionsByKpiMonth[kpiId]).forEach((monthLabel) => {
+        correctiveActionsByKpiMonth[kpiId][monthLabel].sort((a, b) => {
+          return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
+        });
+      });
     });
 
     let kpiCardsHtml = "";
 
     kpis.forEach((kpi) => {
       let lowLimit = null;
-      if (
-        kpi.low_limit &&
-        kpi.low_limit !== "None" &&
-        kpi.low_limit !== "null" &&
-        kpi.low_limit !== "" &&
-        !isNaN(parseFloat(kpi.low_limit))
-      ) {
+      if (kpi.low_limit && kpi.low_limit !== "None" && kpi.low_limit !== "null" && kpi.low_limit !== "" && !isNaN(parseFloat(kpi.low_limit))) {
         lowLimit = parseFloat(kpi.low_limit);
       }
-
       let highLimit = null;
-      if (
-        kpi.high_limit &&
-        kpi.high_limit !== "None" &&
-        kpi.high_limit !== "null" &&
-        kpi.high_limit !== "" &&
-        !isNaN(parseFloat(kpi.high_limit))
-      ) {
+      if (kpi.high_limit && kpi.high_limit !== "None" && kpi.high_limit !== "null" && kpi.high_limit !== "" && !isNaN(parseFloat(kpi.high_limit))) {
         highLimit = parseFloat(kpi.high_limit);
       }
-
       let targetValue = null;
-      if (
-        kpi.target &&
-        kpi.target !== "None" &&
-        kpi.target !== "null" &&
-        kpi.target !== "" &&
-        !isNaN(parseFloat(kpi.target))
-      ) {
+      if (kpi.target && kpi.target !== "None" && kpi.target !== "null" && kpi.target !== "" && !isNaN(parseFloat(kpi.target))) {
         targetValue = parseFloat(kpi.target);
       }
 
-      const currentValue =
-        kpi.value && kpi.value !== "" && !isNaN(parseFloat(kpi.value))
-          ? parseFloat(kpi.value)
-          : null;
+      const currentValue = kpi.value && kpi.value !== "" && !isNaN(parseFloat(kpi.value))
+        ? parseFloat(kpi.value) : null;
 
       const goodDirection = inferKpiDirection(kpi);
       const showCA = currentValue !== null &&
         needsCorrectiveAction(currentValue, lowLimit, highLimit, goodDirection);
+      const correctiveActions = sortCorrectiveActions(
+        Array.isArray(kpi.corrective_actions) ? kpi.corrective_actions : []
+      );
+      const latestCorrectiveAction = getLatestCorrectiveAction(correctiveActions);
+      const caStatus = latestCorrectiveAction?.status || "";
+      const safeCaStatusClass = String(caStatus || "").toLowerCase().replace(/\s+/g, "-");
+      const correctiveActionsToRender = correctiveActions.length ? correctiveActions : [{
+        responsible: responsible.name || ""
+      }];
+      const correctiveActionsHtml = correctiveActionsToRender
+        .map((action, actionIndex) => buildCorrectiveActionEntryHtml({
+          kpiValuesId: kpi.kpi_values_id,
+          actionIndex,
+          action,
+          defaultResponsibleName: responsible.name || "",
+          showRequired: showCA
+        }))
+        .join("");
 
-      const existingRC = kpi.ca_root_cause || "";
-      const existingIS = kpi.ca_implemented_solution || "";
-      const existingEV = kpi.ca_evidence || "";
-      const caStatus = kpi.ca_status || "";
+      // ── Corrective actions section (no footer add-btn inside) ──
 
-      const dueDateValue = kpi.ca_due_date
-        ? new Date(kpi.ca_due_date).toISOString().split("T")[0]
-        : "";
-
-      const responsibleValue = kpi.ca_responsible_name || responsible.name || "";
-      const safeResponsibleValue = String(responsibleValue)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
-      const safeCaStatusClass = String(caStatus || "")
-        .toLowerCase()
-        .replace(/\s+/g, "-");
 
       const rawHistory = historyByKpi[kpi.kpi_id] || [];
       const sortedHistory = rawHistory
         .filter((h) => !isNaN(h.value))
         .sort((a, b) => weekLabelToDate(a.week) - weekLabelToDate(b.week));
 
+      const currentMonthLabel = weekToMonthLabel(week);
       const monthMap = {};
       sortedHistory.forEach((item) => {
         const monthLabel = weekToMonthLabel(item.week);
-        if (!monthMap[monthLabel]) {
-          monthMap[monthLabel] = { sum: 0, count: 0 };
-        }
+        if (monthLabel === currentMonthLabel) return;
+        if (!monthMap[monthLabel]) monthMap[monthLabel] = { sum: 0, count: 0 };
         monthMap[monthLabel].sum += item.value;
         monthMap[monthLabel].count += 1;
       });
@@ -2429,55 +2652,39 @@ app.get("/form", async (req, res) => {
         return Number((m.sum / m.count).toFixed(2));
       });
 
-      const currentMonthLabel = weekToMonthLabel(week);
-
-      if (!historyLabels.length) {
-        historyLabels = [currentMonthLabel];
-        historyValues = [currentValue];
-      } else {
-        const currentMonthIndex = historyLabels.indexOf(currentMonthLabel);
-
-        if (currentMonthIndex === -1) {
-          historyLabels.push(currentMonthLabel);
-          historyValues.push(currentValue);
-        } else if (currentValue !== null) {
-          historyValues[currentMonthIndex] = currentValue;
-        }
-      }
-
       const commentMonths = Object.keys(commentsByKpiMonth[kpi.kpi_id] || {});
       const correctiveActionMonths = Object.keys(correctiveActionsByKpiMonth[kpi.kpi_id] || {});
       const previousMonthLabel = findPreviousMonthLabel(
         currentMonthLabel,
         historyLabels.concat(commentMonths, correctiveActionMonths)
       );
-      const previousMonthAction = previousMonthLabel
-        ? correctiveActionsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || null
-        : null;
+      const previousMonthActions = previousMonthLabel
+        ? correctiveActionsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || []
+        : [];
       const previousMonthComments = previousMonthLabel
         ? (commentsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || [])
-            .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+          .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
         : [];
       const hasPreviousMonthDetails = Boolean(
-        previousMonthAction ||
+        (previousMonthActions && previousMonthActions.length) ||
         (previousMonthComments && previousMonthComments.length)
       );
 
       kpiCardsHtml += `
-        <div class="kpi-card"
-             data-kpi-id="${kpi.kpi_id}"
-             data-kpi-values-id="${kpi.kpi_values_id}"
-             data-low-limit="${lowLimit !== null ? lowLimit : ""}"
-             data-high-limit="${highLimit !== null ? highLimit : ""}"
-             data-good-direction="${goodDirection}"
-             data-target="${targetValue !== null ? targetValue : ""}"
-             data-history-labels='${JSON.stringify(historyLabels)}'
-             data-history-values='${JSON.stringify(historyValues)}'
-             data-current-week="${week}"
-             data-unit="${kpi.unit || ""}"
-             data-prev-month-label="${previousMonthLabel || ""}"
-             data-prev-month-action="${encodeModalPayload(previousMonthAction)}"
-             data-prev-month-comments="${encodeModalPayload(previousMonthComments)}">
+       <div class="kpi-card"
+        data-kpi-id="${kpi.kpi_id}"
+       data-kpi-values-id="${kpi.kpi_values_id}"
+       data-low-limit="${lowLimit !== null ? lowLimit : ""}"
+       data-high-limit="${highLimit !== null ? highLimit : ""}"
+       data-good-direction="${goodDirection}"
+       data-target="${targetValue !== null ? targetValue : ""}"
+       data-history-labels='${JSON.stringify(historyLabels)}'
+       data-history-values='${JSON.stringify(historyValues)}'
+       data-current-week="${week}"
+       data-unit="${kpi.unit || ""}"
+      data-prev-month-label="${previousMonthLabel || ""}"
+      data-prev-month-actions="${encodeModalPayload(previousMonthActions)}"
+      data-prev-month-comments="${encodeModalPayload(previousMonthComments)}">
 
           <div class="kpi-header">
             <div>
@@ -2486,224 +2693,58 @@ app.get("/form", async (req, res) => {
             </div>
           </div>
 
-         <div class="kpi-split-layout">
-        <div class="kpi-right-panel kpi-chart-trigger"
-             data-kpi-values-id="${kpi.kpi_values_id}"
-             role="button"
-             tabindex="0"
-             title="Click to expand chart"
-             aria-label="Expand KPI chart">
-           <button
-             type="button"
-             class="chart-expand-btn"
-             data-kpi-values-id="${kpi.kpi_values_id}"
-             aria-label="Expand KPI chart"
-             title="Expand chart"
-           >
-             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-               <path d="M9 3H3v6"></path>
-               <path d="M15 3h6v6"></path>
-               <path d="M21 15v6h-6"></path>
-               <path d="M9 21H3v-6"></path>
-             </svg>
-           </button>
-           <canvas id="chart_${kpi.kpi_values_id}"></canvas>
+          <div class="kpi-split-layout">
+            <div class="kpi-right-panel kpi-chart-trigger"
+                 data-kpi-values-id="${kpi.kpi_values_id}"
+                 role="button"
+                 tabindex="0"
+                 title="Click to expand chart"
+                 aria-label="Expand KPI chart">
+              <button
+                type="button"
+                class="chart-expand-btn"
+                data-kpi-values-id="${kpi.kpi_values_id}"
+                aria-label="Expand KPI chart"
+                title="Expand chart">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M9 3H3v6"></path>
+                  <path d="M15 3h6v6"></path>
+                  <path d="M21 15v6h-6"></path>
+                  <path d="M9 21H3v-6"></path>
+                </svg>
+              </button>
+              <canvas id="chart_${kpi.kpi_values_id}"></canvas>
             </div>
 
-          <div class="kpi-left-panel">
-            <div class="kpi-entry-card">
-              <div class="kpi-entry-top">
+            <div class="kpi-left-panel">
+              <div class="kpi-entry-card">
+                <div class="kpi-entry-top">
+                  <div>
+                    <div class="kpi-entry-eyebrow">Current KPI Entry</div>
+                    <div class="kpi-entry-title">Update This Month's Value</div>
+                  </div>
+                  ${kpi.unit ? `<div class="kpi-entry-unit">${kpi.unit}</div>` : ""}
+                </div>
+
+                <div class="kpi-input-stack">
+                  <label class="kpi-side-label" for="value_${kpi.kpi_values_id}">Current Value</label>
+                  <div class="kpi-input-shell ${kpi.unit ? "has-unit" : ""}">
+                    <input
+                      type="number"
+                      step="any"
+                      id="value_${kpi.kpi_values_id}"
+                      name="value_${kpi.kpi_values_id}"
+                      value="${kpi.value ?? ""}"
+                      placeholder="Enter value"
+                      class="kpi-input value-input"
+                      data-kpi-values-id="${kpi.kpi_values_id}"
+                      required
+                    />
+                    ${kpi.unit ? `<span class="kpi-input-unit">${kpi.unit}</span>` : ""}
+                  </div>
+                </div>
                 <div>
-                  <div class="kpi-entry-eyebrow">Current KPI Entry</div>
-                  <div class="kpi-entry-title">Update This Month's Value</div>
-                </div>
-                ${kpi.unit ? `<div class="kpi-entry-unit">${kpi.unit}</div>` : ""}
-              </div>
-
-              <div class="kpi-input-stack">
-                <label class="kpi-side-label" for="value_${kpi.kpi_values_id}">
-                  Current Value
-                </label>
-                <div class="kpi-input-shell ${kpi.unit ? "has-unit" : ""}">
-                  <input
-                   type="number"
-                    step="any"
-                     id="value_${kpi.kpi_values_id}"
-                     name="value_${kpi.kpi_values_id}"
-                    value="${kpi.value ?? ""}"
-                     placeholder="Enter value"
-                    class="kpi-input value-input"
-                    data-kpi-values-id="${kpi.kpi_values_id}"
-                   required
-                  />
-                  ${kpi.unit ? `<span class="kpi-input-unit">${kpi.unit}</span>` : ""}
-                </div>
-              </div>
-
-              <div class="kpi-history-panel ${hasPreviousMonthDetails ? "history-available" : "history-empty"}">
-                <div class="kpi-history-copy">
-                  <div class="kpi-history-kicker">Previous Month Review</div>
-                  <div class="kpi-history-title">
-                    ${hasPreviousMonthDetails ? previousMonthLabel : "History Not Available Yet"}
-                  </div>
-                  <div class="view-ca-note">
-                    ${hasPreviousMonthDetails
-                      ? `Review root cause, evidence, and comments from ${previousMonthLabel}.`
-                      : "No previous-month corrective action or comments have been recorded for this KPI yet."}
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  class="view-ca-btn"
-                  data-kpi-values-id="${kpi.kpi_values_id}"
-                >
-                  <span>View Corrective Action</span>
-                  <span class="view-ca-btn-icon">↗</span>
-                </button>
-              </div>
-            </div>
-
-    <div class="kpi-mini-stats">
-      <div class="mini-stat-card">
-        <div class="mini-stat-label">HIGH LIMIT</div>
-        <div class="mini-stat-value high">${highLimit !== null ? highLimit : "—"}</div>
-        <div class="mini-stat-unit">${kpi.unit || ""}</div>
-      </div>
-
-       <div class="mini-stat-card">
-        <div class="mini-stat-label">TARGET</div>
-        <div class="mini-stat-value target">${targetValue !== null ? targetValue : "—"}</div>
-        <div class="mini-stat-unit">${kpi.unit || ""}</div>
-           </div>
-
-         <div class="mini-stat-card">
-          <div class="mini-stat-label">LOW LIMIT</div>
-           <div class="mini-stat-value low">${lowLimit !== null ? lowLimit : "—"}</div>
-           <div class="mini-stat-unit">${kpi.unit || ""}</div>
-            </div>
-           </div>
-           </div>
-          </div>
-
-          <div class="ca-container ${showCA ? "visible" : ""}" id="ca_container_${kpi.kpi_values_id}">
-            <div class="ca-header">
-              ${goodDirection === "down"
-          ? "⚠️ Value is above the upper limit — corrective action required"
-          : "⚠️ Value is below the lower limit — corrective action required"}
-              ${caStatus ? `<span class="ca-status-badge ca-status-${safeCaStatusClass}">${caStatus}</span>` : ""}
-            </div>
-
-            <div class="ca-ai-box" id="ca-ai-box-${kpi.kpi_values_id}">
-              <div class="ca-suggestion-content" id="ca-sugg-${kpi.kpi_values_id}" style="display:none;">
-                <div class="ca-ai-row">
-                  <div class="ca-ai-card ca-rc-card"
-                       onclick="formApplyField('root_cause_${kpi.kpi_values_id}',this)">
-                    <div class="ca-ai-card-label">
-                      <span>🔍</span> Root Cause
-                      <span class="ca-apply-hint">Click to apply ↓</span>
-                    </div>
-                    <div class="ca-ai-card-text" id="ca-rc-text-${kpi.kpi_values_id}"></div>
-                  </div>
-
-                  <div class="ca-ai-card ca-sol-card"
-                       onclick="formApplyField('impl_solution_${kpi.kpi_values_id}',this)">
-                    <div class="ca-ai-card-label">
-                      <span>⚡</span> Immediate Action
-                      <span class="ca-apply-hint">Click to apply ↓</span>
-                    </div>
-                    <div class="ca-ai-card-text" id="ca-sol-text-${kpi.kpi_values_id}"></div>
-                  </div>
-
-                  <div class="ca-ai-card ca-ev-card"
-                       onclick="formApplyField('evidence_${kpi.kpi_values_id}',this)">
-                    <div class="ca-ai-card-label">
-                      <span>📊</span> Evidence
-                      <span class="ca-apply-hint">Click to apply ↓</span>
-                    </div>
-                    <div class="ca-ai-card-text" id="ca-ev-text-${kpi.kpi_values_id}"></div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="ca-sugg-error" id="ca-err-${kpi.kpi_values_id}" style="display:none;">
-                ⚠️ Could not generate suggestion. Please fill manually.
-              </div>
-            </div>
-
-            <div class="ca-dates-grid">
-              <div class="ca-field">
-                <label class="ca-label" for="due_date_${kpi.kpi_values_id}">
-                  📅 Due Date <span class="ca-required">*</span>
-                </label>
-                <input
-                  type="date"
-                  id="due_date_${kpi.kpi_values_id}"
-                  name="due_date_${kpi.kpi_values_id}"
-                  class="ca-date-input"
-                  value="${dueDateValue}"
-                  ${showCA ? "required" : ""}
-                />
-              </div>
-
-              <div class="ca-field">
-                <label class="ca-label" for="responsible_${kpi.kpi_values_id}">
-                  👤 Responsible <span class="ca-required">*</span>
-                </label>
-                <input
-                  type="text"
-                  id="responsible_${kpi.kpi_values_id}"
-                  name="responsible_${kpi.kpi_values_id}"
-                  class="ca-text-input"
-                  value="${safeResponsibleValue}"
-                  ${showCA ? "required" : ""}
-                />
-              </div>
-            </div>
-
-            <div class="ca-field">
-              <label class="ca-label" for="root_cause_${kpi.kpi_values_id}">
-                🔍 Root Cause Analysis <span class="ca-required">*</span>
-              </label>
-              <textarea
-                id="root_cause_${kpi.kpi_values_id}"
-                name="root_cause_${kpi.kpi_values_id}"
-                class="ca-textarea root-cause-input"
-                data-kpi-values-id="${kpi.kpi_values_id}"
-                placeholder="Describe the root cause..."
-                ${showCA ? "required" : ""}
-              >${existingRC}</textarea>
-            </div>
-
-            <div class="ca-field">
-              <label class="ca-label" for="impl_solution_${kpi.kpi_values_id}">
-                🔧 Implemented Solution <span class="ca-required">*</span>
-              </label>
-              <textarea
-                id="impl_solution_${kpi.kpi_values_id}"
-                name="impl_solution_${kpi.kpi_values_id}"
-                class="ca-textarea impl-solution-input"
-                data-kpi-values-id="${kpi.kpi_values_id}"
-                placeholder="Describe the implemented solution..."
-                ${showCA ? "required" : ""}
-              >${existingIS}</textarea>
-            </div>
-
-            <div class="ca-field">
-              <label class="ca-label" for="evidence_${kpi.kpi_values_id}">
-                📎 Evidence of Improvement <span class="ca-required">*</span>
-              </label>
-              <textarea
-                id="evidence_${kpi.kpi_values_id}"
-                name="evidence_${kpi.kpi_values_id}"
-                class="ca-textarea evidence-input"
-                data-kpi-values-id="${kpi.kpi_values_id}"
-                placeholder="Provide evidence showing the improvement..."
-                ${showCA ? "required" : ""}
-              >${existingEV}</textarea>
-            </div>
-          </div>
-
+                     <!-- ── Manager Comment (moved above action bar) ── -->
           <div class="comment-section">
             <div class="comment-label">
               Manager Comment <span style="font-size:11px;color:#888;">(Optional)</span>
@@ -2714,6 +2755,72 @@ app.get("/form", async (req, res) => {
               placeholder="Add your comment..."
             >${kpi.latest_comment || ""}</textarea>
           </div>
+                </div>
+
+                <div class="kpi-history-panel ${hasPreviousMonthDetails ? "history-available" : "history-empty"}">
+                  <div class="kpi-history-copy">
+                 
+                  </div>
+                  <button
+                    type="button"
+                    class="view-ca-btn"
+                    data-kpi-values-id="${kpi.kpi_values_id}">
+                    <span>View Corrective Action</span>
+                    <span class="view-ca-btn-icon">↗</span>
+                  </button>
+                </div>
+                    <!-- ── Unified card action bar ── -->
+        <div class="kpi-card-actions">
+  <div class="kpi-card-actions-left">
+    <button
+      type="button"
+      class="card-action-btn card-action-btn--ai"
+      onclick="openAssistantForKpi('${kpi.kpi_values_id}')">
+      <span class="ai-btn-glow"></span>
+      🤖 AI Support
+    </button>
+  </div>
+
+  <div class="kpi-card-actions-right">
+    <button
+      type="button"
+      class="card-action-btn card-action-btn--primary open-ca-modal-btn"
+      data-kpi-values-id="${kpi.kpi_values_id}">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M10 4v12M4 10h12"/>
+      </svg>
+      Add Action
+    </button>
+  </div>
+</div>
+              </div>
+
+              <div class="kpi-mini-stats">
+                <div class="mini-stat-card">
+                  <div class="mini-stat-label">HIGH LIMIT</div>
+                  <div class="mini-stat-value high">${highLimit !== null ? highLimit : "—"}</div>
+                  <div class="mini-stat-unit">${kpi.unit || ""}</div>
+                </div>
+                <div class="mini-stat-card">
+                  <div class="mini-stat-label">TARGET</div>
+                  <div class="mini-stat-value target">${targetValue !== null ? targetValue : "—"}</div>
+                  <div class="mini-stat-unit">${kpi.unit || ""}</div>
+                </div>
+                <div class="mini-stat-card">
+                  <div class="mini-stat-label">LOW LIMIT</div>
+                  <div class="mini-stat-value low">${lowLimit !== null ? lowLimit : "—"}</div>
+                  <div class="mini-stat-unit">${kpi.unit || ""}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+    
+
+     
+
+       
+
         </div>
       `;
     });
@@ -2736,16 +2843,15 @@ app.get("/form", async (req, res) => {
             margin:0;
             min-height:100vh;
           }
-
-        .container{
-          max-width:1500px;
-          width:96%;
-          margin:0 auto;
-          background:rgba(255,255,255,0.95);
-          border-radius:8px;
-          box-shadow:0 4px 20px rgba(0,0,0,0.2);
-          overflow:hidden;
-           }
+          .container{
+            max-width:1500px;
+            width:96%;
+            margin:0 auto;
+            background:rgba(255,255,255,0.95);
+            border-radius:8px;
+            box-shadow:0 4px 20px rgba(0,0,0,0.2);
+            overflow:hidden;
+          }
           .header{
             background:#0078D7;
             color:white;
@@ -2760,24 +2866,11 @@ app.get("/form", async (req, res) => {
             margin-bottom:25px;
             border-left:4px solid #0078D7;
           }
-          .info-row{
-            display:flex;
-            margin-bottom:15px;
-            align-items:center;
-          }
-          .info-label{
-            font-weight:600;
-            color:#333;
-            width:120px;
-            font-size:14px;
-          }
-          .info-value{
-            flex:1;
-            padding:8px 12px;
-            background:white;
-            border:1px solid #ddd;
-            border-radius:4px;
-          }
+          .info-row{display:flex;margin-bottom:15px;align-items:center;}
+          .info-label{font-weight:600;color:#333;width:120px;font-size:14px;}
+          .info-value{flex:1;padding:8px 12px;background:white;border:1px solid #ddd;border-radius:4px;}
+
+          /* ── KPI Card ── */
           .kpi-card{
             background:#fff;
             border:1px solid #e1e5e9;
@@ -2785,75 +2878,18 @@ app.get("/form", async (req, res) => {
             padding:20px;
             margin-bottom:20px;
           }
-          .kpi-header{
-            display:flex;
-            justify-content:space-between;
-            align-items:center;
-            margin-bottom:4px;
-          }
-          .kpi-ai-trigger{
-            display:inline-flex;
-            align-items:center;
-            gap:8px;
-            border:none;
-            border-radius:999px;
-            padding:10px 14px;
-            background:linear-gradient(135deg,#0f6cbd,#4ea1ff);
-            color:white;
-            font-size:12px;
-            font-weight:700;
-            cursor:pointer;
-            box-shadow:0 10px 20px rgba(15,108,189,0.18);
-          }
-          .kpi-ai-trigger:hover{
-            opacity:.95;
-            transform:translateY(-1px);
-          }
-          .kpi-title{
-            font-weight:600;
-            color:#333;
-            font-size:15px;
-          }
-          .kpi-subtitle{
-            color:#666;
-            font-size:13px;
-            margin-bottom:10px;
-          }
-          .kpi-input{
-            width:100%;
-            padding:10px 12px;
-            border:1px solid #ddd;
-            border-radius:4px;
-            font-size:14px;
-            box-sizing:border-box;
-          }
-          .kpi-input:focus{
-            border-color:#0078D7;
-            outline:none;
-          }
-          .submit-btn{
-            background:#0078D7;
-            color:white;
-            border:none;
-            padding:12px 30px;
-            border-radius:4px;
-            font-size:16px;
-            font-weight:600;
-            cursor:pointer;
-            display:block;
-            width:100%;
-            margin-top:20px;
-          }
+          .kpi-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;}
+          .kpi-title{font-weight:600;color:#333;font-size:15px;}
+          .kpi-subtitle{color:#666;font-size:13px;margin-bottom:10px;}
 
-       .kpi-split-layout{
-           display:grid;
-           grid-template-columns:1fr 380px; /* graph first, value panel second */
-           gap:20px;
-           align-items:stretch;
-           margin-top:16px;
-           }
-          .kpi-left-panel,
-          .kpi-right-panel{
+          .kpi-split-layout{
+            display:grid;
+            grid-template-columns:1fr 380px;
+            gap:20px;
+            align-items:stretch;
+            margin-top:16px;
+          }
+          .kpi-left-panel,.kpi-right-panel{
             background:#fafafa;
             border:1px solid #e5e7eb;
             border-radius:20px;
@@ -2867,1090 +2903,597 @@ app.get("/form", async (req, res) => {
             position:relative;
             overflow:hidden;
             background:
-              radial-gradient(circle at top right, rgba(37,99,235,0.14), transparent 34%),
+              radial-gradient(circle at top right,rgba(37,99,235,0.14),transparent 34%),
               linear-gradient(180deg,#ffffff 0%,#f7fbff 52%,#f2f7fc 100%);
           }
           .kpi-left-panel::before{
             content:"";
             position:absolute;
-            width:220px;
-            height:220px;
-            right:-90px;
-            top:-90px;
+            width:220px;height:220px;right:-90px;top:-90px;
             border-radius:50%;
-            background:radial-gradient(circle, rgba(56,189,248,0.18) 0%, rgba(56,189,248,0) 72%);
+            background:radial-gradient(circle,rgba(56,189,248,0.18) 0%,rgba(56,189,248,0) 72%);
             pointer-events:none;
           }
-          .kpi-entry-card{
-            position:relative;
-            z-index:1;
-            width:min(100%,340px);
-            padding:24px;
-            border-radius:24px;
-            background:rgba(255,255,255,0.94);
-            border:1px solid #d8e3ee;
-            box-shadow:0 20px 40px rgba(15,23,42,0.10);
-            display:flex;
-            flex-direction:column;
-            gap:18px;
-          }
-          .kpi-entry-top{
-            display:flex;
-            align-items:flex-start;
-            justify-content:space-between;
-            gap:12px;
-          }
-          .kpi-entry-eyebrow{
-            font-size:11px;
-            font-weight:800;
-            letter-spacing:1.1px;
-            text-transform:uppercase;
-            color:#64748b;
-          }
-          .kpi-entry-title{
-            margin-top:6px;
-            color:#0f172a;
-            font-size:18px;
-            font-weight:800;
-            line-height:1.25;
-          }
+
+        .kpi-entry-card{
+        padding:24px;
+        border-radius:24px;
+        background:rgba(255,255,255,0.96);
+        border:1px solid #d8e3ee;
+        box-shadow:0 20px 40px rgba(15,23,42,0.10);
+        display:flex;
+        flex-direction:column;
+        gap:18px;
+
+        /* 👇 ADD THIS */
+        padding-bottom:28px;
+        }
+          .kpi-entry-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+          .kpi-entry-eyebrow{font-size:11px;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:#64748b;}
+          .kpi-entry-title{margin-top:6px;color:#0f172a;font-size:18px;font-weight:800;line-height:1.25;}
           .kpi-entry-unit{
-            flex-shrink:0;
-            padding:8px 12px;
-            border-radius:999px;
-            background:#eff6ff;
-            color:#1d4ed8;
-            font-size:12px;
-            font-weight:800;
-            border:1px solid #bfdbfe;
-            white-space:nowrap;
+            flex-shrink:0;padding:8px 12px;border-radius:999px;
+            background:#eff6ff;color:#1d4ed8;font-size:12px;font-weight:800;
+            border:1px solid #bfdbfe;white-space:nowrap;
           }
-          .kpi-input-stack{
-            display:flex;
-            flex-direction:column;
-            gap:8px;
-          }
-          .kpi-side-label{
-            font-size:12px;
-            font-weight:800;
-            letter-spacing:0.9px;
-            text-transform:uppercase;
-            color:#475569;
-          }
-          .kpi-input-shell{
-            position:relative;
-          }
+          .kpi-input-stack{display:flex;flex-direction:column;gap:8px;}
+          .kpi-side-label{font-size:12px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:#475569;}
+          .kpi-input-shell{position:relative;}
+          .kpi-input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:4px;font-size:14px;box-sizing:border-box;}
+          .kpi-input:focus{border-color:#0078D7;outline:none;}
           .kpi-left-panel .kpi-input{
-            width:100%;
-            margin:0;
-            min-height:58px;
-            padding:16px 18px;
-            border:1.5px solid #d6dee8;
-            border-radius:16px;
-            background:#ffffff;
-            color:#0f172a;
-            font-size:24px;
-            font-weight:800;
+            width:100%;margin:0;min-height:58px;padding:16px 18px;
+            border:1.5px solid #d6dee8;border-radius:16px;background:#ffffff;
+            color:#0f172a;font-size:24px;font-weight:800;
             box-shadow:inset 0 1px 0 rgba(255,255,255,0.9);
           }
-          .kpi-left-panel .kpi-input::placeholder{
-            color:#94a3b8;
-            font-size:16px;
-            font-weight:600;
-          }
-          .kpi-input-shell.has-unit .kpi-input{
-            padding-right:76px;
-          }
+          .kpi-left-panel .kpi-input::placeholder{color:#94a3b8;font-size:16px;font-weight:600;}
+          .kpi-input-shell.has-unit .kpi-input{padding-right:76px;}
           .kpi-input-unit{
-            position:absolute;
-            top:50%;
-            right:14px;
-            transform:translateY(-50%);
-            padding:6px 10px;
-            border-radius:999px;
-            background:#f8fafc;
-            border:1px solid #e2e8f0;
-            color:#64748b;
-            font-size:12px;
-            font-weight:800;
-            pointer-events:none;
+            position:absolute;top:50%;right:14px;transform:translateY(-50%);
+            padding:6px 10px;border-radius:999px;background:#f8fafc;
+            border:1px solid #e2e8f0;color:#64748b;font-size:12px;font-weight:800;pointer-events:none;
           }
           .kpi-left-panel .kpi-input:focus{
-            border-color:#3b82f6;
-            outline:none;
-            box-shadow:0 0 0 4px rgba(59,130,246,0.12), 0 14px 30px rgba(59,130,246,0.10);
+            border-color:#3b82f6;outline:none;
+            box-shadow:0 0 0 4px rgba(59,130,246,0.12),0 14px 30px rgba(59,130,246,0.10);
           }
-          .kpi-limits-top{
-            display:flex;
-            gap:8px;
-            flex-wrap:wrap;
-            margin-bottom:14px;
-          }
-          .limit-badge{
-            font-size:11px;
-            font-weight:700;
-            padding:3px 10px;
-            border-radius:999px;
-            border:1px solid transparent;
-          }
-          .limit-badge.low{
-            background:#ffebee;
-            color:#c62828;
-            border-color:#ef9a9a;
-          }
-          .limit-badge.high{
-            background:#e8f5e9;
-            color:#1b5e20;
-            border-color:#a5d6a7;
-          }
+        
           .kpi-history-panel{
-            width:100%;
-            margin:0;
-            padding:18px;
-            border-radius:20px;
-            display:flex;
-            flex-direction:column;
-            align-items:stretch;
-            gap:14px;
-            border:1px solid #dbeafe;
-            background:linear-gradient(180deg,#f8fbff 0%,#eef6ff 100%);
-          }
-          .kpi-history-panel.history-empty{
-            border-color:#e2e8f0;
-            background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);
-          }
-          .kpi-history-copy{
-            display:flex;
-            flex-direction:column;
-            gap:6px;
-          }
-          .kpi-history-kicker{
-            font-size:11px;
-            font-weight:800;
-            letter-spacing:1px;
-            text-transform:uppercase;
-            color:#64748b;
-          }
-          .kpi-history-title{
-            font-size:18px;
-            font-weight:800;
-            line-height:1.2;
-            color:#0f172a;
-          }
-          .view-ca-btn{
-            width:100%;
-            border:none;
-            border-radius:16px;
-            padding:15px 18px;
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            background:linear-gradient(135deg,#0f6cbd 0%,#2894ff 100%);
-            color:white;
-            font-size:14px;
-            font-weight:800;
-            cursor:pointer;
-            letter-spacing:0.2px;
-            box-shadow:0 14px 30px rgba(15,108,189,0.22);
-            transition:transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
-          }
-          .view-ca-btn:hover{
-            transform:translateY(-2px);
-            box-shadow:0 18px 34px rgba(15,108,189,0.26);
-          }
-          .view-ca-btn:focus-visible{
-            outline:3px solid rgba(37,99,235,0.18);
-            outline-offset:3px;
-          }
-          .view-ca-btn-icon{
-            width:32px;
-            height:32px;
-            border-radius:999px;
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            background:rgba(255,255,255,0.18);
-            font-size:16px;
-            line-height:1;
-          }
-          .view-ca-note{
-            font-size:13px;
-            color:#526277;
-            line-height:1.6;
-            text-align:left;
-          }
-          .kpi-mini-stats{
-            display:none;
-          }
-          .mini-stat-card{
-            background:white;
-            border:1px solid #e5e7eb;
-            border-radius:12px;
-            padding:14px 10px;
-            text-align:center;
-          }
-          .mini-stat-label{
-            font-size:11px;
-            color:#6b7280;
-            text-transform:uppercase;
-            margin-bottom:6px;
-            font-weight:700;
-          }
-          .mini-stat-value{
-            font-size:20px;
-            font-weight:800;
-            line-height:1.2;
-          }
-          .mini-stat-value.high{ color:#f59e0b; }
-          .mini-stat-value.target{ color:#16a34a; }
-          .mini-stat-value.low{ color:#ef4444; }
-          .mini-stat-unit{
-            font-size:12px;
-            color:#94a3b8;
-            margin-top:4px;
-          }
-          .kpi-right-panel{
-           min-height:280px;
+           width:100%;
+           margin:0;
+           padding:14px 0 0;   /* ⬅️ remove side padding */
+           border:none;        /* ⬅️ remove border */
+           background:transparent; /* ⬅️ remove background */
            display:flex;
-           align-items:center;
-           justify-content:center;
-           position:relative;
+           flex-direction:column;
+           gap:14px;
+            }
+          .kpi-history-panel.history-empty{border-color:#e2e8f0;background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);}
+          .kpi-history-copy{display:flex;flex-direction:column;gap:6px;}
+          .kpi-history-kicker{font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#64748b;}
+          .kpi-history-title{font-size:18px;font-weight:800;line-height:1.2;color:#0f172a;}
+          .view-ca-btn{
+          width:100%;
+          border:none;
+          border-radius:14px;
+          padding:14px 16px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap:12px;
+
+          background:linear-gradient(135deg,#0f6cbd 0%,#2894ff 100%);
+          color:white;
+          font-size:14px;
+          font-weight:800;
+          cursor:pointer;
+         box-shadow:0 8px 18px rgba(15,108,189,0.18); /* ⬅️ softer */
+          }
+          .view-ca-btn:hover{transform:translateY(-2px);box-shadow:0 18px 34px rgba(15,108,189,0.26);}
+          .view-ca-btn-icon{
+            width:32px;height:32px;border-radius:999px;
+            display:inline-flex;align-items:center;justify-content:center;
+            background:rgba(255,255,255,0.18);font-size:16px;
+          }
+          .view-ca-note{font-size:13px;color:#526277;line-height:1.6;}
+          .kpi-mini-stats{display:none;}
+          .kpi-right-panel{
+            min-height:280px;display:flex;align-items:center;justify-content:center;position:relative;
           }
           .kpi-chart-trigger{
-            cursor:zoom-in;
-            transition:border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+            cursor:zoom-in;transition:border-color 0.2s ease,box-shadow 0.2s ease;
           }
-          .kpi-chart-trigger:hover{
-            border-color:#bfdbfe;
-            box-shadow:0 12px 28px rgba(37,99,235,0.10);
-          }
-          .kpi-chart-trigger:focus-visible{
-            outline:3px solid rgba(37,99,235,0.2);
-            outline-offset:2px;
-          }
+          .kpi-chart-trigger:hover{border-color:#bfdbfe;box-shadow:0 12px 28px rgba(37,99,235,0.10);}
           .chart-expand-btn{
-            position:absolute;
-            top:14px;
-            right:14px;
-            width:42px;
-            height:42px;
-            border:none;
-            border-radius:14px;
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            background:rgba(255,255,255,0.92);
-            color:#1d4ed8;
+            position:absolute;top:14px;right:14px;width:42px;height:42px;
+            border:none;border-radius:14px;
+            display:inline-flex;align-items:center;justify-content:center;
+            background:rgba(255,255,255,0.92);color:#1d4ed8;
             box-shadow:0 12px 24px rgba(15,23,42,0.12);
-            cursor:pointer;
-            z-index:2;
-            transition:transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+            cursor:pointer;z-index:2;
+            transition:transform 0.18s ease,box-shadow 0.18s ease;
           }
-          .chart-expand-btn:hover{
-            transform:translateY(-1px);
-            background:#eff6ff;
-            box-shadow:0 16px 28px rgba(15,23,42,0.16);
-          }
-          .chart-expand-btn:focus-visible{
-            outline:3px solid rgba(37,99,235,0.2);
-            outline-offset:3px;
-          }
-          .chart-expand-btn svg{
-            width:18px;
-            height:18px;
-            stroke:currentColor;
-            stroke-width:2;
-            fill:none;
-            stroke-linecap:round;
-            stroke-linejoin:round;
-          }
+          .chart-expand-btn:hover{transform:translateY(-1px);background:#eff6ff;}
+          .chart-expand-btn svg{width:18px;height:18px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+          .kpi-right-panel canvas{width:100% !important;height:380px !important;display:block;}
 
-          .kpi-right-panel canvas{
-           width:100% !important;
-           height:380px !important;
-           display:block;
-           }
+          .history-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #fff;
+}
 
-          body.chart-modal-open{
-            overflow:hidden;
-          }
-          .chart-modal-overlay{
-            position:fixed;
-            inset:0;
-            padding:24px;
-            background:rgba(15,23,42,0.58);
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            z-index:10003;
-            opacity:0;
-            pointer-events:none;
-            transition:opacity 0.22s ease;
-          }
-          .chart-modal-overlay.active{
-            opacity:1;
-            pointer-events:auto;
-          }
-          .chart-modal-box{
-            width:min(96vw, 1700px);
-            height:min(92vh, 980px);
-            background:#fff;
-            border-radius:20px;
-            box-shadow:0 28px 80px rgba(15,23,42,0.28);
-            display:flex;
-            flex-direction:column;
-            overflow:hidden;
-            transform:translateY(18px) scale(0.98);
-            transition:transform 0.22s ease;
-          }
-          .chart-modal-overlay.active .chart-modal-box{
-            transform:translateY(0) scale(1);
-          }
-          .chart-modal-header{
-            display:flex;
-            align-items:flex-start;
-            justify-content:space-between;
-            gap:16px;
-            padding:24px 28px 18px;
-            border-bottom:1px solid #e5e7eb;
-          }
-          .chart-modal-header h3{
-            margin:0;
-            color:#0f172a;
-            font-size:32px;
-            line-height:1.15;
-          }
-          .chart-modal-header p{
-            margin:8px 0 0;
-            color:#64748b;
-            font-size:15px;
-          }
-          .chart-modal-close{
-            width:44px;
-            height:44px;
-            border:none;
-            border-radius:999px;
-            background:#f8fafc;
-            color:#334155;
-            font-size:28px;
-            line-height:1;
-            cursor:pointer;
-            flex-shrink:0;
-            transition:background 0.2s ease, color 0.2s ease;
-          }
-          .chart-modal-close:hover{
-            background:#e2e8f0;
-            color:#0f172a;
-          }
-          .chart-modal-body{
-            flex:1;
-            min-height:0;
-            padding:20px 24px 24px;
-            background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);
-          }
-          .chart-modal-stage{
-            height:100%;
-            min-height:0;
-            background:#fff;
-            border:1px solid #dbe4f0;
-            border-radius:16px;
-            padding:20px;
-            box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);
-          }
-          .chart-modal-stage canvas{
-            width:100% !important;
-            height:100% !important;
-            display:block;
-          }
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
 
-          .history-modal-overlay{
-            position:fixed;
-            inset:0;
-            padding:24px;
-            background:rgba(15,23,42,0.58);
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            z-index:10004;
-            opacity:0;
-            pointer-events:none;
-            transition:opacity 0.22s ease;
-          }
-          .history-modal-overlay.active{
-            opacity:1;
-            pointer-events:auto;
-          }
-          .history-modal-box{
-            width:min(92vw, 720px);
-            max-height:min(88vh, 860px);
-            background:#fff;
-            border-radius:22px;
-            overflow:hidden;
-            box-shadow:0 28px 80px rgba(15,23,42,0.28);
-            transform:translateY(18px) scale(0.98);
-            transition:transform 0.22s ease;
-            display:flex;
-            flex-direction:column;
-          }
-          .history-modal-overlay.active .history-modal-box{
-            transform:translateY(0) scale(1);
-          }
-          .history-modal-header{
-            display:flex;
-            align-items:flex-start;
-            justify-content:space-between;
-            gap:16px;
-            padding:22px 24px 18px;
-            border-bottom:1px solid #e5e7eb;
-            background:linear-gradient(180deg,#ffffff,#f8fbff);
-          }
-          .history-modal-title{
-            margin:0;
-            color:#0f172a;
-            font-size:24px;
-            line-height:1.2;
-          }
-          .history-modal-subtitle{
-            margin:8px 0 0;
-            color:#64748b;
-            font-size:14px;
-          }
-          .history-modal-close{
-            width:42px;
-            height:42px;
-            border:none;
-            border-radius:999px;
-            background:#f8fafc;
-            color:#334155;
-            font-size:26px;
-            line-height:1;
-            cursor:pointer;
-            flex-shrink:0;
-          }
-          .history-modal-content{
-            padding:22px 24px 24px;
-            overflow:auto;
-            background:linear-gradient(180deg,#ffffff,#f8fafc 100%);
-          }
-          .history-meta-row{
-            display:flex;
-            flex-wrap:wrap;
-            gap:10px;
-            margin-bottom:18px;
-          }
-          .history-chip{
-            display:inline-flex;
-            align-items:center;
-            gap:8px;
-            padding:9px 12px;
-            border-radius:999px;
-            font-size:12px;
-            font-weight:800;
-            background:#eff6ff;
-            color:#1d4ed8;
-          }
-          .history-chip.status-open{
-            background:#fef2f2;
-            color:#b91c1c;
-          }
-          .history-chip.status-waiting-for-validation{
-            background:#fff7ed;
-            color:#c2410c;
-          }
-          .history-chip.status-completed,
-          .history-chip.status-closed{
-            background:#ecfdf5;
-            color:#047857;
-          }
-          .history-section{
-            background:white;
-            border:1px solid #e5e7eb;
-            border-radius:18px;
-            padding:18px;
-            box-shadow:0 8px 22px rgba(15,23,42,0.05);
-          }
-          .history-section + .history-section{
-            margin-top:16px;
-          }
-          .history-section-title{
-            margin:0 0 14px;
-            font-size:14px;
-            font-weight:900;
-            color:#111827;
-            display:flex;
-            align-items:center;
-            gap:8px;
-          }
-          .history-detail-card{
-            background:linear-gradient(135deg,#fff8f8,#fffaf5);
-            border:1px solid #fee2e2;
-            border-radius:16px;
-            padding:16px;
-          }
-          .history-detail-row + .history-detail-row{
-            margin-top:14px;
-            padding-top:14px;
-            border-top:1px solid rgba(226,232,240,0.8);
-          }
-          .history-detail-label{
-            font-size:12px;
-            font-weight:900;
-            margin-bottom:6px;
-          }
-          .history-detail-label.root{ color:#dc2626; }
-          .history-detail-label.solution{ color:#d97706; }
-          .history-detail-label.evidence{ color:#2563eb; }
-          .history-detail-text{
-            font-size:14px;
-            line-height:1.6;
-            color:#334155;
-            white-space:pre-wrap;
-          }
-          .history-comments-list{
-            display:grid;
-            gap:12px;
-          }
-          .history-comment-card{
-            border-radius:16px;
-            padding:16px;
-            background:linear-gradient(135deg,#eff6ff,#dbeafe);
-            border-left:4px solid #0f6cbd;
-          }
-          .history-comment-label{
-            font-size:12px;
-            font-weight:900;
-            color:#2563eb;
-            margin-bottom:8px;
-          }
-          .history-comment-text{
-            font-size:14px;
-            color:#1e293b;
-            line-height:1.6;
-            white-space:pre-wrap;
-          }
-          .history-empty{
-            text-align:center;
-            padding:34px 20px;
-            background:white;
-            border:1px dashed #cbd5e1;
-            border-radius:18px;
-            color:#64748b;
-            font-size:14px;
-            line-height:1.6;
-          }
+.history-table thead tr {
+  background: #f8fafc;
+}
 
+.history-table th {
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #334155;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.history-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.history-table tr:last-child td {
+  border-bottom: none;
+}
+
+.history-table td pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+
+          /* ── CA Section ── */
           .ca-container{
             margin-top:16px;
             background:linear-gradient(135deg,#fff5f5,#fff8f0);
             border:2px solid #f28b82;
             border-radius:10px;
-            display:none;
-            overflow:hidden;
+            display:none;overflow:hidden;
           }
           .ca-container.visible{display:block;}
           .ca-header{
-            font-weight:700;
-            color:#c62828;
-            font-size:14px;
-            padding:14px 16px;
-            display:flex;
-            align-items:center;
-            gap:10px;
-            flex-wrap:wrap;
+            font-weight:700;color:#c62828;font-size:14px;
+            padding:14px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
             background:rgba(211,47,47,0.05);
           }
-          .ca-status-badge{
-            font-size:11px;
-            font-weight:600;
-            padding:3px 10px;
-            border-radius:12px;
-            margin-left:auto;
-          }
-          .ca-status-open{
-            background:#ffebee;
-            color:#c62828;
-            border:1px solid #ef9a9a;
-          }
-          .ca-status-waiting-for-validation{
-            background:#fff3e0;
-            color:#e65100;
-            border:1px solid #ffcc02;
-          }
-
-          .ca-ai-box{
-            margin:14px 14px 0;
-            border:none;
-            border-radius:10px;
-            background:linear-gradient(135deg,#f5f3ff,#ede9fe);
-            overflow:hidden;
-          }
+          .ca-header-copy{flex:1 1 280px;}
+          .ca-header-meta{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap;}
+          .ca-count-badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;background:#fff;border:1px solid #fecaca;color:#b91c1c;}
+          .ca-status-badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:12px;}
+          .ca-status-open{background:#ffebee;color:#c62828;border:1px solid #ef9a9a;}
+          .ca-status-waiting-for-validation{background:#fff3e0;color:#e65100;border:1px solid #ffcc02;}
+          .ca-actions-note{padding:14px 14px 0;font-size:12px;color:#7f1d1d;}
+          .ca-ai-box{margin:14px 14px 0;border:none;border-radius:10px;background:linear-gradient(135deg,#f5f3ff,#ede9fe);overflow:hidden;}
           .ca-suggestion-content{padding:12px 14px;}
-          .ca-ai-row{
-            display:grid;
-            grid-template-columns:repeat(3,1fr);
-            gap:10px;
-          }
-          .ca-ai-card{
-            background:white;
-            border-radius:8px;
-            padding:12px;
-            cursor:pointer;
-            transition:transform 0.15s,box-shadow 0.15s;
-            border:1.5px solid transparent;
-          }
-          .ca-ai-card:hover{
-            transform:translateY(-2px);
-            box-shadow:0 4px 12px rgba(0,0,0,0.1);
-          }
-          .ca-ai-card.applied{
-            border-color:#4ade80 !important;
-            background:#f0fdf4;
-          }
+          .ca-ai-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+          .ca-ai-card{background:white;border-radius:8px;padding:12px;cursor:pointer;transition:transform 0.15s,box-shadow 0.15s;border:1.5px solid transparent;}
+          .ca-ai-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.1);}
+          .ca-ai-card.applied{border-color:#4ade80 !important;background:#f0fdf4;}
           .ca-rc-card{border-top:3px solid #ef4444;}
           .ca-sol-card{border-top:3px solid #f59e0b;}
           .ca-ev-card{border-top:3px solid #3b82f6;}
-          .ca-ai-card-label{
-            font-size:10px;
-            font-weight:700;
-            text-transform:uppercase;
-            letter-spacing:0.5px;
-            margin-bottom:7px;
-            display:flex;
-            align-items:center;
-            gap:5px;
-          }
+          .ca-ai-card-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:7px;display:flex;align-items:center;gap:5px;}
           .ca-rc-card .ca-ai-card-label{color:#dc2626;}
           .ca-sol-card .ca-ai-card-label{color:#d97706;}
           .ca-ev-card .ca-ai-card-label{color:#2563eb;}
-          .ca-apply-hint{
-            margin-left:auto;
-            font-size:9px;
-            font-weight:500;
-            color:#9ca3af;
-            text-transform:none;
-            letter-spacing:0;
+          .ca-apply-hint{margin-left:auto;font-size:9px;font-weight:500;color:#9ca3af;text-transform:none;letter-spacing:0;}
+          .ca-ai-card-text{font-size:12px;color:#374151;line-height:1.5;}
+          .ca-sugg-error{padding:10px 14px;font-size:12px;color:#92400e;background:#fff7ed;}
+          .ca-actions-stack{padding:14px;display:grid;gap:14px;}
+          .ca-action-card{
+            background:rgba(255,255,255,0.85);border:1px solid #f8b4b4;
+            border-radius:14px;padding:14px 0 2px;
+            box-shadow:0 8px 20px rgba(239,68,68,0.06);
           }
-          .ca-ai-card-text{
-            font-size:12px;
-            color:#374151;
-            line-height:1.5;
+          .ca-action-head{
+            display:flex;justify-content:space-between;align-items:center;gap:12px;
+            padding:0 14px 12px;margin-bottom:12px;
+            border-bottom:1px solid #fee2e2;flex-wrap:wrap;
           }
-          .ca-sugg-error{
-            padding:10px 14px;
-            font-size:12px;
-            color:#92400e;
-            background:#fff7ed;
-          }
-
-          .ca-dates-grid{
-            display:grid;
-            grid-template-columns:repeat(2,1fr);
-            gap:12px;
-            padding:0 14px 14px;
-            align-items:start;
-          }
-          .ca-dates-grid .ca-field{
-            margin-top:0 !important;
-            margin-bottom:0;
-            padding:0;
-          }
-          .ca-date-input,
-          .ca-text-input{
-            width:100%;
-            padding:10px 12px;
-            border:1.5px solid #f28b82;
-            border-radius:6px;
-            font-size:13px;
-            font-family:inherit;
-            background:#fff;
-            box-sizing:border-box;
-          }
-          .ca-date-input:focus,
-          .ca-text-input:focus{
-            border-color:#d32f2f;
-            outline:none;
-            box-shadow:0 0 0 3px rgba(211,47,47,0.12);
-          }
-          .ca-field{
-            margin-bottom:14px;
-            padding:0 14px;
-          }
-          .ca-label{
-            display:block;
-            font-weight:600;
-            font-size:13px;
-            color:#555;
-            margin-bottom:6px;
-          }
+          .ca-action-title{font-size:14px;font-weight:900;color:#991b1b;}
+          .ca-action-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+          .ca-remove-btn{border:none;border-radius:999px;padding:8px 12px;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:800;cursor:pointer;}
+          .ca-remove-btn.is-hidden{display:none;}
+          .ca-dates-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:0 14px 14px;align-items:start;}
+          .ca-dates-grid .ca-field{margin-top:0 !important;margin-bottom:0;padding:0;}
+          .ca-date-input,.ca-text-input{width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:6px;font-size:13px;font-family:inherit;background:#fff;box-sizing:border-box;}
+          .ca-date-input:focus,.ca-text-input:focus{border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.12);}
+          .ca-field{margin-bottom:14px;padding:0 14px;}
+          .ca-label{display:block;font-weight:600;font-size:13px;color:#555;margin-bottom:6px;}
           .ca-required{color:#dc3545;}
           .ca-textarea{
-            width:100%;
-            padding:10px 12px;
-            border:1.5px solid #f28b82;
-            border-radius:6px;
-            min-height:80px;
-            resize:vertical;
-            font-family:inherit;
-            font-size:13px;
-            background:#fff;
-            box-sizing:border-box;
-            transition:border-color 0.2s;
+            width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:6px;
+            min-height:80px;resize:vertical;font-family:inherit;font-size:13px;
+            background:#fff;box-sizing:border-box;transition:border-color 0.2s;
           }
-          .ca-textarea:focus{
-            border-color:#d32f2f;
-            outline:none;
-            box-shadow:0 0 0 3px rgba(211,47,47,0.12);
-          }
-          .ca-textarea.error,
-          .ca-date-input.error,
-          .ca-text-input.error{
-            border-color:#dc3545;
-            background:#fff5f5;
-          }
-          .ca-textarea.highlight{
-            animation:caHighlight 1.8s forwards;
-          }
-          @keyframes caHighlight{
-            0%{background:#dcfce7;border-color:#16a34a;}
-            100%{background:#fff;border-color:#f28b82;}
-          }
+          .ca-textarea:focus{border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.12);}
+          .ca-textarea.error,.ca-date-input.error,.ca-text-input.error{border-color:#dc3545;background:#fff5f5;}
+          .ca-textarea.highlight{animation:caHighlight 1.8s forwards;}
+          @keyframes caHighlight{0%{background:#dcfce7;border-color:#16a34a;}100%{background:#fff;border-color:#f28b82;}}
 
-          .comment-section{margin-top:15px;}
-          .comment-label{
-            font-weight:600;
-            color:#555;
-            margin-bottom:8px;
-            font-size:13px;
-          }
+          /* ── Comment Section ── */
+          .comment-section{margin-top:16px;}
+          .comment-label{font-weight:600;color:#555;margin-bottom:8px;font-size:13px;}
           .comment-input{
-            width:100%;
-            padding:10px;
-            border:1px solid #ddd;
-            border-radius:4px;
-            min-height:70px;
-            resize:vertical;
-            font-family:inherit;
-            box-sizing:border-box;
+            width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;
+            min-height:70px;resize:vertical;font-family:inherit;box-sizing:border-box;
           }
 
-          .loading-overlay{
-            display:none;
-            position:fixed;
-            inset:0;
-            background:rgba(0,0,0,0.6);
-            z-index:9999;
-            flex-direction:column;
-            align-items:center;
-            justify-content:center;
-            gap:20px;
-          }
-          .loading-overlay.active{display:flex;}
-          .spinner{
-            width:56px;
-            height:56px;
-            border:6px solid rgba(255,255,255,0.3);
-            border-top-color:#fff;
-            border-radius:50%;
-            animation:spin 0.9s linear infinite;
-          }
-          @keyframes spin{to{transform:rotate(360deg)}}
-          .loading-text{
-            color:#fff;
-            font-size:18px;
-            font-weight:600;
-          }
+          /* ── Unified Card Action Bar ── */
+          .kpi-card-actions {
+           display: flex;
+           align-items: center;
+           justify-content: flex-start; /* ⬅️ instead of space-between */
+           gap: 10px; /* ⬅️ space between buttons */
+           margin-top: 16px;
+           padding-top: 14px;
+           border-top: 1px solid #e5e7eb;
+           flex-wrap: nowrap; /* ⬅️ keep them on same row */
+           }
+          .kpi-card-actions-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+          .kpi-card-actions-right{display:flex;align-items:center;gap:10px;}
 
-          .modal-overlay{
-            position:fixed;
-            top:0;
-            left:0;
-            width:100%;
-            height:100%;
-            background:rgba(0,0,0,0.6);
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            z-index:10000;
-            opacity:0;
-            pointer-events:none;
-            transition:all 0.25s ease;
+          .card-action-btn{
+            display:inline-flex;align-items:center;gap:7px;
+            border:none;border-radius:10px;
+            padding:9px 16px;
+            font-size:13px;font-weight:700;cursor:pointer;
+            transition:transform 0.15s,box-shadow 0.15s,background 0.15s;
           }
-          .modal-overlay.active{
-            opacity:1;
-            pointer-events:all;
+          .card-action-btn svg{width:15px;height:15px;flex-shrink:0;}
+          .card-action-btn:hover{transform:translateY(-1px);}
+
+          .card-action-btn--ghost{
+            background:#f8fafc;color:#475569;
+            border:1px solid #d1d5db;
           }
-          .modal-box{
-            background:white;
-            border-radius:12px;
-            padding:30px 25px;
-            width:90%;
-            max-width:420px;
-            text-align:center;
-            box-shadow:0 10px 40px rgba(0,0,0,0.25);
-            transform:translateY(20px);
-            transition:transform 0.25s ease;
-          }
-          .modal-overlay.active .modal-box{
-            transform:translateY(0);
-          }
-          .modal-icon{
-            font-size:42px;
-            margin-bottom:10px;
-          }
-          .modal-box h3{
-            margin:10px 0;
-            font-size:20px;
-            color:#333;
-          }
-          .modal-box p{
-            color:#666;
-            font-size:14px;
-            margin-bottom:25px;
-          }
-          .modal-actions{
-            display:flex;
-            gap:12px;
-            justify-content:center;
-          }
-          .btn-cancel{
-            padding:10px 20px;
-            border:1px solid #ccc;
-            background:white;
-            border-radius:6px;
-            cursor:pointer;
-            font-weight:600;
-          }
-          .btn-confirm{
-            padding:10px 20px;
-            border:none;
-            background:linear-gradient(135deg, #0078D7, #005ea6);
+          .card-action-btn--ghost:hover{background:#f1f5f9;box-shadow:0 4px 10px rgba(0,0,0,0.07);}
+
+          .card-action-btn--primary{
+            background:linear-gradient(135deg,#ef4444,#dc2626);
             color:white;
-            border-radius:6px;
-            cursor:pointer;
-            font-weight:600;
+            box-shadow:0 6px 16px rgba(220,38,38,0.22);
           }
-          .assistant-shell{
-            position:fixed;
-            right:90px;
-            bottom:24px;
-            z-index:10001;
-          }
-          .assistant-launcher{
-            width:64px;
-            height:64px;
-            border:none;
-            border-radius:999px;
+          .card-action-btn--primary:hover{box-shadow:0 8px 20px rgba(220,38,38,0.30);}
+
+          .card-action-btn--ai{
+            position:relative;overflow:hidden;
             background:linear-gradient(135deg,#2f87d6,#ff944d);
             color:white;
-            box-shadow:0 18px 35px rgba(15,23,42,0.26);
-            font-size:30px;
-            cursor:pointer;
+            box-shadow:0 6px 16px rgba(47,135,214,0.24);
+            padding:9px 18px;
           }
-          .assistant-panel{
-            width:min(92vw,460px);
-            height:min(72vh,620px);
-            background:rgba(255,255,255,0.98);
-            border:1px solid #dbe7f4;
-            border-radius:26px;
-            box-shadow:0 30px 60px rgba(15,23,42,0.22);
-            overflow:hidden;
-            display:none;
-            flex-direction:column;
-            margin-bottom:18px;
-            backdrop-filter:blur(12px);
-          }
-          .assistant-shell.open .assistant-panel{
-            display:flex;
-          }
-          .assistant-header{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            padding:18px 20px;
-            border-bottom:1px solid #e5edf6;
-            background:linear-gradient(180deg,#ffffff,#f6fbff);
-          }
-          .assistant-title-wrap{
-            display:flex;
-            align-items:center;
-            gap:12px;
-          }
-          .assistant-avatar{
-            width:42px;
-            height:42px;
-            border-radius:999px;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            background:#eef6ff;
-            color:#0f6cbd;
-            font-size:22px;
-            border:1px solid #c6def5;
-          }
-          .assistant-title{
-            font-size:16px;
-            font-weight:800;
-            color:#0f6cbd;
-          }
-          .assistant-focus{
-            margin-top:4px;
-            font-size:12px;
-            color:#5b6b7b;
-          }
-          .assistant-close{
-            border:none;
-            background:transparent;
-            color:#5b6b7b;
-            font-size:24px;
-            cursor:pointer;
-            line-height:1;
-          }
-          .assistant-messages{
-            flex:1;
-            padding:18px;
-            overflow:auto;
-            background:linear-gradient(180deg,#ffffff,#f8fbff 55%,#ffffff);
-            display:flex;
-            flex-direction:column;
-            gap:14px;
-          }
-          .assistant-message{
-            max-width:85%;
-            padding:14px 16px;
-            border-radius:20px;
-            line-height:1.55;
-            font-size:14px;
-            white-space:pre-wrap;
-          }
-          .assistant-message.assistant{
-            align-self:flex-start;
-            background:#eef4fb;
-            color:#1f2a37;
-            border:1px solid #d7e2ee;
-          }
-          .assistant-message.user{
-            align-self:flex-end;
-            background:#0f6cbd;
-            color:white;
-          }
-          .assistant-composer{
-            padding:16px;
-            border-top:1px solid #e5edf6;
-            background:#fbfdff;
-          }
-          .assistant-form{
-            display:flex;
-            align-items:flex-end;
-            gap:12px;
-            padding:8px;
-            border:2px solid #8cc4f3;
-            border-radius:18px;
-            background:white;
-            box-shadow:0 8px 18px rgba(15,108,189,0.08);
-          }
-          .assistant-input{
-            flex:1;
-            border:none;
-            resize:none;
-            min-height:48px;
-            max-height:140px;
-            font:inherit;
-            padding:10px 12px;
-            background:transparent;
-          }
-          .assistant-input:focus{
-            outline:none;
-          }
-          .assistant-send{
-            width:48px;
-            height:48px;
-            border:none;
-            border-radius:14px;
-            background:linear-gradient(135deg,#5aa7e8,#79b8ee);
-            color:white;
-            font-size:22px;
-            cursor:pointer;
-            flex-shrink:0;
-          }
-          .assistant-status{
-            margin-bottom:10px;
-            font-size:12px;
-            color:#6a7a8a;
+          .card-action-btn--ai:hover{box-shadow:0 10px 22px rgba(47,135,214,0.34);}
+          .ai-btn-glow{
+            position:absolute;inset:0;
+            background:radial-gradient(circle at 30% 50%,rgba(255,255,255,0.18),transparent 60%);
+            pointer-events:none;
           }
 
-          @media (max-width: 900px){
-            .kpi-split-layout{
-              grid-template-columns:1fr;
-            }
-            .kpi-mini-stats{
-              grid-template-columns:1fr;
-            }
-            .chart-modal-overlay{
-              padding:14px;
-            }
-            .chart-modal-box{
-              width:100%;
-              height:min(90vh, 900px);
-            }
-            .chart-modal-header{
-              padding:18px 18px 14px;
-            }
-            .chart-modal-header h3{
-              font-size:24px;
-            }
-            .chart-modal-body{
-              padding:14px;
-            }
-            .chart-modal-stage{
-              padding:14px;
-            }
-            .history-modal-overlay{
-              padding:14px;
-            }
+          /* ── CA Table Modal ── */
+          .ca-modal-overlay{
+            position:fixed;inset:0;
+            background:rgba(15,23,42,0.60);
+            display:flex;align-items:center;justify-content:center;
+            padding:24px;z-index:10005;
+            opacity:0;pointer-events:none;
+            transition:opacity 0.22s ease;
+          }
+          .ca-modal-overlay.active{opacity:1;pointer-events:auto;}
+          .ca-modal-box{
+            width:min(98vw,980px);
+            max-height:min(90vh,820px);
+            background:#fff;border-radius:22px;
+            box-shadow:0 30px 80px rgba(15,23,42,0.30);
+            display:flex;flex-direction:column;overflow:hidden;
+            transform:translateY(18px) scale(0.98);
+            transition:transform 0.22s ease;
+          }
+          .ca-modal-overlay.active .ca-modal-box{transform:translateY(0) scale(1);}
+          .ca-modal-header{
+            display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+            padding:22px 26px 18px;
+            border-bottom:1px solid #fee2e2;
+            background:linear-gradient(180deg,#fff5f5,#fff8f5);
+          }
+          .ca-modal-header-text{}
+          .ca-modal-title{margin:0;font-size:20px;font-weight:900;color:#991b1b;}
+          .ca-modal-subtitle{margin:5px 0 0;font-size:13px;color:#64748b;}
+          .ca-modal-close{
+            width:40px;height:40px;border:none;border-radius:999px;
+            background:#fee2e2;color:#b91c1c;font-size:22px;line-height:1;
+            cursor:pointer;flex-shrink:0;transition:background 0.2s;
+          }
+          .ca-modal-close:hover{background:#fecaca;}
+          .ca-modal-body{flex:1;min-height:0;overflow:auto;padding:22px 26px;}
+
+          /* Table */
+          .ca-table-wrap{overflow-x:auto;border-radius:14px;border:1px solid #fee2e2;}
+          .ca-table{
+            width:100%;border-collapse:collapse;font-size:13px;
+          }
+          .ca-table thead tr{background:#fff5f5;}
+          .ca-table th{
+            padding:12px 14px;text-align:left;font-size:11px;font-weight:800;
+            text-transform:uppercase;letter-spacing:0.6px;color:#991b1b;
+            border-bottom:2px solid #fecaca;white-space:nowrap;
+          }
+          .ca-table td{
+            padding:12px 14px;border-bottom:1px solid #fef2f2;
+            vertical-align:top;color:#374151;line-height:1.5;
+          }
+          .ca-table tr:last-child td{border-bottom:none;}
+          .ca-table tr:hover td{background:#fff5f5;}
+          .ca-table .ca-col-num{width:36px;font-weight:800;color:#b91c1c;}
+          .ca-table .ca-col-actions{width:100px;text-align:right;white-space:nowrap;}
+          .ca-table-empty{
+            text-align:center;padding:40px 20px;color:#94a3b8;font-size:14px;
+          }
+          .ca-table-status{
+            display:inline-block;padding:3px 10px;border-radius:999px;
+            font-size:11px;font-weight:700;
+            background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;
+          }
+          .ca-table-status.open{background:#fef2f2;color:#b91c1c;border-color:#fecaca;}
+          .ca-table-status.closed,.ca-table-status.completed{background:#ecfdf5;color:#047857;border-color:#a7f3d0;}
+          .ca-table-status.waiting-for-validation{background:#fff7ed;color:#c2410c;border-color:#fed7aa;}
+
+          .ca-tbl-btn{
+            border:none;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;cursor:pointer;
+          }
+          .ca-tbl-edit{background:#eff6ff;color:#1d4ed8;}
+          .ca-tbl-edit:hover{background:#dbeafe;}
+          .ca-tbl-delete{background:#fef2f2;color:#dc2626;margin-left:5px;}
+          .ca-tbl-delete:hover{background:#fee2e2;}
+
+          /* Modal form */
+          .ca-modal-form-section{
+            margin-top:22px;
+            border:1.5px solid #fecaca;
+            border-radius:16px;
+            overflow:hidden;
+          }
+          .ca-modal-form-header{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:14px 18px;background:#fff5f5;
+            border-bottom:1px solid #fecaca;
+          }
+          .ca-modal-form-title{font-size:14px;font-weight:800;color:#991b1b;}
+          .ca-modal-form-body{padding:18px;display:grid;gap:14px;}
+          .ca-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+          .ca-modal-field label{display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;}
+          .ca-modal-input,.ca-modal-textarea,.ca-modal-select{
+            width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:8px;
+            font-size:13px;font-family:inherit;background:#fff;box-sizing:border-box;
+          }
+          .ca-modal-textarea{min-height:72px;resize:vertical;}
+          .ca-modal-input:focus,.ca-modal-textarea:focus,.ca-modal-select:focus{
+            border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.10);
+          }
+          .ca-modal-form-footer{
+            display:flex;justify-content:flex-end;gap:10px;
+            padding:14px 18px;
+            border-top:1px solid #fecaca;background:#fff5f5;
+          }
+          .ca-modal-cancel-btn{
+            padding:9px 20px;border:1px solid #d1d5db;border-radius:8px;
+            background:#fff;color:#374151;font-size:13px;font-weight:700;cursor:pointer;
+          }
+          .ca-modal-save-btn{
+            padding:9px 24px;border:none;border-radius:8px;
+            background:linear-gradient(135deg,#ef4444,#dc2626);
+            color:white;font-size:13px;font-weight:700;cursor:pointer;
+            box-shadow:0 4px 12px rgba(220,38,38,0.22);
+          }
+          .ca-modal-add-row-btn{
+            display:inline-flex;align-items:center;gap:8px;
+            margin-top:16px;
+            padding:10px 18px;border:1.5px dashed #fca5a5;border-radius:10px;
+            background:transparent;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;
+            transition:background 0.15s;width:100%;justify-content:center;
+          }
+          .ca-modal-add-row-btn:hover{background:#fff5f5;}
+
+          /* ── Modals (chart + history) ── */
+          body.chart-modal-open{overflow:hidden;}
+          .chart-modal-overlay{
+            position:fixed;inset:0;padding:24px;background:rgba(15,23,42,0.58);
+            display:flex;align-items:center;justify-content:center;z-index:10003;
+            opacity:0;pointer-events:none;transition:opacity 0.22s ease;
+          }
+          .chart-modal-overlay.active{opacity:1;pointer-events:auto;}
+          .chart-modal-box{
+            width:min(96vw,1700px);height:min(92vh,980px);
+            background:#fff;border-radius:20px;
+            box-shadow:0 28px 80px rgba(15,23,42,0.28);
+            display:flex;flex-direction:column;overflow:hidden;
+            transform:translateY(18px) scale(0.98);transition:transform 0.22s ease;
+          }
+          .chart-modal-overlay.active .chart-modal-box{transform:translateY(0) scale(1);}
+          .chart-modal-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 28px 18px;border-bottom:1px solid #e5e7eb;}
+          .chart-modal-header h3{margin:0;color:#0f172a;font-size:32px;line-height:1.15;}
+          .chart-modal-header p{margin:8px 0 0;color:#64748b;font-size:15px;}
+          .chart-modal-close{width:44px;height:44px;border:none;border-radius:999px;background:#f8fafc;color:#334155;font-size:28px;line-height:1;cursor:pointer;flex-shrink:0;}
+          .chart-modal-close:hover{background:#e2e8f0;color:#0f172a;}
+          .chart-modal-body{flex:1;min-height:0;padding:20px 24px 24px;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);}
+          .chart-modal-stage{height:100%;min-height:0;background:#fff;border:1px solid #dbe4f0;border-radius:16px;padding:20px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);}
+          .chart-modal-stage canvas{width:100% !important;height:100% !important;display:block;}
+
+        .history-modal-overlay{
+           position:fixed;
+           inset:0;
+           padding:12px;
+           background:rgba(15,23,42,0.58);
+           display:flex;
+           align-items:center;
+           justify-content:center;
+           z-index:10004;
+           opacity:0;
+           pointer-events:none;
+          transition:opacity 0.22s ease;
+          }
+          .history-modal-overlay.active{opacity:1;pointer-events:auto;}
+         .history-modal-box{
+          width:min(98vw,1400px);
+          height:min(94vh,1000px);
+          max-height:min(94vh,1000px);
+          background:#fff;
+         border-radius:22px;
+         overflow:hidden;
+         box-shadow:0 28px 80px rgba(15,23,42,0.28);
+         transform:translateY(18px) scale(0.98);
+         transition:transform 0.22s ease;
+         display:flex;
+         flex-direction:column;
+         }
+          .history-modal-overlay.active .history-modal-box{transform:translateY(0) scale(1);}
+          .history-modal-header{
+           display:flex;
+           align-items:flex-start;
+           justify-content:space-between;
+           gap:16px;
+           padding:24px 28px 18px;
+           border-bottom:1px solid #e5e7eb;
+           background:linear-gradient(180deg,#ffffff,#f8fbff);
+           flex-shrink:0;
+             }
+          .history-modal-title{margin:0;color:#0f172a;font-size:24px;line-height:1.2;}
+          .history-modal-subtitle{margin:8px 0 0;color:#64748b;font-size:14px;}
+          .history-modal-close{width:42px;height:42px;border:none;border-radius:999px;background:#f8fafc;color:#334155;font-size:26px;line-height:1;cursor:pointer;flex-shrink:0;}
+          .history-modal-content{
+           flex:1;
+           min-height:0;
+           padding:24px 28px 28px;
+           overflow:auto;
+           background:linear-gradient(180deg,#ffffff,#f8fafc 100%);
+          }
+          .history-meta-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px;}
+          .history-chip{display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border-radius:999px;font-size:12px;font-weight:800;background:#eff6ff;color:#1d4ed8;}
+          .history-chip.status-open{background:#fef2f2;color:#b91c1c;}
+          .history-chip.status-waiting-for-validation{background:#fff7ed;color:#c2410c;}
+          .history-chip.status-completed,.history-chip.status-closed{background:#ecfdf5;color:#047857;}
+          .history-section{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;box-shadow:0 8px 22px rgba(15,23,42,0.05);}
+          .history-section+.history-section{margin-top:16px;}
+          .history-section-title{margin:0 0 14px;font-size:14px;font-weight:900;color:#111827;display:flex;align-items:center;gap:8px;}
+          .history-detail-card{background:linear-gradient(135deg,#fff8f8,#fffaf5);border:1px solid #fee2e2;border-radius:16px;padding:16px;}
+          .history-detail-row+.history-detail-row{margin-top:14px;padding-top:14px;border-top:1px solid rgba(226,232,240,0.8);}
+          .history-detail-label{font-size:12px;font-weight:900;margin-bottom:6px;}
+          .history-detail-label.root{color:#dc2626;}
+          .history-detail-label.solution{color:#d97706;}
+          .history-detail-label.evidence{color:#2563eb;}
+          .history-detail-text{font-size:14px;line-height:1.6;color:#334155;white-space:pre-wrap;}
+          .history-comments-list{display:grid;gap:12px;}
+          .history-comment-card{border-radius:16px;padding:16px;background:linear-gradient(135deg,#eff6ff,#dbeafe);border-left:4px solid #0f6cbd;}
+          .history-comment-label{font-size:12px;font-weight:900;color:#2563eb;margin-bottom:8px;}
+          .history-comment-text{font-size:14px;color:#1e293b;line-height:1.6;white-space:pre-wrap;}
+          .history-empty{text-align:center;padding:34px 20px;background:white;border:1px dashed #cbd5e1;border-radius:18px;color:#64748b;font-size:14px;line-height:1.6;}
+
+          /* ── Global Loading / Submit Modal ── */
+          .loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:20px;}
+          .loading-overlay.active{display:flex;}
+          .spinner{width:56px;height:56px;border:6px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.9s linear infinite;}
+          @keyframes spin{to{transform:rotate(360deg)}}
+          .loading-text{color:#fff;font-size:18px;font-weight:600;}
+          .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;opacity:0;pointer-events:none;transition:all 0.25s ease;}
+          .modal-overlay.active{opacity:1;pointer-events:all;}
+          .modal-box{background:white;border-radius:12px;padding:30px 25px;width:90%;max-width:420px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.25);transform:translateY(20px);transition:transform 0.25s ease;}
+          .modal-overlay.active .modal-box{transform:translateY(0);}
+          .modal-icon{font-size:42px;margin-bottom:10px;}
+          .modal-box h3{margin:10px 0;font-size:20px;color:#333;}
+          .modal-box p{color:#666;font-size:14px;margin-bottom:25px;}
+          .modal-actions{display:flex;gap:12px;justify-content:center;}
+          .btn-cancel{padding:10px 20px;border:1px solid #ccc;background:white;border-radius:6px;cursor:pointer;font-weight:600;}
+          .btn-confirm{padding:10px 20px;border:none;background:linear-gradient(135deg,#0078D7,#005ea6);color:white;border-radius:6px;cursor:pointer;font-weight:600;}
+          .submit-btn{background:#0078D7;color:white;border:none;padding:12px 30px;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer;display:block;width:100%;margin-top:20px;}
+
+          /* ── AI Assistant ── */
+          .assistant-shell{position:fixed;right:90px;bottom:24px;z-index:10001;}
+          .assistant-launcher{width:64px;height:64px;border:none;border-radius:999px;background:linear-gradient(135deg,#2f87d6,#ff944d);color:white;box-shadow:0 18px 35px rgba(15,23,42,0.26);font-size:30px;cursor:pointer;}
+          .assistant-panel{width:min(92vw,460px);height:min(72vh,620px);background:rgba(255,255,255,0.98);border:1px solid #dbe7f4;border-radius:26px;box-shadow:0 30px 60px rgba(15,23,42,0.22);overflow:hidden;display:none;flex-direction:column;margin-bottom:18px;backdrop-filter:blur(12px);}
+          .assistant-shell.open .assistant-panel{display:flex;}
+          .assistant-header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid #e5edf6;background:linear-gradient(180deg,#ffffff,#f6fbff);}
+          .assistant-title-wrap{display:flex;align-items:center;gap:12px;}
+          .assistant-avatar{width:42px;height:42px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:#eef6ff;color:#0f6cbd;font-size:22px;border:1px solid #c6def5;}
+          .assistant-title{font-size:16px;font-weight:800;color:#0f6cbd;}
+          .assistant-focus{margin-top:4px;font-size:12px;color:#5b6b7b;}
+          .assistant-close{border:none;background:transparent;color:#5b6b7b;font-size:24px;cursor:pointer;line-height:1;}
+          .assistant-messages{flex:1;padding:18px;overflow:auto;background:linear-gradient(180deg,#ffffff,#f8fbff 55%,#ffffff);display:flex;flex-direction:column;gap:14px;}
+          .assistant-message{max-width:85%;padding:14px 16px;border-radius:20px;line-height:1.55;font-size:14px;white-space:pre-wrap;}
+          .assistant-message.assistant{align-self:flex-start;background:#eef4fb;color:#1f2a37;border:1px solid #d7e2ee;}
+          .assistant-message.user{align-self:flex-end;background:#0f6cbd;color:white;}
+          .assistant-composer{padding:16px;border-top:1px solid #e5edf6;background:#fbfdff;}
+          .assistant-form{display:flex;align-items:flex-end;gap:12px;padding:8px;border:2px solid #8cc4f3;border-radius:18px;background:white;box-shadow:0 8px 18px rgba(15,108,189,0.08);}
+          .assistant-input{flex:1;border:none;resize:none;min-height:48px;max-height:140px;font:inherit;padding:10px 12px;background:transparent;}
+          .assistant-input:focus{outline:none;}
+          .assistant-send{width:48px;height:48px;border:none;border-radius:14px;background:linear-gradient(135deg,#5aa7e8,#79b8ee);color:white;font-size:22px;cursor:pointer;flex-shrink:0;}
+          .assistant-status{margin-bottom:10px;font-size:12px;color:#6a7a8a;}
+
+          /* ── Responsive ── */
+          @media(max-width:900px){
+            .kpi-split-layout{grid-template-columns:1fr;}
+            .chart-modal-overlay{padding:14px;}
+            .chart-modal-box{width:100%;height:min(90vh,900px);}
+            .chart-modal-header{padding:18px 18px 14px;}
+            .chart-modal-header h3{font-size:24px;}
+            .chart-modal-body{padding:14px;}
+            .history-modal-overlay{padding:8px;}
             .history-modal-box{
               width:100%;
-              max-height:min(90vh, 860px);
-            }
-            .history-modal-header{
-              padding:18px 18px 14px;
-            }
-            .history-modal-title{
-              font-size:20px;
-            }
-            .history-modal-content{
-              padding:16px 18px 18px;
-            }
+              height:94vh;
+              max-height:94vh;
+              border-radius:16px;
+             }
+            .ca-modal-box{max-height:min(94vh,820px);}
           }
-
           @media(max-width:700px){
             .ca-dates-grid{grid-template-columns:1fr;}
+            .ca-modal-form-row{grid-template-columns:1fr;}
+            .kpi-card-actions{flex-direction:column;align-items:stretch;}
+            .kpi-card-actions-right{justify-content:flex-end;}
           }
-
           @media(max-width:600px){
             .ca-ai-row{grid-template-columns:1fr;}
-            .assistant-shell{
-              right:16px;
-              bottom:16px;
-            }
-            .assistant-panel{
-              height:min(76vh,620px);
-            }
+            .assistant-shell{right:16px;bottom:16px;}
+            .assistant-panel{height:min(76vh,620px);}
           }
         </style>
       </head>
       <body>
+        <!-- Loading overlay -->
         <div class="loading-overlay" id="loadingOverlay">
           <div class="spinner"></div>
           <div class="loading-text">Submitting KPI Values...</div>
         </div>
 
+        <!-- Submit confirm modal -->
         <div id="confirmModal" class="modal-overlay">
           <div class="modal-box">
             <div class="modal-icon">⚠️</div>
             <h3>Confirm Submission</h3>
             <p>Are you sure you want to submit your KPI values?</p>
-
             <div class="modal-actions">
               <button id="cancelBtn" type="button" class="btn-cancel">Cancel</button>
               <button id="confirmBtn" type="button" class="btn-confirm">Yes, Submit</button>
@@ -3958,6 +3501,7 @@ app.get("/form", async (req, res) => {
           </div>
         </div>
 
+        <!-- Chart expand modal -->
         <div id="chartModal" class="chart-modal-overlay" aria-hidden="true">
           <div class="chart-modal-box" role="dialog" aria-modal="true" aria-labelledby="chartModalTitle">
             <div class="chart-modal-header">
@@ -3965,7 +3509,7 @@ app.get("/form", async (req, res) => {
                 <h3 id="chartModalTitle">KPI Trend</h3>
                 <p id="chartModalSubtitle">Monthly KPI performance overview</p>
               </div>
-              <button id="chartModalClose" type="button" class="chart-modal-close" aria-label="Close expanded chart">&times;</button>
+              <button id="chartModalClose" type="button" class="chart-modal-close" aria-label="Close">&times;</button>
             </div>
             <div class="chart-modal-body">
               <div class="chart-modal-stage">
@@ -3975,6 +3519,7 @@ app.get("/form", async (req, res) => {
           </div>
         </div>
 
+        <!-- History modal -->
         <div id="historyModal" class="history-modal-overlay" aria-hidden="true">
           <div class="history-modal-box" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
             <div class="history-modal-header">
@@ -3982,12 +3527,100 @@ app.get("/form", async (req, res) => {
                 <h3 id="historyModalTitle" class="history-modal-title">Corrective Action History</h3>
                 <p id="historyModalSubtitle" class="history-modal-subtitle">Previous month details for this KPI</p>
               </div>
-              <button id="historyModalClose" type="button" class="history-modal-close" aria-label="Close corrective action history">&times;</button>
+              <button id="historyModalClose" type="button" class="history-modal-close" aria-label="Close">&times;</button>
             </div>
             <div id="historyModalContent" class="history-modal-content"></div>
           </div>
         </div>
 
+        <!-- ── CA Table Modal ── -->
+        <div id="caTableModal" class="ca-modal-overlay" aria-hidden="true">
+          <div class="ca-modal-box" role="dialog" aria-modal="true" aria-labelledby="caModalTitle">
+            <div class="ca-modal-header">
+              <div class="ca-modal-header-text">
+                <h3 id="caModalTitle" class="ca-modal-title">Corrective Actions</h3>
+                <p id="caModalSubtitle" class="ca-modal-subtitle">Manage corrective action entries for this KPI</p>
+              </div>
+              <button id="caModalClose" type="button" class="ca-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="ca-modal-body">
+              <!-- Table of existing actions -->
+              <div class="ca-table-wrap">
+                <table class="ca-table" id="caModalTable">
+                  <thead>
+                    <tr>
+                      <th class="ca-col-num">#</th>
+                      <th>Root Cause</th>
+                      <th>Immediate Action</th>
+                      <th>Evidence</th>
+                      <th>Due Date</th>
+                      <th>Responsible</th>
+                      <th>Status</th>
+                      <th class="ca-col-actions">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="caModalTableBody">
+                    <tr><td colspan="8" class="ca-table-empty">No corrective actions yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Add new / Edit form -->
+              <button type="button" class="ca-modal-add-row-btn" id="caModalAddRowBtn">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 1v12M1 7h12"/></svg>
+                Add New Corrective Action
+              </button>
+
+              <div class="ca-modal-form-section" id="caModalFormSection" style="display:none;">
+                <div class="ca-modal-form-header">
+                  <span class="ca-modal-form-title" id="caModalFormTitle">New Corrective Action</span>
+                  <button type="button" class="ca-tbl-btn ca-tbl-delete" id="caModalFormCollapse">✕ Cancel</button>
+                </div>
+                <div class="ca-modal-form-body">
+                  <input type="hidden" id="caModalEditIndex" value="">
+                  <div class="ca-modal-form-row">
+                    <div class="ca-modal-field">
+                      <label>Due Date <span class="ca-required">*</span></label>
+                      <input type="date" id="caModalDueDate" class="ca-modal-input">
+                    </div>
+                    <div class="ca-modal-field">
+                      <label>Responsible <span class="ca-required">*</span></label>
+                      <input type="text" id="caModalResponsible" class="ca-modal-input" placeholder="Name">
+                    </div>
+                  </div>
+                  <div class="ca-modal-field">
+                    <label>Root Cause <span class="ca-required">*</span></label>
+                    <textarea id="caModalRootCause" class="ca-modal-textarea" placeholder="Describe the root cause..."></textarea>
+                  </div>
+                  <div class="ca-modal-field">
+                    <label>Immediate Action / Solution <span class="ca-required">*</span></label>
+                    <textarea id="caModalSolution" class="ca-modal-textarea" placeholder="Describe the implemented solution..."></textarea>
+                  </div>
+                  <div class="ca-modal-field">
+                    <label>Evidence of Improvement</label>
+                    <textarea id="caModalEvidence" class="ca-modal-textarea" placeholder="Provide evidence..."></textarea>
+                  </div>
+                  <div class="ca-modal-field">
+                    <label>Status</label>
+                    <select id="caModalStatus" class="ca-modal-select ca-modal-input">
+                      <option value="">— Select Status —</option>
+                      <option value="Open">Open</option>
+                      <option value="Waiting for Validation">Waiting for Validation</option>
+                      <option value="Completed">Completed</option>
+                      <option value="Closed">Closed</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="ca-modal-form-footer">
+                  <button type="button" class="ca-modal-cancel-btn" id="caModalCancelForm">Cancel</button>
+                  <button type="button" class="ca-modal-save-btn" id="caModalSaveForm">Save Action</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Main container -->
         <div class="container">
           <div class="header">
             <h2 style="color:white;font-size:22px;margin:0;">KPI Submission - ${week}</h2>
@@ -4003,7 +3636,6 @@ app.get("/form", async (req, res) => {
 
             <div class="kpi-section">
               <h3 style="color:#0078D7;margin-bottom:20px;border-bottom:2px solid #0078D7;padding-bottom:8px;">KPI Values</h3>
-
               <form action="/redirect" method="POST" id="kpiForm" novalidate>
                 <input type="hidden" name="responsible_id" value="${responsible_id}" />
                 <input type="hidden" name="week" value="${week}" />
@@ -4014,6 +3646,7 @@ app.get("/form", async (req, res) => {
           </div>
         </div>
 
+        <!-- AI Assistant -->
         <div class="assistant-shell" id="assistantShell">
           <div class="assistant-panel" id="assistantPanel">
             <div class="assistant-header">
@@ -4026,57 +3659,363 @@ app.get("/form", async (req, res) => {
               </div>
               <button type="button" class="assistant-close" id="assistantClose">×</button>
             </div>
-
             <div class="assistant-messages" id="assistantMessages"></div>
-
             <div class="assistant-composer">
               <div class="assistant-status" id="assistantStatus">Ask about KPI trends, target gaps, or corrective actions.</div>
               <form class="assistant-form" id="assistantForm">
-                <textarea
-                  class="assistant-input"
-                  id="assistantInput"
-                  placeholder="Type your message"
-                  rows="1"
-                ></textarea>
+                <textarea class="assistant-input" id="assistantInput" placeholder="Type your message" rows="1"></textarea>
                 <button type="submit" class="assistant-send" id="assistantSend">➤</button>
               </form>
             </div>
           </div>
-
-       <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
-       <span style="
-        background:linear-gradient(135deg,#2f87d6,#ff944d);
-        color:white;
-         font-size:20px;
-         font-weight:700;
-         padding:3px 10px;
-         border-radius:999px;
-         box-shadow:0 4px 12px rgba(15,23,42,0.2);
-         letter-spacing:0.5px;
-         white-space:nowrap;
-        ">AI Support</span>
-         <button type="button" class="assistant-launcher" id="assistantLauncher">🤖</button>
-        </div>
+      
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script>
-          function formApplyField(fieldId, card) {
-            const text = card.querySelector(".ca-ai-card-text").textContent.trim();
-            const field = document.getElementById(fieldId);
-            if (!field || !text) return;
+          /* ═══════════════════════════════════════════════
+             CA TABLE MODAL
+          ═══════════════════════════════════════════════ */
+          let caModalKvId = null;
+          // In-memory store: kvId → array of action objects
+          const caModalStore = {};
 
+          function getCaModalActions(kvId) {
+            if (!caModalStore[kvId]) {
+              // Seed from existing DOM cards
+              caModalStore[kvId] = [];
+              getCorrectiveActionCards(kvId).forEach((card) => {
+                caModalStore[kvId].push({
+                  id: getTrimmedValue(card.querySelector('input[name="ca_action_id_' + kvId + '[]"]')),
+                  root_cause: getTrimmedValue(getCorrectiveActionField(card, "root_cause")),
+                  impl_solution: getTrimmedValue(getCorrectiveActionField(card, "impl_solution")),
+                  evidence: getTrimmedValue(getCorrectiveActionField(card, "evidence")),
+                  due_date: getInputValue(getCorrectiveActionField(card, "due_date")),
+                  responsible: getTrimmedValue(getCorrectiveActionField(card, "responsible")),
+                  status: getTrimmedText(card.querySelector(".ca-status-badge"))
+                });
+              });
+            }
+            return caModalStore[kvId];
+          }
+
+          function escapeHtml(v) {
+            return String(v || "")
+              .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+          }
+
+          function statusClass(s) {
+            return String(s || "").trim().toLowerCase().replace(/\s+/g, "-");
+          }
+
+          function truncate(str, n) {
+            const s = String(str || "");
+            return s.length > n ? s.slice(0, n) + "…" : s;
+          }
+
+          function renderCaModalTable(kvId) {
+            const tbody = document.getElementById("caModalTableBody");
+            if (!tbody) return;
+            const actions = getCaModalActions(kvId);
+            if (!actions.length) {
+              tbody.innerHTML = '<tr><td colspan="8" class="ca-table-empty">No corrective actions yet. Click "Add" below to get started.</td></tr>';
+              return;
+            }
+            tbody.innerHTML = actions.map((a, i) => {
+              const sc = statusClass(a.status);
+              return \`<tr>
+                <td class="ca-col-num">\${i + 1}</td>
+                <td title="\${escapeHtml(a.root_cause)}">\${escapeHtml(truncate(a.root_cause, 60))}</td>
+                <td title="\${escapeHtml(a.impl_solution)}">\${escapeHtml(truncate(a.impl_solution, 60))}</td>
+                <td title="\${escapeHtml(a.evidence)}">\${escapeHtml(truncate(a.evidence, 40))}</td>
+                <td>\${escapeHtml(a.due_date)}</td>
+                <td>\${escapeHtml(a.responsible)}</td>
+                <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "—"}</td>
+                <td class="ca-col-actions">
+                  <button type="button" class="ca-tbl-btn ca-tbl-edit" onclick="caModalOpenEdit(\${i})">Edit</button>
+                  <button type="button" class="ca-tbl-btn ca-tbl-delete" onclick="caModalDeleteRow(\${i})">✕</button>
+                </td>
+              </tr>\`;
+            }).join("");
+          }
+
+          function caModalOpenForm(editIndex) {
+            const section = document.getElementById("caModalFormSection");
+            const formTitle = document.getElementById("caModalFormTitle");
+            const editIdx = document.getElementById("caModalEditIndex");
+            if (!section) return;
+
+            section.style.display = "";
+            if (editIndex !== null && editIndex !== undefined && editIndex >= 0) {
+              const actions = getCaModalActions(caModalKvId);
+              const a = actions[editIndex];
+              if (!a) return;
+              if (formTitle) formTitle.textContent = "Edit Action #" + (editIndex + 1);
+              if (editIdx) editIdx.value = String(editIndex);
+              document.getElementById("caModalDueDate").value = a.due_date || "";
+              document.getElementById("caModalResponsible").value = a.responsible || "";
+              document.getElementById("caModalRootCause").value = a.root_cause || "";
+              document.getElementById("caModalSolution").value = a.impl_solution || "";
+              document.getElementById("caModalEvidence").value = a.evidence || "";
+              document.getElementById("caModalStatus").value = a.status || "";
+            } else {
+              if (formTitle) formTitle.textContent = "New Corrective Action";
+              if (editIdx) editIdx.value = "";
+              ["caModalDueDate","caModalResponsible","caModalRootCause","caModalSolution","caModalEvidence"].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = "";
+              });
+              document.getElementById("caModalStatus").value = "";
+            }
+            section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+
+          function caModalOpenEdit(index) {
+            caModalOpenForm(index);
+          }
+
+          function caModalDeleteRow(index) {
+            const actions = getCaModalActions(caModalKvId);
+            actions.splice(index, 1);
+            renderCaModalTable(caModalKvId);
+            syncDomFromStore(caModalKvId);
+          }
+
+          function caModalCollapseForm() {
+            const section = document.getElementById("caModalFormSection");
+            if (section) section.style.display = "none";
+          }
+
+          function caModalSaveForm() {
+            const rootCause = document.getElementById("caModalRootCause").value.trim();
+            const solution = document.getElementById("caModalSolution").value.trim();
+            const dueDate = document.getElementById("caModalDueDate").value.trim();
+            const responsible = document.getElementById("caModalResponsible").value.trim();
+            const evidence = document.getElementById("caModalEvidence").value.trim();
+            const status = document.getElementById("caModalStatus").value;
+            const editIdx = document.getElementById("caModalEditIndex").value;
+
+            if (!rootCause || !solution || !dueDate || !responsible) {
+              alert("Please fill in Root Cause, Immediate Action, Due Date, and Responsible.");
+              return;
+            }
+
+            const entry = { root_cause: rootCause, impl_solution: solution, evidence, due_date: dueDate, responsible, status, id: "" };
+            const actions = getCaModalActions(caModalKvId);
+
+            if (editIdx !== "" && !isNaN(parseInt(editIdx))) {
+              const idx = parseInt(editIdx);
+              if (actions[idx]) entry.id = actions[idx].id;
+              actions[idx] = entry;
+            } else {
+              actions.push(entry);
+            }
+
+            renderCaModalTable(caModalKvId);
+            syncDomFromStore(caModalKvId);
+            caModalCollapseForm();
+          }
+
+          function syncDomFromStore(kvId) {
+            // Rebuild the hidden CA stack so form submission still works
+            const stack = getCorrectiveActionStack(kvId);
+            if (!stack) return;
+
+            const actions = getCaModalActions(kvId);
+            const template = stack.querySelector(".ca-action-card");
+            if (!template) return;
+
+            // Remove all existing cards
+            stack.querySelectorAll(".ca-action-card").forEach(c => c.remove());
+
+            // Re-create one per store entry (or blank if empty)
+            const toRender = actions.length ? actions : [{ responsible: "${responsible.name || ""}" }];
+            toRender.forEach((action, idx) => {
+              const newCard = template.cloneNode(true);
+              const idInput = newCard.querySelector('input[name="ca_action_id_' + kvId + '[]"]');
+              if (idInput) idInput.value = action.id || "";
+
+              const setField = (name, val) => {
+                const f = getCorrectiveActionField(newCard, name);
+                if (f) f.value = val || "";
+              };
+              setField("due_date", action.due_date);
+              setField("responsible", action.responsible);
+              setField("root_cause", action.root_cause);
+              setField("impl_solution", action.impl_solution);
+              setField("evidence", action.evidence);
+
+              const removeBtn = newCard.querySelector(".ca-remove-btn");
+              if (removeBtn) removeBtn.classList.toggle("is-hidden", idx === 0 && toRender.length === 1);
+
+              stack.appendChild(newCard);
+              bindCorrectiveActionCard(newCard, kvId);
+            });
+
+            renumberCorrectiveActionCards(kvId);
+
+            // Update count badge
+            const countBadge = document.getElementById("ca-count-badge-" + kvId);
+            const count = actions.length;
+            if (countBadge) countBadge.textContent = count + " Action" + (count === 1 ? "" : "s");
+          }
+
+          function openCaTableModal(kvId) {
+            caModalKvId = kvId;
+            const overlay = document.getElementById("caTableModal");
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+            const title = card ? (card.querySelector(".kpi-title") || {}).textContent || "KPI" : "KPI";
+
+            const modalTitle = document.getElementById("caModalTitle");
+            const modalSubtitle = document.getElementById("caModalSubtitle");
+            if (modalTitle) modalTitle.textContent = "Corrective Actions — " + title.trim();
+            if (modalSubtitle) modalSubtitle.textContent = "Add, edit, or remove corrective action entries";
+
+            caModalCollapseForm();
+            renderCaModalTable(kvId);
+
+            overlay.classList.add("active");
+            overlay.setAttribute("aria-hidden", "false");
+            document.body.classList.add("chart-modal-open");
+          }
+
+          function closeCaTableModal() {
+            const overlay = document.getElementById("caTableModal");
+            overlay.classList.remove("active");
+            overlay.setAttribute("aria-hidden", "true");
+            if (!document.querySelector(".chart-modal-overlay.active") &&
+                !document.querySelector(".history-modal-overlay.active")) {
+              document.body.classList.remove("chart-modal-open");
+            }
+            caModalKvId = null;
+          }
+
+          /* ═══════════════════════════════════════════════
+             UTILITY HELPERS
+          ═══════════════════════════════════════════════ */
+          function getTextContent(node) { return node && typeof node.textContent === "string" ? node.textContent : ""; }
+          function getTrimmedText(node) { return getTextContent(node).trim(); }
+          function getInputValue(node) { return node && typeof node.value === "string" ? node.value : ""; }
+          function getTrimmedValue(node) { return getInputValue(node).trim(); }
+
+          function getCorrectiveActionStack(kvId) {
+            return document.querySelector('.ca-actions-stack[data-kpi-values-id="' + kvId + '"]');
+          }
+          function getCorrectiveActionCards(kvId) {
+            const stack = getCorrectiveActionStack(kvId);
+            return stack ? Array.from(stack.querySelectorAll(".ca-action-card")) : [];
+          }
+          function getLatestCorrectiveActionCard(kvId) {
+            const cards = getCorrectiveActionCards(kvId);
+            return cards.length ? cards[cards.length - 1] : null;
+          }
+          function getCorrectiveActionField(actionCard, fieldName) {
+            return actionCard ? actionCard.querySelector('[data-ca-field="' + fieldName + '"]') : null;
+          }
+          function renumberCorrectiveActionCards(kvId) {
+            getCorrectiveActionCards(kvId).forEach((card, index) => {
+              const num = card.querySelector(".ca-action-number");
+              if (num) num.textContent = String(index + 1);
+            });
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+            const badge = card ? card.querySelector(".ca-count-badge") : null;
+            const count = getCorrectiveActionCards(kvId).length;
+            if (badge) badge.textContent = count + " Action" + (count === 1 ? "" : "s");
+          }
+          function bindCorrectiveActionCard(actionCard, kvId) {
+            if (!actionCard) return;
+            const removeButton = actionCard.querySelector(".ca-remove-btn");
+            if (removeButton) {
+              removeButton.onclick = () => {
+                if (getCorrectiveActionCards(kvId).length <= 1) return;
+                actionCard.remove();
+                renumberCorrectiveActionCards(kvId);
+              };
+            }
+          }
+
+          function formApplyField(kvId, fieldName, card) {
+            const text = getTrimmedText(card.querySelector(".ca-ai-card-text"));
+            const actionCard = getLatestCorrectiveActionCard(kvId);
+            const field = getCorrectiveActionField(actionCard, fieldName);
+            if (!field || !text) return;
             field.value = text;
             field.classList.remove("highlight");
             void field.offsetWidth;
             field.classList.add("highlight");
-            field.scrollIntoView({ behavior:"smooth", block:"center" });
-
+            field.scrollIntoView({ behavior: "smooth", block: "center" });
             card.classList.add("applied");
             const hint = card.querySelector(".ca-apply-hint");
-            if (hint) hint.textContent = "✓ Applied";
+            if (hint) hint.textContent = "Applied";
+          }
+          window.formApplyField = formApplyField;
+
+          function checkLowLimit(input) {
+            const card = input.closest(".kpi-card");
+            if (!card) return;
+            const rawLow = parseFloat(card.dataset.lowLimit);
+            const rawHigh = parseFloat(card.dataset.highLimit);
+            const hasLow = !isNaN(rawLow), hasHigh = !isNaN(rawHigh);
+            const lowerBound = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
+            const upperBound = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
+            const goodDirection = String(card.dataset.goodDirection || "up").toLowerCase() === "down" ? "down" : "up";
+            const val = parseFloat(input.value);
+            const kvId = input.dataset.kpiValuesId;
+            const caPanel = document.getElementById("ca_container_" + kvId);
+            const isOutside = !isNaN(val) && (
+              goodDirection === "down"
+                ? upperBound !== null && val > upperBound
+                : lowerBound !== null && val < lowerBound
+            );
+            if (!caPanel) return;
+            caPanel.classList.toggle("visible", isOutside);
+            caPanel.querySelectorAll(".ca-required-field").forEach(f => { f.required = isOutside; });
           }
 
+          function collectAssistantKpis() {
+            return Array.from(document.querySelectorAll(".kpi-card")).map(card => {
+              const kvId = card.dataset.kpiValuesId;
+              const valueInput = card.querySelector(".value-input");
+              const comment = getTrimmedValue(card.querySelector('textarea[name^="comment_"]'));
+              const statusBadge = card.querySelector(".ca-status-badge");
+              const actionCards = getCorrectiveActionCards(kvId);
+              const correctiveActions = actionCards.map(ac => ({
+                corrective_action_id: getTrimmedValue(ac.querySelector('input[name="ca_action_id_' + kvId + '[]"]')),
+                root_cause: getTrimmedValue(getCorrectiveActionField(ac, "root_cause")),
+                implemented_solution: getTrimmedValue(getCorrectiveActionField(ac, "impl_solution")),
+                evidence: getTrimmedValue(getCorrectiveActionField(ac, "evidence")),
+                due_date: getInputValue(getCorrectiveActionField(ac, "due_date")),
+                responsible: getTrimmedValue(getCorrectiveActionField(ac, "responsible"))
+              }));
+              const latestAction = correctiveActions.length ? correctiveActions[correctiveActions.length - 1] : {};
+              return {
+                kpi_id: card.dataset.kpiId,
+                kpi_values_id: kvId,
+                title: getTrimmedText(card.querySelector(".kpi-title")),
+                subtitle: getTrimmedText(card.querySelector(".kpi-subtitle")),
+                good_direction: card.dataset.goodDirection || "",
+                current_value: getInputValue(valueInput),
+                target: card.dataset.target || "",
+                low_limit: card.dataset.lowLimit || "",
+                high_limit: card.dataset.highLimit || "",
+                unit: card.dataset.unit || "",
+                week: card.dataset.currentWeek || "",
+                comment,
+                root_cause: latestAction.root_cause || "",
+                implemented_solution: latestAction.implemented_solution || "",
+                evidence: latestAction.evidence || "",
+                due_date: latestAction.due_date || "",
+                responsible: latestAction.responsible || "",
+                corrective_action_status: getTrimmedText(statusBadge),
+                corrective_actions: correctiveActions
+              };
+            });
+          }
+
+          /* ═══════════════════════════════════════════════
+             AI ASSISTANT
+          ═══════════════════════════════════════════════ */
           const assistantShell = document.getElementById("assistantShell");
           const assistantLauncher = document.getElementById("assistantLauncher");
           const assistantClose = document.getElementById("assistantClose");
@@ -4086,154 +4025,62 @@ app.get("/form", async (req, res) => {
           const assistantForm = document.getElementById("assistantForm");
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
-
-          const assistantState = {
-            selectedKpiId: null,
-            booted: false,
-            pending: false
-          };
-
-          function escapeAssistantText(text) {
-            return String(text || "")
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;")
-              .replace(/"/g, "&quot;")
-              .replace(/'/g, "&#39;")
-              .split("\\n").join("<br>");
-          }
+          const assistantState = { selectedKpiId: null, booted: false, pending: false };
 
           function addAssistantMessage(role, text) {
             if (!assistantMessages) return;
             const msg = document.createElement("div");
             msg.className = "assistant-message " + role;
-            msg.innerHTML = escapeAssistantText(text);
+            msg.innerHTML = String(text || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").split("\\n").join("<br>");
             assistantMessages.appendChild(msg);
             assistantMessages.scrollTop = assistantMessages.scrollHeight;
           }
-
-          function setAssistantStatus(text) {
-            if (assistantStatus) assistantStatus.textContent = text;
-          }
-
-          function getKpiCardById(kvId) {
-            return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
-          }
-
-          function getTextContent(node) {
-            return node && typeof node.textContent === "string" ? node.textContent : "";
-          }
-
-          function getTrimmedText(node) {
-            const text = getTextContent(node);
-            return text ? text.trim() : "";
-          }
-
-          function getInputValue(node) {
-            return node && typeof node.value === "string" ? node.value : "";
-          }
-
-          function getTrimmedValue(node) {
-            const value = getInputValue(node);
-            return value ? value.trim() : "";
-          }
-
-          function collectAssistantKpis() {
-            return Array.from(document.querySelectorAll(".kpi-card")).map(card => {
-              const kvId = card.dataset.kpiValuesId;
-              const valueInput = card.querySelector(".value-input");
-              const title = getTrimmedText(card.querySelector(".kpi-title"));
-              const subtitle = getTrimmedText(card.querySelector(".kpi-subtitle"));
-              const comment = getTrimmedValue(card.querySelector('textarea[name^="comment_"]'));
-              const rootCause = getTrimmedValue(document.getElementById("root_cause_" + kvId));
-              const implementedSolution = getTrimmedValue(document.getElementById("impl_solution_" + kvId));
-              const evidence = getTrimmedValue(document.getElementById("evidence_" + kvId));
-              const dueDate = getInputValue(document.getElementById("due_date_" + kvId));
-              const responsibleName = getTrimmedValue(document.getElementById("responsible_" + kvId));
-              const statusBadge = card.querySelector(".ca-status-badge");
-
-              return {
-                kpi_id: card.dataset.kpiId,
-                kpi_values_id: kvId,
-                title,
-                subtitle,
-                good_direction: card.dataset.goodDirection || "",
-                current_value: getInputValue(valueInput),
-                target: card.dataset.target || "",
-                low_limit: card.dataset.lowLimit || "",
-                high_limit: card.dataset.highLimit || "",
-                unit: card.dataset.unit || "",
-                week: card.dataset.currentWeek || "",
-                comment,
-                root_cause: rootCause,
-                implemented_solution: implementedSolution,
-                evidence,
-                due_date: dueDate,
-                responsible: responsibleName,
-                corrective_action_status: getTrimmedText(statusBadge)
-              };
-            });
-          }
-
-          function refreshAssistantFocus() {
-            if (!assistantFocus) return;
-            if (!assistantState.selectedKpiId) {
-              assistantFocus.textContent = "All KPIs on this form";
-              return;
-            }
-
-            const card = getKpiCardById(assistantState.selectedKpiId);
-            const title = (card ? getTrimmedText(card.querySelector(".kpi-title")) : "") || "Selected KPI";
-            assistantFocus.textContent = "Focused on: " + title;
-          }
+          function setAssistantStatus(text) { if (assistantStatus) assistantStatus.textContent = text; }
+          function getKpiCardById(kvId) { return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]'); }
 
           function openAssistant() {
             if (!assistantShell) return;
             assistantShell.classList.add("open");
             if (assistantLauncher) assistantLauncher.textContent = "×";
-            refreshAssistantFocus();
-
+            if (assistantFocus) {
+              if (!assistantState.selectedKpiId) {
+                assistantFocus.textContent = "All KPIs on this form";
+              } else {
+                const card = getKpiCardById(assistantState.selectedKpiId);
+                assistantFocus.textContent = "Focused on: " + ((card && getTrimmedText(card.querySelector(".kpi-title"))) || "Selected KPI");
+              }
+            }
             if (!assistantState.booted) {
-              addAssistantMessage(
-                "assistant",
-                "Hello I'am your Assitant for the key performance indicators feel free to ask me about anything related to the kpis."
-              );
+              addAssistantMessage("assistant", "Hello! I'm your assistant for the key performance indicators. Feel free to ask me about anything related to the KPIs.");
               assistantState.booted = true;
             }
-
             if (assistantInput) assistantInput.focus();
           }
-
           function closeAssistant() {
             if (!assistantShell) return;
             assistantShell.classList.remove("open");
             if (assistantLauncher) assistantLauncher.textContent = "🤖";
           }
-
           function openAssistantForKpi(kvId) {
             assistantState.selectedKpiId = kvId;
             openAssistant();
             const card = getKpiCardById(kvId);
-            const title = (card ? getTrimmedText(card.querySelector(".kpi-title")) : "") || "Selected KPI";
+            const title = (card && getTrimmedText(card.querySelector(".kpi-title"))) || "Selected KPI";
             setAssistantStatus("Focused on " + title + ". Ask a question about this KPI.");
           }
+          window.openAssistantForKpi = openAssistantForKpi;
 
           async function sendAssistantPrompt(message) {
             const cleanMessage = String(message || "").trim();
             if (!cleanMessage || assistantState.pending) return;
-
             assistantState.pending = true;
             if (assistantSend) assistantSend.disabled = true;
-
             addAssistantMessage("user", cleanMessage);
             setAssistantStatus("Thinking...");
-
             try {
               const res = await fetch("/kpi-ai-assistant", {
                 method: "POST",
-                headers: {
-                  "Content-Type": "application/json"
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   responsible_id: "${responsible_id}",
                   week: "${week}",
@@ -4242,10 +4089,8 @@ app.get("/form", async (req, res) => {
                   message: cleanMessage
                 })
               });
-
               const data = await res.json();
               if (!res.ok) throw new Error(data.error || "Request failed");
-
               addAssistantMessage("assistant", data.reply || "I could not generate a response.");
               setAssistantStatus("AI assistant is ready.");
             } catch (err) {
@@ -4257,899 +4102,494 @@ app.get("/form", async (req, res) => {
             }
           }
 
-          if (assistantLauncher) {
-            assistantLauncher.addEventListener("click", () => {
-              if (assistantShell && assistantShell.classList.contains("open")) {
-                closeAssistant();
-              } else {
-                assistantState.selectedKpiId = null;
-                openAssistant();
-              }
-            });
-          }
-
-          if (assistantClose) {
-            assistantClose.addEventListener("click", () => {
-              closeAssistant();
-            });
-          }
-
+          if (assistantLauncher) assistantLauncher.addEventListener("click", () => {
+            assistantShell.classList.contains("open") ? closeAssistant() : (assistantState.selectedKpiId = null, openAssistant());
+          });
+          if (assistantClose) assistantClose.addEventListener("click", closeAssistant);
           if (assistantInput) {
             assistantInput.addEventListener("input", () => {
               assistantInput.style.height = "auto";
               assistantInput.style.height = Math.min(assistantInput.scrollHeight, 140) + "px";
             });
-
-            assistantInput.addEventListener("keydown", (event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (assistantForm && typeof assistantForm.requestSubmit === "function") {
-                  assistantForm.requestSubmit();
-                } else if (assistantSend) {
-                  assistantSend.click();
-                }
-              }
+            assistantInput.addEventListener("keydown", e => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); assistantForm && assistantForm.requestSubmit(); }
             });
           }
+          if (assistantForm) assistantForm.addEventListener("submit", async e => {
+            e.preventDefault();
+            const prompt = getInputValue(assistantInput);
+            if (assistantInput) { assistantInput.value = ""; assistantInput.style.height = "auto"; }
+            await sendAssistantPrompt(prompt);
+          });
 
-          if (assistantForm) {
-            assistantForm.addEventListener("submit", async (event) => {
-              event.preventDefault();
-              const prompt = getInputValue(assistantInput);
-              if (assistantInput) {
-                assistantInput.value = "";
-                assistantInput.style.height = "auto";
-              }
-              await sendAssistantPrompt(prompt);
-            });
-          }
-
-          window.formApplyField = formApplyField;
-          window.openAssistantForKpi = openAssistantForKpi;
-
-          async function formGenerateSuggestion(kvId, kpiId, responsibleId, week) {
-            const btn = document.getElementById("ca-gen-btn-" + kvId);
-            const suggDiv = document.getElementById("ca-sugg-" + kvId);
-            const errDiv = document.getElementById("ca-err-" + kvId);
-
-            if (suggDiv) suggDiv.style.display = "none";
-            if (errDiv) errDiv.style.display = "none";
-
-            if (suggDiv) {
-              suggDiv.querySelectorAll(".ca-ai-card").forEach(c => {
-                c.classList.remove("applied");
-                const hint = c.querySelector(".ca-apply-hint");
-                if (hint) hint.textContent = "Click to apply ↓";
-              });
-            }
-
-            if (btn) {
-              btn.disabled = true;
-              btn.classList.add("loading");
-              const icon = btn.querySelector(".ca-gen-icon");
-              const text = btn.querySelector(".ca-gen-text");
-              if (icon) icon.textContent = "⏳";
-              if (text) text.textContent = "Generating...";
-            }
-
-            try {
-              const res = await fetch(
-                "/generate-ca-suggestion?kpi_id=" + kpiId +
-                "&responsible_id=" + responsibleId +
-                "&week=" + encodeURIComponent(week)
-              );
-
-              if (!res.ok) throw new Error("Request failed");
-              const data = await res.json();
-              if (data.error || !data.suggestion) throw new Error(data.error || "No suggestion");
-
-              const s = data.suggestion;
-              const rc = document.getElementById("ca-rc-text-" + kvId);
-              const sol = document.getElementById("ca-sol-text-" + kvId);
-              const ev = document.getElementById("ca-ev-text-" + kvId);
-
-              if (rc) rc.textContent = s.root_cause || "";
-              if (sol) sol.textContent = s.immediate_action || "";
-              if (ev) ev.textContent = s.evidence || "";
-
-              if (suggDiv) suggDiv.style.display = "block";
-            } catch (err) {
-              if (errDiv) errDiv.style.display = "block";
-            } finally {
-              if (btn) {
-                btn.disabled = false;
-                btn.classList.remove("loading");
-                const icon = btn.querySelector(".ca-gen-icon");
-                const text = btn.querySelector(".ca-gen-text");
-                if (icon) icon.textContent = "🔄";
-                if (text) text.textContent = "Regenerate";
-              }
-            }
-          }
-
-          function checkLowLimit(input) {
-            const card = input.closest(".kpi-card");
-            if (!card) return;
-
-            const rawLow = parseFloat(card.dataset.lowLimit);
-            const rawHigh = parseFloat(card.dataset.highLimit);
-            const hasLow = !isNaN(rawLow);
-            const hasHigh = !isNaN(rawHigh);
-            const lowerBound = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
-            const upperBound = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
-            const goodDirection = String(card.dataset.goodDirection || "up").toLowerCase() === "down" ? "down" : "up";
-
-            const val = parseFloat(input.value);
-            const kvId = input.dataset.kpiValuesId;
-            const caPanel = document.getElementById("ca_container_" + kvId);
-            const isOutsideGoodRange = !isNaN(val) && (
-              goodDirection === "down"
-                ? upperBound !== null && val > upperBound
-                : lowerBound !== null && val < lowerBound
-            );
-
-            if (caPanel && !isNaN(val) && (lowerBound !== null || upperBound !== null)) {
-              caPanel.classList.toggle("visible", isOutsideGoodRange);
-
-              ["root_cause_", "impl_solution_", "evidence_", "due_date_", "responsible_"].forEach(prefix => {
-                const el = document.getElementById(prefix + kvId);
-                if (el) el.required = isOutsideGoodRange;
-              });
-            } else if (caPanel && (isNaN(val) || (lowerBound === null && upperBound === null))) {
-              caPanel.classList.remove("visible");
-              ["root_cause_", "impl_solution_", "evidence_", "due_date_", "responsible_"].forEach(prefix => {
-                const el = document.getElementById(prefix + kvId);
-                if (el) el.required = false;
-              });
-            }
-          }
-
+          /* ═══════════════════════════════════════════════
+             CHARTS
+          ═══════════════════════════════════════════════ */
           const kpiCharts = {};
           let expandedChart = null;
           let expandedChartKpiValuesId = null;
 
           function formatChartValue(value) {
-            const numericValue = Number(value);
-            if (!isFinite(numericValue)) return "";
-
-            const hasDecimals = Math.abs(numericValue % 1) > 0.001;
-            return numericValue.toLocaleString("en-US", {
-              minimumFractionDigits: hasDecimals ? 2 : 0,
-              maximumFractionDigits: 2
-            });
+            const n = Number(value);
+            if (!isFinite(n)) return "";
+            return n.toLocaleString("en-US", { minimumFractionDigits: Math.abs(n % 1) > 0.001 ? 2 : 0, maximumFractionDigits: 2 });
           }
-
           const expandedChartValueLabelsPlugin = {
             id: "expandedChartValueLabels",
             afterDatasetsDraw(chart) {
-              const valueDatasetIndex = chart.data.datasets.findIndex(dataset => (dataset.type || chart.config.type) !== "line");
-              if (valueDatasetIndex === -1) return;
-
-              const dataset = chart.data.datasets[valueDatasetIndex];
-              const meta = chart.getDatasetMeta(valueDatasetIndex);
+              const idx = chart.data.datasets.findIndex(d => (d.type || chart.config.type) !== "line");
+              if (idx === -1) return;
+              const dataset = chart.data.datasets[idx];
+              const meta = chart.getDatasetMeta(idx);
               const ctx = chart.ctx;
-
               ctx.save();
-              ctx.fillStyle = "#334155";
-              ctx.font = "600 13px Segoe UI";
-              ctx.textAlign = "center";
-              ctx.textBaseline = "bottom";
-
-              meta.data.forEach((barElement, index) => {
-                const rawValue = dataset.data[index];
-                const numericValue = typeof rawValue === "number" ? rawValue : parseFloat(rawValue);
-                if (isNaN(numericValue)) return;
-
-                const point = barElement.tooltipPosition();
-                ctx.fillText(formatChartValue(numericValue), point.x, point.y - 8);
+              ctx.fillStyle = "#334155"; ctx.font = "600 13px Segoe UI"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+              meta.data.forEach((bar, i) => {
+                const val = typeof dataset.data[i] === "number" ? dataset.data[i] : parseFloat(dataset.data[i]);
+                if (isNaN(val)) return;
+                const pt = bar.tooltipPosition();
+                ctx.fillText(formatChartValue(val), pt.x, pt.y - 8);
               });
-
               ctx.restore();
             }
           };
 
-          function cloneChartSetting(value) {
-            return Array.isArray(value) ? value.slice() : value;
+          function hexToRgba(hex, alpha) {
+            const n = String(hex || "").replace("#", "");
+            if (n.length !== 6) return "rgba(148,163,184," + alpha + ")";
+            return "rgba(" + parseInt(n.slice(0,2),16) + "," + parseInt(n.slice(2,4),16) + "," + parseInt(n.slice(4,6),16) + "," + alpha + ")";
           }
 
-          function cloneChartDataset(dataset, isPrimaryDataset) {
-            const clonedDataset = Object.assign({}, dataset);
-
-            clonedDataset.data = Array.isArray(dataset.data) ? dataset.data.slice() : dataset.data;
-            clonedDataset.backgroundColor = cloneChartSetting(dataset.backgroundColor);
-            clonedDataset.borderColor = cloneChartSetting(dataset.borderColor);
-            clonedDataset.pointBackgroundColor = cloneChartSetting(dataset.pointBackgroundColor);
-            clonedDataset.pointBorderColor = cloneChartSetting(dataset.pointBorderColor);
-            clonedDataset.borderDash = cloneChartSetting(dataset.borderDash);
-
-            if (isPrimaryDataset) {
-              clonedDataset.barThickness = 56;
-              clonedDataset.maxBarThickness = 72;
-              clonedDataset.borderRadius = 10;
-            }
-
-            return clonedDataset;
-          }
-
-          function getThresholdLines(lowLimit, target, highLimit) {
-            const lines = [];
-
-            if (!isNaN(highLimit)) {
-              lines.push({
-                value: highLimit,
-                borderColor: "#f59e0b",
-                borderDash: [6, 4],
-                borderWidth: 2
-              });
-            }
-
-            if (!isNaN(target)) {
-              lines.push({
-                value: target,
-                borderColor: "#22c55e",
-                borderDash: [4, 4],
-                borderWidth: 2
-              });
-            }
-
-            if (!isNaN(lowLimit)) {
-              lines.push({
-                value: lowLimit,
-                borderColor: "#ef4444",
-                borderDash: [6, 4],
-                borderWidth: 2
-              });
-            }
-
-            return lines;
-          }
-
-          function cloneThresholdLines(lines) {
-            return Array.isArray(lines)
-              ? lines.map((line) => ({
-                  value: line.value,
-                  borderColor: line.borderColor,
-                  borderDash: Array.isArray(line.borderDash) ? line.borderDash.slice() : [],
-                  borderWidth: line.borderWidth
-                }))
-              : [];
+          function getSeparatedLines(lines, top, bottom, minSpc) {
+            if (!lines.length) return [];
+            const positioned = lines
+              .map(l => ({ ...l, displayY: Math.min(Math.max(l.actualY, top + minSpc/2), bottom - minSpc/2) }))
+              .sort((a,b) => a.displayY - b.displayY);
+            const anchor = Math.max(0, positioned.findIndex(l => l.key === "target"));
+            positioned[anchor].displayY = Math.min(Math.max(positioned[anchor].actualY - 2, top + minSpc/2), bottom - minSpc/2);
+            for (let i = anchor - 1; i >= 0; i--) { positioned[i].displayY = Math.min(positioned[i].actualY, positioned[i+1].displayY - minSpc); }
+            for (let i = anchor + 1; i < positioned.length; i++) { positioned[i].displayY = Math.max(positioned[i].actualY, positioned[i-1].displayY + minSpc); }
+            const overflow = positioned[positioned.length-1].displayY - (bottom - minSpc/2);
+            if (overflow > 0) positioned.forEach(l => l.displayY -= overflow);
+            for (let i = positioned.length - 2; i >= 0; i--) { if (positioned[i].displayY > positioned[i+1].displayY - minSpc) positioned[i].displayY = positioned[i+1].displayY - minSpc; }
+            const underflow = (top + minSpc/2) - positioned[0].displayY;
+            if (underflow > 0) positioned.forEach(l => l.displayY += underflow);
+            return positioned;
           }
 
           const kpiThresholdLinesPlugin = {
             id: "kpiThresholdLines",
-            afterDatasetsDraw(chart, args, pluginOptions) {
-              const chartArea = chart.chartArea;
+            afterDatasetsDraw(chart, args, opts) {
+              const { left, right, top, bottom } = chart.chartArea;
               const yScale = chart.scales.y;
-              const lines = pluginOptions && Array.isArray(pluginOptions.lines)
-                ? pluginOptions.lines
-                : [];
-
-              if (!chartArea || !yScale || !lines.length) return;
-
-              const { left, right, top, bottom } = chartArea;
+              const lines = (opts && opts.lines) || [];
+              if (!lines.length) return;
               const ctx = chart.ctx;
-
+              const visibleLines = lines.map(l => {
+                const v = Number(l.value);
+                if (!isFinite(v)) return null;
+                const ay = yScale.getPixelForValue(v);
+                if (!isFinite(ay) || ay < top || ay > bottom) return null;
+                return { ...l, value: v, actualY: ay };
+              }).filter(Boolean);
+              const rendered = getSeparatedLines(visibleLines, top, bottom, 18);
               ctx.save();
-
-              lines.forEach((line) => {
-                const value = Number(line.value);
-                if (!isFinite(value)) return;
-
-                const y = yScale.getPixelForValue(value);
+              rendered.forEach(l => {
+                const y = l.displayY;
                 if (!isFinite(y) || y < top || y > bottom) return;
-
-                ctx.beginPath();
-                ctx.setLineDash(Array.isArray(line.borderDash) ? line.borderDash : [6, 4]);
-                ctx.lineWidth = line.borderWidth || 2;
-                ctx.strokeStyle = line.borderColor || "#94a3b8";
-                ctx.moveTo(left, y);
-                ctx.lineTo(right, y);
-                ctx.stroke();
+                if (Math.abs(l.displayY - l.actualY) > 1) {
+                  ctx.beginPath(); ctx.setLineDash([2,3]); ctx.lineWidth = 1;
+                  ctx.strokeStyle = hexToRgba(l.borderColor, 0.45);
+                  ctx.moveTo(right - 20, l.actualY); ctx.lineTo(right - 3, l.displayY); ctx.stroke();
+                }
+                ctx.beginPath(); ctx.setLineDash(l.borderDash || [6,4]);
+                ctx.lineWidth = l.borderWidth || 2; ctx.strokeStyle = l.borderColor;
+                ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
               });
-
               ctx.restore();
             }
           };
 
-          function syncExpandedChart(sourceChart) {
-            if (!expandedChart || !sourceChart) return;
-
-            expandedChart.data.labels = Array.isArray(sourceChart.data.labels)
-              ? sourceChart.data.labels.slice()
-              : [];
-            expandedChart.data.datasets = sourceChart.data.datasets.map((dataset, index) =>
-              cloneChartDataset(dataset, index === 0)
-            );
-
-            if (sourceChart.options && sourceChart.options.scales && sourceChart.options.scales.y) {
-              expandedChart.options.scales.y.min = sourceChart.options.scales.y.min;
-              expandedChart.options.scales.y.max = sourceChart.options.scales.y.max;
-            }
-
-            expandedChart.options.plugins.kpiThresholdLines.lines = cloneThresholdLines(
-              sourceChart.options &&
-              sourceChart.options.plugins &&
-              sourceChart.options.plugins.kpiThresholdLines &&
-              sourceChart.options.plugins.kpiThresholdLines.lines
-            );
-
-            expandedChart.update();
-          }
-
-          function closeChartModal() {
-            if (expandedChart) {
-              expandedChart.destroy();
-              expandedChart = null;
-            }
-
-            expandedChartKpiValuesId = null;
-
-            if (chartModal) {
-              chartModal.classList.remove("active");
-              chartModal.setAttribute("aria-hidden", "true");
-            }
-
-            if (!historyModal || !historyModal.classList.contains("active")) {
-              document.body.classList.remove("chart-modal-open");
-            }
-          }
-
-          function openChartModal(kpiValuesId) {
-            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
-            if (!card || !chartModal || !chartModalCanvas) return;
-
-            if (!kpiCharts[kpiValuesId]) {
-              buildKpiChart(kpiValuesId);
-            }
-
-            const sourceChart = kpiCharts[kpiValuesId];
-            if (!sourceChart) return;
-
-            const titleNode = card.querySelector(".kpi-title");
-            const subtitleNode = card.querySelector(".kpi-subtitle");
-
-            if (chartModalTitle) {
-              chartModalTitle.textContent = titleNode ? titleNode.textContent.trim() : "KPI Trend";
-            }
-
-            if (chartModalSubtitle) {
-              chartModalSubtitle.textContent = subtitleNode
-                ? subtitleNode.textContent.trim()
-                : "Monthly KPI performance overview";
-            }
-
-            if (expandedChart) {
-              expandedChart.destroy();
-              expandedChart = null;
-            }
-
-            expandedChartKpiValuesId = kpiValuesId;
-            chartModal.classList.add("active");
-            chartModal.setAttribute("aria-hidden", "false");
-            document.body.classList.add("chart-modal-open");
-
-            requestAnimationFrame(() => {
-              if (!chartModal.classList.contains("active")) return;
-
-              expandedChart = new Chart(chartModalCanvas.getContext("2d"), {
-                type: "bar",
-                data: {
-                  labels: Array.isArray(sourceChart.data.labels) ? sourceChart.data.labels.slice() : [],
-                  datasets: sourceChart.data.datasets.map((dataset, index) =>
-                    cloneChartDataset(dataset, index === 0)
-                  )
-                },
-                options: {
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  animation: false,
-                  interaction: {
-                    mode: "index",
-                    intersect: false
-                  },
-                  plugins: {
-                    legend: { display: false },
-                    kpiThresholdLines: {
-                      lines: cloneThresholdLines(
-                        sourceChart.options &&
-                        sourceChart.options.plugins &&
-                        sourceChart.options.plugins.kpiThresholdLines &&
-                        sourceChart.options.plugins.kpiThresholdLines.lines
-                      )
-                    }
-                  },
-                  scales: {
-                    x: {
-                      grid: { display: false },
-                      ticks: {
-                        color: "#475569",
-                        font: {
-                          size: 14,
-                          weight: "600"
-                        }
-                      }
-                    },
-                    y: {
-                      min: sourceChart.options.scales.y.min,
-                      max: sourceChart.options.scales.y.max,
-                      ticks: {
-                        color: "#64748b",
-                        font: {
-                          size: 13
-                        }
-                      },
-                      grid: {
-                        color: "#e2e8f0"
-                      }
-                    }
-                  }
-                },
-                plugins: [expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
-              });
-            });
-          }
-
-          function escapeHistoryHtml(value) {
-            return String(value || "")
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;")
-              .replace(/"/g, "&quot;")
-              .replace(/'/g, "&#39;");
-          }
-
-          function formatHistoryText(value) {
-            return escapeHistoryHtml(value).split("\\n").join("<br>");
-          }
-
-          function decodeModalPayload(value, fallbackValue) {
-            try {
-              const decoded = decodeURIComponent(value || "");
-              if (!decoded) return fallbackValue;
-              const parsed = JSON.parse(decoded);
-              return parsed === null || parsed === undefined ? fallbackValue : parsed;
-            } catch (error) {
-              return fallbackValue;
-            }
-          }
-
-          function formatHistoryWeek(weekValue) {
-            const match = String(weekValue || "").match(/^(\\d{4})-Week(\\d{1,2})$/);
-            return match ? "Week " + parseInt(match[2], 10) : escapeHistoryHtml(weekValue || "");
-          }
-
-          function getHistoryStatusClass(status) {
-            const safeStatus = String(status || "Open")
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, "-");
-
-            return "status-" + (safeStatus || "open");
-          }
-
-          function closeHistoryModal() {
-            if (!historyModal) return;
-            historyModal.classList.remove("active");
-            historyModal.setAttribute("aria-hidden", "true");
-            if (!chartModal || !chartModal.classList.contains("active")) {
-              document.body.classList.remove("chart-modal-open");
-            }
-          }
-
-          function openHistoryModal(kpiValuesId) {
-            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
-            if (!card || !historyModal || !historyModalContent) return;
-
-            const titleText = (card.querySelector(".kpi-title") && card.querySelector(".kpi-title").textContent || "Corrective Action History").trim();
-            const subtitleText = (card.querySelector(".kpi-subtitle") && card.querySelector(".kpi-subtitle").textContent || "").trim();
-            const previousMonthLabel = card.dataset.prevMonthLabel || "";
-            const previousMonthAction = decodeModalPayload(card.dataset.prevMonthAction, null);
-            const previousMonthComments = decodeModalPayload(card.dataset.prevMonthComments, []);
-            const comments = Array.isArray(previousMonthComments) ? previousMonthComments : [];
-            const hasActionDetails = previousMonthAction && (
-              previousMonthAction.root_cause ||
-              previousMonthAction.implemented_solution ||
-              previousMonthAction.evidence ||
-              previousMonthAction.status
-            );
-
-            if (historyModalTitle) {
-              historyModalTitle.textContent = titleText;
-            }
-
-            if (historyModalSubtitle) {
-              historyModalSubtitle.textContent = previousMonthLabel
-                ? previousMonthLabel + (subtitleText ? " • " + subtitleText : "")
-                : "No previous month data available";
-            }
-
-            const chips = [];
-            if (previousMonthLabel) {
-              chips.push('<span class="history-chip">📅 ' + escapeHistoryHtml(previousMonthLabel) + '</span>');
-            }
-            if (previousMonthAction && previousMonthAction.week) {
-              chips.push('<span class="history-chip">🗓️ ' + formatHistoryWeek(previousMonthAction.week) + '</span>');
-            }
-            if (previousMonthAction && previousMonthAction.status) {
-              chips.push(
-                '<span class="history-chip ' + getHistoryStatusClass(previousMonthAction.status) + '">' +
-                escapeHistoryHtml(previousMonthAction.status) +
-                '</span>'
-              );
-            }
-
-            const actionRows = [];
-            if (previousMonthAction && previousMonthAction.root_cause) {
-              actionRows.push(
-                '<div class="history-detail-row">' +
-                  '<div class="history-detail-label root">🔎 Root Cause</div>' +
-                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.root_cause) + '</div>' +
-                '</div>'
-              );
-            }
-            if (previousMonthAction && previousMonthAction.implemented_solution) {
-              actionRows.push(
-                '<div class="history-detail-row">' +
-                  '<div class="history-detail-label solution">⚡ Implemented Solution</div>' +
-                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.implemented_solution) + '</div>' +
-                '</div>'
-              );
-            }
-            if (previousMonthAction && previousMonthAction.evidence) {
-              actionRows.push(
-                '<div class="history-detail-row">' +
-                  '<div class="history-detail-label evidence">📊 Evidence</div>' +
-                  '<div class="history-detail-text">' + formatHistoryText(previousMonthAction.evidence) + '</div>' +
-                '</div>'
-              );
-            }
-
-            const commentsHtml = comments.length
-              ? '<div class="history-comments-list">' +
-                  comments.map((comment) =>
-                    '<div class="history-comment-card">' +
-                      '<div class="history-comment-label">' + escapeHistoryHtml(comment.month_label || previousMonthLabel || "") +
-                        (comment.week ? ' • ' + formatHistoryWeek(comment.week) : '') +
-                      '</div>' +
-                      '<div class="history-comment-text">' + formatHistoryText(comment.text || "") + '</div>' +
-                    '</div>'
-                  ).join("") +
-                '</div>'
-              : '<div class="history-empty">No comments were saved for this KPI in the previous month.</div>';
-
-            if (!hasActionDetails && !comments.length) {
-              historyModalContent.innerHTML =
-                '<div class="history-empty">No previous-month corrective action or comment history was found for this KPI.</div>';
-            } else {
-              historyModalContent.innerHTML =
-                (chips.length ? '<div class="history-meta-row">' + chips.join("") + '</div>' : "") +
-                '<div class="history-section">' +
-                  '<h4 class="history-section-title">⚠️ Corrective Actions</h4>' +
-                  (actionRows.length
-                    ? '<div class="history-detail-card">' + actionRows.join("") + '</div>'
-                    : '<div class="history-empty">No corrective action details were saved for this month.</div>') +
-                '</div>' +
-                '<div class="history-section">' +
-                  '<h4 class="history-section-title">💬 Comments</h4>' +
-                  commentsHtml +
-                '</div>';
-            }
-
-            historyModal.classList.add("active");
-            historyModal.setAttribute("aria-hidden", "false");
-            document.body.classList.add("chart-modal-open");
+          function getThresholdLines(lowLimit, target, highLimit) {
+            const lines = [];
+            if (!isNaN(highLimit)) lines.push({ key:"high_limit", label:"High", value:highLimit, borderColor:"#f59e0b", borderDash:[10,4], borderWidth:2 });
+            if (!isNaN(target)) lines.push({ key:"target", label:"Target", value:target, borderColor:"#22c55e", borderDash:[], borderWidth:2.5 });
+            if (!isNaN(lowLimit)) lines.push({ key:"low_limit", label:"Low", value:lowLimit, borderColor:"#ef4444", borderDash:[4,4], borderWidth:2 });
+            return lines;
           }
 
           function getPointColor(value, lowLimit, highLimit, direction) {
             const val = parseFloat(value);
-            const rawLow = parseFloat(lowLimit);
-            const rawHigh = parseFloat(highLimit);
-            const hasLow = !isNaN(rawLow);
-            const hasHigh = !isNaN(rawHigh);
-            const lowerBound = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
-            const upperBound = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
-            const resolvedDirection = String(direction || "up").toLowerCase() === "down" ? "down" : "up";
-
+            const rawLow = parseFloat(lowLimit), rawHigh = parseFloat(highLimit);
+            const hasLow = !isNaN(rawLow), hasHigh = !isNaN(rawHigh);
+            const lower = hasLow && hasHigh ? Math.min(rawLow,rawHigh) : hasLow ? rawLow : hasHigh ? rawHigh : null;
+            const upper = hasLow && hasHigh ? Math.max(rawLow,rawHigh) : hasHigh ? rawHigh : hasLow ? rawLow : null;
+            const dir = String(direction||"up").toLowerCase() === "down" ? "down" : "up";
             if (isNaN(val)) return "#6b7280";
-
-            if (resolvedDirection === "down") {
-              if (upperBound !== null && val > upperBound) return "#ef4444";
-              return "#22c55e";
-            }
-
-            if (lowerBound !== null && val < lowerBound) return "#ef4444";
-            return "#22c55e";
+            if (dir === "down") return (upper !== null && val > upper) ? "#ef4444" : "#22c55e";
+            return (lower !== null && val < lower) ? "#ef4444" : "#22c55e";
           }
 
           function computeBounds(values, lowLimit, target, highLimit) {
-            const allValues = values.filter(v => !isNaN(v) && v !== null);
-
-            if (!isNaN(lowLimit)) allValues.push(lowLimit);
-            if (!isNaN(target)) allValues.push(target);
-            if (!isNaN(highLimit)) allValues.push(highLimit);
-
-            const minValue = allValues.length ? Math.min(...allValues) : 0;
-            const maxValue = allValues.length ? Math.max(...allValues) : 100;
-            const spread = Math.max(maxValue - minValue, 1);
-            const padding = Math.max(spread * 0.15, 10);
-
-            return {
-              min: minValue - padding,
-              max: maxValue + padding
-            };
+            const all = values.filter(v => !isNaN(v) && v !== null);
+            if (!isNaN(lowLimit)) all.push(lowLimit);
+            if (!isNaN(target)) all.push(target);
+            if (!isNaN(highLimit)) all.push(highLimit);
+            const mn = all.length ? Math.min(...all) : 0;
+            const mx = all.length ? Math.max(...all) : 100;
+            const spread = Math.max(mx - mn, 1);
+            const pad = Math.max(spread * 0.15, 10);
+            return { min: mn - pad, max: mx + pad };
           }
 
-          function buildKpiChart(kpiValuesId) {
-            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+          function buildKpiChart(kvId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
             if (!card) return;
-
-            const canvas = document.getElementById("chart_" + kpiValuesId);
+            const canvas = document.getElementById("chart_" + kvId);
             if (!canvas) return;
-
             const lowLimit = parseFloat(card.dataset.lowLimit);
             const highLimit = parseFloat(card.dataset.highLimit);
             const target = parseFloat(card.dataset.target);
-            const goodDirection = card.dataset.goodDirection || "up";
-
-            const input = card.querySelector(".value-input");
-            if (!input) return;
-
-            const currentValue = parseFloat(input.value);
-
-            let historyLabels = [];
-            let historyValues = [];
-
-            try {
-              historyLabels = JSON.parse(card.dataset.historyLabels || "[]");
-              historyValues = JSON.parse(card.dataset.historyValues || "[]");
-            } catch (e) {
-              historyLabels = [];
-              historyValues = [];
-            }
-
-            if (!historyLabels.length || !historyValues.length) {
-              historyLabels = ["Current"];
-              historyValues = [isNaN(currentValue) ? null : currentValue];
-            }
-
-            const pointColors = historyValues.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
-            const bounds = computeBounds(historyValues, lowLimit, target, highLimit);
-
-            const datasets = [
-             {
-              label: "Value",
-              data: historyValues,
-              backgroundColor: pointColors, // color per bar
-              borderRadius: 6,
-              borderSkipped: false,
-              barThickness: 30
-             }
-            ];
-
-            kpiCharts[kpiValuesId] = new Chart(canvas.getContext("2d"), {
-              type: "bar",
-              data: {
-                labels: historyLabels,
-                datasets
+            const dir = card.dataset.goodDirection || "up";
+            let labels = [], values = [];
+            try { labels = JSON.parse(card.dataset.historyLabels || "[]"); values = JSON.parse(card.dataset.historyValues || "[]"); } catch(e){}
+            const colors = values.map(v => getPointColor(v, lowLimit, highLimit, dir));
+            const bounds = computeBounds(values, lowLimit, target, highLimit);
+            kpiCharts[kvId] = new Chart(canvas.getContext("2d"), {
+              type:"bar",
+              data:{ labels, datasets:[{ label:"Value", data:values, backgroundColor:colors, borderRadius:6, borderSkipped:false, barThickness:30 }] },
+              options:{
+                responsive:true, maintainAspectRatio:false, animation:false,
+                layout:{ padding:{ right:12 } },
+                plugins:{ legend:{ display:false }, kpiThresholdLines:{ lines: getThresholdLines(lowLimit,target,highLimit) } },
+                scales:{ x:{ grid:{ display:false } }, y:{ min:bounds.min, max:bounds.max } }
               },
-              options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                plugins: {
-                  legend: { display: false },
-                  kpiThresholdLines: {
-                    lines: getThresholdLines(lowLimit, target, highLimit)
-                  }
-                },
-                scales: {
-                  x: {
-                    grid: { display: false }
-                  },
-                  y: {
-                    min: bounds.min,
-                    max: bounds.max
-                  }
-                }
-              },
-              plugins: [kpiThresholdLinesPlugin]
+              plugins:[kpiThresholdLinesPlugin]
             });
           }
 
-          function updateKpiChart(kpiValuesId) {
-            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kpiValuesId + '"]');
+          function updateKpiChart(kvId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
             if (!card) return;
-
-            const input = card.querySelector(".value-input");
-            if (!input) return;
-
-            const lowLimit = parseFloat(card.dataset.lowLimit);
-            const highLimit = parseFloat(card.dataset.highLimit);
-            const target = parseFloat(card.dataset.target);
-            const currentWeek = card.dataset.currentWeek;
-            const goodDirection = card.dataset.goodDirection || "up";
-            const val = parseFloat(input.value);
-
-            const chart = kpiCharts[kpiValuesId];
-            if (!chart) return;
-
-            let targetMonthLabel = "Current";
-
-            try {
-              const m = String(currentWeek || "").match(/^(\\d{4})-Week(\\d{1,2})$/);
-              if (m) {
-                const d = new Date(parseInt(m[1], 10), 0, 1 + (parseInt(m[2], 10) - 1) * 7);
-                targetMonthLabel = d.toLocaleString("en-US", { month: "short", year: "numeric" });
-              }
-            } catch (e) {}
-
-            const labels = chart.data.labels || [];
-            let data = chart.data.datasets[0].data || [];
-
-            let idx = labels.indexOf(targetMonthLabel);
-            if (idx === -1) {
-              labels.push(targetMonthLabel);
-              data.push(isNaN(val) ? null : val);
-            } else {
-              data[idx] = isNaN(val) ? null : val;
-            }
-
-            const pointColors = data.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
-            chart.data.datasets[0].backgroundColor = pointColors;
-            chart.data.datasets[0].pointBackgroundColor = pointColors;
-
+            const chart = kpiCharts[kvId]; if (!chart) return;
+            const lowLimit = parseFloat(card.dataset.lowLimit), highLimit = parseFloat(card.dataset.highLimit), target = parseFloat(card.dataset.target);
+            const dir = card.dataset.goodDirection || "up";
+            const data = chart.data.datasets[0].data;
+            const colors = data.map(v => getPointColor(v, lowLimit, highLimit, dir));
+            chart.data.datasets[0].backgroundColor = colors;
             const bounds = computeBounds(data, lowLimit, target, highLimit);
-            chart.options.scales.y.min = bounds.min;
-            chart.options.scales.y.max = bounds.max;
+            chart.options.scales.y.min = bounds.min; chart.options.scales.y.max = bounds.max;
             chart.options.plugins.kpiThresholdLines.lines = getThresholdLines(lowLimit, target, highLimit);
-
             chart.update();
+            if (expandedChartKpiValuesId === kvId && expandedChart) syncExpandedChart(chart);
+          }
 
-            if (expandedChartKpiValuesId === kpiValuesId) {
-              syncExpandedChart(chart);
+          function syncExpandedChart(src) {
+            if (!expandedChart || !src) return;
+            expandedChart.data.labels = src.data.labels.slice();
+            expandedChart.data.datasets = src.data.datasets.map((d,i) => {
+              const c = Object.assign({}, d);
+              c.data = d.data.slice(); c.backgroundColor = Array.isArray(d.backgroundColor) ? d.backgroundColor.slice() : d.backgroundColor;
+              if (i===0){ c.barThickness=56; c.maxBarThickness=72; c.borderRadius=10; }
+              return c;
+            });
+            expandedChart.options.scales.y.min = src.options.scales.y.min;
+            expandedChart.options.scales.y.max = src.options.scales.y.max;
+            expandedChart.options.plugins.kpiThresholdLines.lines = (src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()}));
+            expandedChart.update();
+          }
+
+          function closeChartModal() {
+            if (expandedChart) { expandedChart.destroy(); expandedChart = null; }
+            expandedChartKpiValuesId = null;
+            const chartModal = document.getElementById("chartModal");
+            if (chartModal) { chartModal.classList.remove("active"); chartModal.setAttribute("aria-hidden","true"); }
+            if (!document.querySelector(".history-modal-overlay.active") && !document.querySelector(".ca-modal-overlay.active")) {
+              document.body.classList.remove("chart-modal-open");
             }
           }
 
+          function openChartModal(kvId) {
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+            const chartModal = document.getElementById("chartModal");
+            const chartModalCanvas = document.getElementById("chartModalCanvas");
+            const chartModalTitle = document.getElementById("chartModalTitle");
+            const chartModalSubtitle = document.getElementById("chartModalSubtitle");
+            if (!card || !chartModal || !chartModalCanvas) return;
+            if (!kpiCharts[kvId]) buildKpiChart(kvId);
+            const src = kpiCharts[kvId]; if (!src) return;
+            if (chartModalTitle) chartModalTitle.textContent = getTrimmedText(card.querySelector(".kpi-title")) || "KPI Trend";
+            if (chartModalSubtitle) chartModalSubtitle.textContent = getTrimmedText(card.querySelector(".kpi-subtitle")) || "Monthly KPI performance overview";
+            if (expandedChart) { expandedChart.destroy(); expandedChart = null; }
+            expandedChartKpiValuesId = kvId;
+            chartModal.classList.add("active"); chartModal.setAttribute("aria-hidden","false");
+            document.body.classList.add("chart-modal-open");
+            requestAnimationFrame(() => {
+              if (!chartModal.classList.contains("active")) return;
+              expandedChart = new Chart(chartModalCanvas.getContext("2d"), {
+                type:"bar",
+                data:{
+                  labels: src.data.labels.slice(),
+                  datasets: src.data.datasets.map((d,i) => {
+                    const c = Object.assign({},d); c.data = d.data.slice(); c.backgroundColor = Array.isArray(d.backgroundColor)?d.backgroundColor.slice():d.backgroundColor;
+                    if(i===0){c.barThickness=56;c.maxBarThickness=72;c.borderRadius=10;} return c;
+                  })
+                },
+                options:{
+                  responsive:true, maintainAspectRatio:false, animation:false,
+                  interaction:{ mode:"index", intersect:false }, layout:{ padding:{right:12} },
+                  plugins:{ legend:{display:false}, kpiThresholdLines:{ lines:(src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()})) } },
+                  scales:{ x:{grid:{display:false},ticks:{color:"#475569",font:{size:14,weight:"600"}}}, y:{min:src.options.scales.y.min,max:src.options.scales.y.max,ticks:{color:"#64748b",font:{size:13}},grid:{color:"#e2e8f0"}} }
+                },
+                plugins:[expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
+              });
+            });
+          }
+
+          /* ── History modal helpers ── */
+          function escapeHistoryHtml(v) { return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+          function formatHistoryText(v) { return escapeHistoryHtml(v).split("\\n").join("<br>"); }
+          function decodeModalPayload(v, fb) { try { const d=decodeURIComponent(v||""); if(!d) return fb; const p=JSON.parse(d); return (p===null||p===undefined)?fb:p; } catch(e){ return fb; } }
+          function formatHistoryWeek(w) { const m=String(w||"").match(/^(\\d{4})-Week(\\d{1,2})$/); return m?"Week "+parseInt(m[2],10):escapeHistoryHtml(w||""); }
+          function getHistoryStatusClass(s) { return "status-"+String(s||"Open").trim().toLowerCase().replace(/\s+/g,"-"); }
+
+          function closeHistoryModal() {
+            const historyModal = document.getElementById("historyModal");
+            if (!historyModal) return;
+            historyModal.classList.remove("active"); historyModal.setAttribute("aria-hidden","true");
+            if (!document.querySelector(".chart-modal-overlay.active") && !document.querySelector(".ca-modal-overlay.active")) {
+              document.body.classList.remove("chart-modal-open");
+            }
+          }
+
+        function openHistoryModal(kvId) {
+  const historyModal = document.getElementById("historyModal");
+  const historyModalTitle = document.getElementById("historyModalTitle");
+  const historyModalSubtitle = document.getElementById("historyModalSubtitle");
+  const historyModalContent = document.getElementById("historyModalContent");
+  const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+
+  if (!card || !historyModal || !historyModalContent) return;
+
+  const titleText = getTrimmedText(card.querySelector(".kpi-title")) || "Corrective Action History";
+  const subtitleText = getTrimmedText(card.querySelector(".kpi-subtitle"));
+  const prevLabel = card.dataset.prevMonthLabel || "";
+  const prevActions = decodeModalPayload(card.dataset.prevMonthActions, []);
+  const prevComments = decodeModalPayload(card.dataset.prevMonthComments, []);
+  const comments = Array.isArray(prevComments) ? prevComments : [];
+  const actions = Array.isArray(prevActions) ? prevActions : [];
+
+  if (historyModalTitle) historyModalTitle.textContent = titleText;
+  if (historyModalSubtitle) {
+    historyModalSubtitle.textContent = prevLabel
+      ? prevLabel + (subtitleText ? " • " + subtitleText : "")
+      : "No previous month data available";
+  }
+
+  const chips = [];
+
+let actionsHtml = "";
+if (actions.length) {
+  actionsHtml =
+    '<div class="history-table-wrap">' +
+      '<table class="history-table">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>#</th>' +
+            '<th>Week</th>' +
+            '<th>Root Cause</th>' +
+            '<th>Implemented Solution</th>' +
+            '<th>Evidence</th>' +
+            '<th>Due Date</th>' +
+            '<th>Responsible</th>' +
+            '<th>Status</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          actions.map(function(action, index) {
+            return '' +
+              '<tr>' +
+                '<td>' + (index + 1) + '</td>' +
+                '<td>' + escapeHistoryHtml(action.week || "") + '</td>' +
+                '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
+                '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
+                '<td><pre>' + escapeHistoryHtml(action.evidence || "") + '</pre></td>' +
+                '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
+                '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
+                '<td>' +
+                  (action.status
+                    ? '<span class="history-chip ' + getHistoryStatusClass(action.status) + '">' + escapeHistoryHtml(action.status) + '</span>'
+                    : '—') +
+                '</td>' +
+              '</tr>';
+          }).join("") +
+        '</tbody>' +
+      '</table>' +
+    '</div>';
+} else {
+  actionsHtml = '<div class="history-empty">No corrective actions were saved for this KPI in the previous month.</div>';
+}
+
+  const commentsHtml = comments.length
+    ? '<div class="history-comments-list">' + comments.map(c =>
+        '<div class="history-comment-card">' +
+          '<div class="history-comment-label">' +
+            escapeHistoryHtml(c.month_label || prevLabel || "") +
+            (c.week ? ' • ' + formatHistoryWeek(c.week) : '') +
+          '</div>' +
+          '<div class="history-comment-text">' + formatHistoryText(c.text || "") + '</div>' +
+        '</div>'
+      ).join("") + '</div>'
+    : '<div class="history-empty">No comments were saved for this KPI in the previous month.</div>';
+
+  if (!actions.length && !comments.length) {
+    historyModalContent.innerHTML =
+      '<div class="history-empty">No previous-month corrective action or comment history was found for this KPI.</div>';
+  } else {
+    historyModalContent.innerHTML =
+      (chips.length ? '<div class="history-meta-row">' + chips.join("") + '</div>' : '') +
+      '<div class="history-section">' +
+        '<h4 class="history-section-title">⚠️ Corrective Actions</h4>' +
+        actionsHtml +
+      '</div>' +
+      '<div class="history-section">' +
+        '<h4 class="history-section-title">💬 Comments</h4>' +
+        commentsHtml +
+      '</div>';
+  }
+
+  historyModal.classList.add("active");
+  historyModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("chart-modal-open");
+}
+
+          /* ═══════════════════════════════════════════════
+             DOM READY
+          ═══════════════════════════════════════════════ */
           document.addEventListener("DOMContentLoaded", () => {
+            // Value inputs
             document.querySelectorAll(".value-input").forEach(input => {
               const kvId = input.dataset.kpiValuesId;
               checkLowLimit(input);
               buildKpiChart(kvId);
-
-              input.addEventListener("input", function () {
-                checkLowLimit(this);
-                updateKpiChart(kvId);
-              });
+              input.addEventListener("input", function() { checkLowLimit(this); updateKpiChart(kvId); });
             });
 
+            // Chart expand
             document.querySelectorAll(".kpi-chart-trigger").forEach(panel => {
               const kvId = panel.dataset.kpiValuesId;
               if (!kvId) return;
-
-              panel.addEventListener("click", () => {
-                openChartModal(kvId);
-              });
-
-              panel.addEventListener("keydown", (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  openChartModal(kvId);
-                }
-              });
+              panel.addEventListener("click", () => openChartModal(kvId));
+              panel.addEventListener("keydown", e => { if (e.key==="Enter"||e.key===" ") { e.preventDefault(); openChartModal(kvId); } });
+            });
+            document.querySelectorAll(".chart-expand-btn").forEach(btn => {
+              const kvId = btn.dataset.kpiValuesId; if (!kvId) return;
+              btn.addEventListener("click", e => { e.stopPropagation(); openChartModal(kvId); });
             });
 
-            document.querySelectorAll(".chart-expand-btn").forEach(button => {
-              const kvId = button.dataset.kpiValuesId;
-              if (!kvId) return;
-
-              button.addEventListener("click", (event) => {
-                event.stopPropagation();
-                openChartModal(kvId);
-              });
+            // History modal (view previous CA inside card panel)
+            document.querySelectorAll(".view-ca-btn").forEach(btn => {
+              const kvId = btn.dataset.kpiValuesId; if (!kvId) return;
+              btn.addEventListener("click", () => openHistoryModal(kvId));
             });
 
-            document.querySelectorAll(".view-ca-btn").forEach(button => {
-              const kvId = button.dataset.kpiValuesId;
-              if (!kvId) return;
-
-              button.addEventListener("click", () => {
-                openHistoryModal(kvId);
-              });
+            // Card action bar — View Previous Actions
+            document.querySelectorAll(".view-prev-ca-btn").forEach(btn => {
+              const kvId = btn.dataset.kpiValuesId; if (!kvId) return;
+              btn.addEventListener("click", () => openHistoryModal(kvId));
             });
+
+            // Card action bar — Open CA Table Modal
+            document.querySelectorAll(".open-ca-modal-btn").forEach(btn => {
+              const kvId = btn.dataset.kpiValuesId; if (!kvId) return;
+              btn.addEventListener("click", () => openCaTableModal(kvId));
+            });
+
+            // Bind existing CA action cards
+            document.querySelectorAll(".ca-actions-stack").forEach(stack => {
+              const kvId = stack.dataset.kpiValuesId; if (!kvId) return;
+              getCorrectiveActionCards(kvId).forEach(card => bindCorrectiveActionCard(card, kvId));
+              renumberCorrectiveActionCards(kvId);
+            });
+
+            // Chart modal close
+            const chartModal = document.getElementById("chartModal");
+            const chartModalClose = document.getElementById("chartModalClose");
+            if (chartModal && chartModalClose) {
+              chartModalClose.addEventListener("click", closeChartModal);
+              chartModal.addEventListener("click", e => { if (e.target===chartModal) closeChartModal(); });
+            }
+
+            // History modal close
+            const historyModal = document.getElementById("historyModal");
+            const historyModalClose = document.getElementById("historyModalClose");
+            if (historyModal && historyModalClose) {
+              historyModalClose.addEventListener("click", closeHistoryModal);
+              historyModal.addEventListener("click", e => { if (e.target===historyModal) closeHistoryModal(); });
+            }
+
+            // CA Table Modal close
+            const caModalClose = document.getElementById("caModalClose");
+            const caTableModal = document.getElementById("caTableModal");
+            if (caModalClose) caModalClose.addEventListener("click", closeCaTableModal);
+            if (caTableModal) caTableModal.addEventListener("click", e => { if (e.target===caTableModal) closeCaTableModal(); });
+
+            // CA modal form controls
+            const caModalAddRowBtn = document.getElementById("caModalAddRowBtn");
+            if (caModalAddRowBtn) caModalAddRowBtn.addEventListener("click", () => caModalOpenForm(null));
+            const caModalFormCollapse = document.getElementById("caModalFormCollapse");
+            if (caModalFormCollapse) caModalFormCollapse.addEventListener("click", caModalCollapseForm);
+            const caModalCancelForm = document.getElementById("caModalCancelForm");
+            if (caModalCancelForm) caModalCancelForm.addEventListener("click", caModalCollapseForm);
+            const caModalSaveFormBtn = document.getElementById("caModalSaveForm");
+            if (caModalSaveFormBtn) caModalSaveFormBtn.addEventListener("click", caModalSaveForm);
+
+            // Escape key
+            document.addEventListener("keydown", e => {
+              if (e.key === "Escape") {
+                if (document.getElementById("caTableModal").classList.contains("active")) { closeCaTableModal(); return; }
+                if (document.getElementById("chartModal").classList.contains("active")) { closeChartModal(); return; }
+                if (document.getElementById("historyModal").classList.contains("active")) { closeHistoryModal(); return; }
+              }
+            });
+
+            // Submit form
+            const form = document.getElementById("kpiForm");
+            const confirmModal = document.getElementById("confirmModal");
+            const confirmBtn = document.getElementById("confirmBtn");
+            const cancelBtn = document.getElementById("cancelBtn");
+            const loadingOverlay = document.getElementById("loadingOverlay");
+            let formToSubmit = null;
+
+            if (form && confirmModal && confirmBtn && cancelBtn) {
+              form.addEventListener("submit", function(e) {
+                e.preventDefault();
+                let hasError = false;
+                this.querySelectorAll("input.value-input[required]").forEach(input => {
+                  if (!input.value.trim() || isNaN(input.value.trim())) { hasError = true; input.style.borderColor = "#dc3545"; }
+                  else input.style.borderColor = "#ddd";
+                });
+                document.querySelectorAll(".ca-container.visible").forEach(panel => {
+                  panel.querySelectorAll(".ca-textarea, .ca-date-input, .ca-text-input").forEach(field => {
+                    if (!field.value.trim()) { hasError = true; field.classList.add("error"); }
+                    else field.classList.remove("error");
+                  });
+                });
+                if (hasError) return;
+                formToSubmit = this;
+                confirmModal.classList.add("active");
+              });
+              confirmBtn.addEventListener("click", () => {
+                confirmModal.classList.remove("active");
+                if (loadingOverlay) loadingOverlay.classList.add("active");
+                if (formToSubmit) formToSubmit.submit();
+              });
+              cancelBtn.addEventListener("click", () => confirmModal.classList.remove("active"));
+            }
           });
 
-          const form = document.getElementById("kpiForm");
-          const modal = document.getElementById("confirmModal");
-          const confirmBtn = document.getElementById("confirmBtn");
-          const cancelBtn = document.getElementById("cancelBtn");
-          const loadingOverlay = document.getElementById("loadingOverlay");
-          const chartModal = document.getElementById("chartModal");
-          const chartModalClose = document.getElementById("chartModalClose");
-          const chartModalTitle = document.getElementById("chartModalTitle");
-          const chartModalSubtitle = document.getElementById("chartModalSubtitle");
-          const chartModalCanvas = document.getElementById("chartModalCanvas");
-          const historyModal = document.getElementById("historyModal");
-          const historyModalClose = document.getElementById("historyModalClose");
-          const historyModalTitle = document.getElementById("historyModalTitle");
-          const historyModalSubtitle = document.getElementById("historyModalSubtitle");
-          const historyModalContent = document.getElementById("historyModalContent");
-
-          let formToSubmit = null;
-
-          if (form && modal && confirmBtn && cancelBtn) {
-            form.addEventListener("submit", function (e) {
-              e.preventDefault();
-
-              let hasError = false;
-
-              this.querySelectorAll("input.value-input[required]").forEach(input => {
-                if (!input.value.trim() || isNaN(input.value.trim())) {
-                  hasError = true;
-                  input.style.borderColor = "#dc3545";
-                } else {
-                  input.style.borderColor = "#ddd";
-                }
-              });
-
-              document.querySelectorAll(".ca-container.visible").forEach(panel => {
-                panel.querySelectorAll(".ca-textarea, .ca-date-input, .ca-text-input").forEach(field => {
-                  if (!field.value.trim()) {
-                    hasError = true;
-                    field.classList.add("error");
-                  } else {
-                    field.classList.remove("error");
-                  }
-                });
-              });
-
-              if (hasError) return;
-
-              formToSubmit = this;
-              modal.classList.add("active");
-            });
-
-            confirmBtn.addEventListener("click", () => {
-              modal.classList.remove("active");
-              if (loadingOverlay) loadingOverlay.classList.add("active");
-              if (formToSubmit) formToSubmit.submit();
-            });
-
-            cancelBtn.addEventListener("click", () => {
-              modal.classList.remove("active");
-            });
-          }
-
-          if (chartModal && chartModalClose) {
-            chartModalClose.addEventListener("click", closeChartModal);
-
-            chartModal.addEventListener("click", (event) => {
-              if (event.target === chartModal) {
-                closeChartModal();
-              }
-            });
-
-            document.addEventListener("keydown", (event) => {
-              if (event.key === "Escape" && chartModal.classList.contains("active")) {
-                closeChartModal();
-              }
-            });
-          }
-
-          if (historyModal && historyModalClose) {
-            historyModalClose.addEventListener("click", closeHistoryModal);
-
-            historyModal.addEventListener("click", (event) => {
-              if (event.target === historyModal) {
-                closeHistoryModal();
-              }
-            });
-
-            document.addEventListener("keydown", (event) => {
-              if (event.key === "Escape" && historyModal.classList.contains("active")) {
-                closeHistoryModal();
-              }
-            });
-          }
+          window.caModalOpenEdit = caModalOpenEdit;
+          window.caModalDeleteRow = caModalDeleteRow;
         </script>
       </body>
       </html>
@@ -5159,7 +4599,6 @@ app.get("/form", async (req, res) => {
     res.send(`<p style="color:red;">Error: ${err.message}</p>`);
   }
 });
-
 
 
 // ---------- Dashboard ----------
@@ -5881,10 +5320,16 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
                ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
         FROM public.kpi_values_hist26 h
         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-        LEFT JOIN public.corrective_actions ca
-               ON ca.kpi_id = h.kpi_id
-              AND ca.responsible_id = h.responsible_id
-              AND ca.week = h.week
+        LEFT JOIN LATERAL (
+          SELECT corrective_action_id, root_cause, implemented_solution,
+                 evidence, status, created_date, updated_date
+          FROM public.corrective_actions
+          WHERE kpi_id = h.kpi_id
+            AND responsible_id = h.responsible_id
+            AND week = h.week
+          ORDER BY COALESCE(updated_date, created_date) DESC, corrective_action_id DESC
+          LIMIT 1
+        ) ca ON TRUE
         WHERE h.responsible_id = $1
           AND h.new_value IS NOT NULL AND h.new_value != '' AND h.new_value != '0'
       )
@@ -6207,7 +5652,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("33 11 * * *", async () => {
+cron.schedule("53 09 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -7079,10 +6524,15 @@ const getDepartmentKPIReport = async (plantId, week) => {
        SELECT lkv.*,
               ca.root_cause, ca.implemented_solution, ca.evidence, ca.status AS ca_status
        FROM LatestKPIValues lkv
-       LEFT JOIN public.corrective_actions ca
-         ON ca.kpi_id = lkv.kpi_id
-        AND ca.responsible_id = lkv.responsible_id
-        AND ca.week = lkv.week
+       LEFT JOIN LATERAL (
+         SELECT root_cause, implemented_solution, evidence, status
+         FROM public.corrective_actions
+         WHERE kpi_id = lkv.kpi_id
+           AND responsible_id = lkv.responsible_id
+           AND week = lkv.week
+         ORDER BY COALESCE(updated_date, created_date) DESC, corrective_action_id DESC
+         LIMIT 1
+       ) ca ON TRUE
        WHERE lkv.rn = 1 ORDER BY lkv.indicator_title`,
       [plantId, week]
     );
