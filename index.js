@@ -3395,6 +3395,7 @@ app.get("/form", async (req, res) => {
        data-history-labels='${JSON.stringify(historyLabels)}'
        data-history-values='${JSON.stringify(historyValues)}'
        data-current-week="${week}"
+       data-current-month-label="${currentMonthLabel}"
        data-unit="${kpi.unit || ""}"
       data-prev-month-label="${previousMonthLabel || ""}"
       data-prev-month-actions="${encodeModalPayload(previousMonthActions)}"
@@ -5162,6 +5163,9 @@ function syncDomFromStore(kvId) {
 
   card.dataset.historyLabels = JSON.stringify(data.labels);
   card.dataset.historyValues = JSON.stringify(data.values);
+  if (data.currentMonthLabel) {
+    card.dataset.currentMonthLabel = data.currentMonthLabel;
+  }
 
   const input = document.getElementById("value_" + kvId);
   if (input && data.currentValue !== null) {
@@ -5349,7 +5353,7 @@ function syncDomFromStore(kvId) {
 
          function weekLabelToDateClient(weekStr) {
   const m = String(weekStr || "").match(/^(\d{4})-Week(\d{1,2})$/);
-  if (!m) return new Date(0);
+  if (!m) return null;
 
   const year = parseInt(m[1], 10);
   const weekNum = parseInt(m[2], 10);
@@ -5358,8 +5362,30 @@ function syncDomFromStore(kvId) {
 
 function weekToMonthLabelClient(weekStr) {
   const d = weekLabelToDateClient(weekStr);
-  if (isNaN(d.getTime())) return weekStr || "";
+  if (!d || isNaN(d.getTime())) return "";
   return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+function getFallbackCurrentMonthLabel(card, labels) {
+  const storedMonthLabel = String(card?.dataset?.currentMonthLabel || "").trim();
+  if (storedMonthLabel) return storedMonthLabel;
+
+  const weekFromCard = String(card?.dataset?.currentWeek || "").trim();
+  const monthFromCardWeek = weekToMonthLabelClient(weekFromCard);
+  if (monthFromCardWeek) return monthFromCardWeek;
+
+  const pageWeek = new URLSearchParams(window.location.search).get("week") || "";
+  const monthFromPageWeek = weekToMonthLabelClient(pageWeek);
+  if (monthFromPageWeek) return monthFromPageWeek;
+
+  const browserMonthLabel = new Date().toLocaleString("en-US", { month: "short", year: "numeric" });
+  if (Array.isArray(labels) && labels.includes(browserMonthLabel)) return browserMonthLabel;
+
+  if (Array.isArray(labels) && labels.length) {
+    return labels[labels.length - 1];
+  }
+
+  return browserMonthLabel;
 }
 
 
@@ -5369,8 +5395,6 @@ function weekToMonthLabelClient(weekStr) {
   if (!card || !chart) return;
 
   const value = parseFloat(rawValue);
-  const currentWeek = card.dataset.currentWeek;
-  const currentMonthLabel = weekToMonthLabelClient(currentWeek);
 
   let labels = [];
   let values = [];
@@ -5382,6 +5406,9 @@ function weekToMonthLabelClient(weekStr) {
     labels = [];
     values = [];
   }
+
+  const currentMonthLabel = getFallbackCurrentMonthLabel(card, labels);
+  if (!currentMonthLabel) return;
 
   const existingIndex = labels.indexOf(currentMonthLabel);
 
