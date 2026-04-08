@@ -4473,7 +4473,7 @@ app.get("/form", async (req, res) => {
         <!-- Submit confirm modal -->
         <div id="confirmModal" class="modal-overlay">
           <div class="modal-box">
-            <div class="modal-icon">âš ï¸</div>
+            <div class="modal-icon" aria-hidden="true">&#9888;&#65039;</div>
             <h3>Confirm Submission</h3>
             <p>Are you sure you want to submit your KPI values?</p>
             <div class="modal-actions">
