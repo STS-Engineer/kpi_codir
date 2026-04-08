@@ -2555,12 +2555,12 @@ app.get("/corrective-actions-bulk", async (req, res) => {
           <!-- AI Box -->
           <div class="ai-box" id="ai-box-${action.corrective_action_id}">
             <div class="ai-box-header">
-              <span class="ai-icon">ðŸ¤–</span>
+              <span class="ai-icon">&#129302;</span>
               <span class="ai-title">AI Corrective Action Suggestion</span>
               <button type="button" class="generate-btn"
                 id="gen-btn-${action.corrective_action_id}"
                 onclick="generateSuggestion('${action.corrective_action_id}','${action.kpi_id}','${responsible_id}','${week}')">
-                <span class="gen-btn-icon">âœ¨</span>
+                <span class="gen-btn-icon">&#10024;</span>
                 <span class="gen-btn-text">Generate Suggestion</span>
               </button>
             </div>
@@ -2570,24 +2570,24 @@ app.get("/corrective-actions-bulk", async (req, res) => {
                 <div class="ai-suggestion-card root-cause-card"
                      onclick="applyToField('root_cause_${action.corrective_action_id}',this)">
                   <div class="ai-card-label">
-                    <span class="ai-card-icon">ðŸ”</span>Root Cause
-                    <span class="apply-hint">Click to apply â†“</span>
+                    <span class="ai-card-icon">&#128269;</span>Root Cause
+                    <span class="apply-hint">Click to apply &#8595;</span>
                   </div>
                   <div class="ai-card-text" id="rc-text-${action.corrective_action_id}"></div>
                 </div>
                 <div class="ai-suggestion-card action-card"
                      onclick="applyToField('solution_${action.corrective_action_id}',this)">
                   <div class="ai-card-label">
-                    <span class="ai-card-icon">âš¡</span>Immediate Action
-                    <span class="apply-hint">Click to apply â†“</span>
+                    <span class="ai-card-icon">&#9889;</span>Immediate Action
+                    <span class="apply-hint">Click to apply &#8595;</span>
                   </div>
                   <div class="ai-card-text" id="ia-text-${action.corrective_action_id}"></div>
                 </div>
                 <div class="ai-suggestion-card evidence-card"
                      onclick="applyToField('evidence_${action.corrective_action_id}',this)">
                   <div class="ai-card-label">
-                    <span class="ai-card-icon">ðŸ“Š</span>Evidence
-                    <span class="apply-hint">Click to apply â†“</span>
+                    <span class="ai-card-icon">&#128202;</span>Evidence
+                    <span class="apply-hint">Click to apply &#8595;</span>
                   </div>
                   <div class="ai-card-text" id="ev-text-${action.corrective_action_id}"></div>
                 </div>
@@ -2595,7 +2595,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             </div>
 
             <div class="suggestion-error" id="error-${action.corrective_action_id}" style="display:none;">
-              <span>âš ï¸ Could not generate suggestion. Please try again or fill manually.</span>
+              <span>&#9888;&#65039; Could not generate suggestion. Please try again or fill manually.</span>
             </div>
           </div>
 
@@ -2603,7 +2603,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
           <div class="form-fields">
             <div class="form-group">
               <label for="root_cause_${action.corrective_action_id}">
-                ðŸ” Root Cause <span class="required">*</span>
+                &#128269; Root Cause <span class="required">*</span>
               </label>
               <textarea name="root_cause_${action.corrective_action_id}"
                         id="root_cause_${action.corrective_action_id}" required
@@ -2612,7 +2612,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             </div>
             <div class="form-group">
               <label for="solution_${action.corrective_action_id}">
-                âš¡ Implemented Solution <span class="required">*</span>
+                &#9889; Implemented Solution <span class="required">*</span>
               </label>
               <textarea name="solution_${action.corrective_action_id}"
                         id="solution_${action.corrective_action_id}" required
@@ -2621,7 +2621,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             </div>
             <div class="form-group">
               <label for="evidence_${action.corrective_action_id}">
-                ðŸ“Š Evidence <span class="required">*</span>
+                &#128202; Evidence <span class="required">*</span>
               </label>
               <textarea name="evidence_${action.corrective_action_id}"
                         id="evidence_${action.corrective_action_id}" required
@@ -2633,7 +2633,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             <div class="form-grid">
               <div class="form-group">
                 <label for="due_date_${action.corrective_action_id}">
-                  ðŸ“… Due Date <span class="required">*</span>
+                  &#128197; Due Date <span class="required">*</span>
                 </label>
                 <input
                   type="date"
@@ -2646,7 +2646,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
 
               <div class="form-group">
                 <label for="responsible_${action.corrective_action_id}">
-                  ðŸ‘¤ Responsible <span class="required">*</span>
+                  &#128100; Responsible <span class="required">*</span>
                 </label>
                 <input
                   type="text"
@@ -2817,12 +2817,12 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             suggDiv.querySelectorAll('.ai-suggestion-card').forEach(c => {
               c.classList.remove('applied');
               const hint = c.querySelector('.apply-hint');
-              if (hint) hint.textContent = 'Click to apply â†“';
+              if (hint) hint.textContent = 'Click to apply \u2193';
             });
 
             btn.disabled = true;
             btn.classList.add('loading');
-            btn.querySelector('.gen-btn-icon').textContent = 'â³';
+            btn.querySelector('.gen-btn-icon').textContent = '\u23F3';
             btn.querySelector('.gen-btn-text').textContent = 'Generating...';
 
             try {
@@ -2845,7 +2845,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
             } finally {
               btn.disabled = false;
               btn.classList.remove('loading');
-              btn.querySelector('.gen-btn-icon').textContent = 'ðŸ”„';
+              btn.querySelector('.gen-btn-icon').textContent = '\u{1F504}';
               btn.querySelector('.gen-btn-text').textContent = 'Regenerate';
             }
           }
@@ -3485,9 +3485,10 @@ app.get("/form", async (req, res) => {
                   <button
                     type="button"
                     class="view-ca-btn"
-                    data-kpi-values-id="${kpi.kpi_values_id}">
+                    data-kpi-values-id="${kpi.kpi_values_id}"
+                    onclick="openHistoryModal('${kpi.kpi_values_id}'); return false;">
                     <span>View Corrective Action</span>
-                    <span class="view-ca-btn-icon">â†—</span>
+                    <span class="view-ca-btn-icon" aria-hidden="true">&#8599;</span>
                   </button>
                 </div>
                     <!-- â”€â”€ Unified card action bar â”€â”€ -->
@@ -3499,7 +3500,7 @@ app.get("/form", async (req, res) => {
         onclick="openAssistantForKpi('${kpi.kpi_values_id}')">
         <span class="ai-btn-glow"></span>
         <span class="ai-btn-shine"></span>
-        <span class="ai-btn-icon">ðŸ¤–</span>
+        <span class="ai-btn-icon" aria-hidden="true">&#129302;</span>
         <span class="ai-btn-text">AI Support</span>
        </button>
   </div>
@@ -3508,7 +3509,8 @@ app.get("/form", async (req, res) => {
     <button
       type="button"
       class="card-action-btn card-action-btn--primary open-ca-modal-btn"
-      data-kpi-values-id="${kpi.kpi_values_id}">
+      data-kpi-values-id="${kpi.kpi_values_id}"
+      onclick="openCaTableModal('${kpi.kpi_values_id}'); return false;">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M10 4v12M4 10h12"/>
       </svg>
@@ -3603,16 +3605,20 @@ app.get("/form", async (req, res) => {
 
           .kpi-split-layout{
             display:grid;
-            grid-template-columns:1fr 380px;
+            grid-template-columns:minmax(0,1fr) 380px;
             gap:20px;
             align-items:stretch;
             margin-top:16px;
+            position:relative;
+            isolation:isolate;
           }
           .kpi-left-panel,.kpi-right-panel{
             background:#fafafa;
             border:1px solid #e5e7eb;
             border-radius:20px;
             padding:18px;
+            min-width:0;
+            position:relative;
           }
           .kpi-left-panel{
             min-height:480px;
@@ -3621,6 +3627,8 @@ app.get("/form", async (req, res) => {
             justify-content:center;
             position:relative;
             overflow:hidden;
+            z-index:30;
+            isolation:isolate;
             background:
               radial-gradient(circle at top right,rgba(37,99,235,0.14),transparent 34%),
               linear-gradient(180deg,#ffffff 0%,#f7fbff 52%,#f2f7fc 100%);
@@ -3643,6 +3651,8 @@ app.get("/form", async (req, res) => {
         display:flex;
         flex-direction:column;
         gap:18px;
+        position:relative;
+        z-index:31;
 
         /* ðŸ‘‡ ADD THIS */
         padding-bottom:28px;
@@ -3687,6 +3697,8 @@ app.get("/form", async (req, res) => {
            display:flex;
            flex-direction:column;
            gap:14px;
+           position:relative;
+           z-index:32;
             }
           .kpi-history-panel.history-empty{border-color:#e2e8f0;background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);}
           .kpi-history-copy{display:flex;flex-direction:column;gap:6px;}
@@ -3707,6 +3719,9 @@ app.get("/form", async (req, res) => {
           font-size:14px;
           font-weight:800;
           cursor:pointer;
+          position:relative;
+          z-index:40;
+          pointer-events:auto;
          box-shadow:0 8px 18px rgba(15,108,189,0.18); /* â¬…ï¸ softer */
           }
           .view-ca-btn:hover{transform:translateY(-2px);box-shadow:0 18px 34px rgba(15,108,189,0.26);}
@@ -3718,10 +3733,10 @@ app.get("/form", async (req, res) => {
           .view-ca-note{font-size:13px;color:#526277;line-height:1.6;}
           .kpi-mini-stats{display:none;}
           .kpi-right-panel{
-            min-height:280px;display:flex;align-items:center;justify-content:center;position:relative;
+            min-height:280px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;z-index:1;
           }
           .kpi-chart-trigger{
-            cursor:zoom-in;transition:border-color 0.2s ease,box-shadow 0.2s ease;
+            cursor:zoom-in;transition:border-color 0.2s ease,box-shadow 0.2s ease;pointer-events:none;
           }
           .kpi-chart-trigger:hover{border-color:#bfdbfe;box-shadow:0 12px 28px rgba(37,99,235,0.10);}
           .chart-expand-btn{
@@ -3730,12 +3745,12 @@ app.get("/form", async (req, res) => {
             display:inline-flex;align-items:center;justify-content:center;
             background:rgba(255,255,255,0.92);color:#1d4ed8;
             box-shadow:0 12px 24px rgba(15,23,42,0.12);
-            cursor:pointer;z-index:2;
+            cursor:pointer;z-index:3;pointer-events:auto;
             transition:transform 0.18s ease,box-shadow 0.18s ease;
           }
           .chart-expand-btn:hover{transform:translateY(-1px);background:#eff6ff;}
           .chart-expand-btn svg{width:18px;height:18px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round;}
-          .kpi-right-panel canvas{width:100% !important;height:380px !important;display:block;}
+          .kpi-right-panel canvas{width:100% !important;height:380px !important;max-width:100%;display:block;pointer-events:none;}
 
           .history-table-wrap {
   overflow-x: auto;
@@ -3855,6 +3870,7 @@ app.get("/form", async (req, res) => {
 
           /* â”€â”€ Comment Section â”€â”€ */
           .comment-section{margin-top:16px;}
+          .comment-section{position:relative;z-index:32;}
           .comment-label{font-weight:600;color:#555;margin-bottom:8px;font-size:13px;}
           .comment-input{
             width:100%;padding:10px;border:1px solid #ddd;border-radius:4px;
@@ -3871,6 +3887,8 @@ app.get("/form", async (req, res) => {
            padding-top: 14px;
            border-top: 1px solid #e5e7eb;
            flex-wrap: nowrap; /* â¬…ï¸ keep them on same row */
+           position:relative;
+           z-index:35;
            }
           .kpi-card-actions-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
           .kpi-card-actions-right{display:flex;align-items:center;gap:10px;}
@@ -3880,6 +3898,9 @@ app.get("/form", async (req, res) => {
             border:none;border-radius:10px;
             padding:9px 16px;
             font-size:13px;font-weight:700;cursor:pointer;
+            position:relative;
+            z-index:40;
+            pointer-events:auto;
             transition:transform 0.15s,box-shadow 0.15s,background 0.15s;
           }
           .card-action-btn svg{width:15px;height:15px;flex-shrink:0;}
@@ -3969,14 +3990,19 @@ app.get("/form", async (req, res) => {
 }
 
           /* â”€â”€ CA Table Modal â”€â”€ */
-          .ca-modal-overlay{
-            position:fixed;inset:0;
-            background:rgba(15,23,42,0.60);
-            display:flex;align-items:center;justify-content:center;
-            padding:24px;z-index:10005;
-            opacity:0;pointer-events:none;
-            transition:opacity 0.22s ease;
-          }
+        .ca-modal-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(15, 23, 42, 0.55);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        z-index: 9999;
+        transition: opacity 0.25s ease, visibility 0.25s ease;
+       }
           .ca-modal-overlay.active{opacity:1;pointer-events:auto;}
           .ca-modal-box{
             width:min(98vw,980px);
@@ -3987,7 +4013,25 @@ app.get("/form", async (req, res) => {
             transform:translateY(18px) scale(0.98);
             transition:transform 0.22s ease;
           }
+          .ca-modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+          }
           .ca-modal-overlay.active .ca-modal-box{transform:translateY(0) scale(1);}
+          .ca-modal-panel {
+           width: min(1100px, 92vw);
+           max-height: 90vh;
+           overflow: auto;
+           background: #fff;
+           border-radius: 18px;
+           transform: translateY(12px);
+           transition: transform 0.25s ease;
+           }
+
+          .ca-modal-overlay.active .ca-modal-panel {
+           transform: translateY(0);
+           }
           .ca-modal-header{
             display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
             padding:22px 26px 18px;
@@ -4294,7 +4338,16 @@ app.get("/form", async (req, res) => {
           .submit-btn{background:#0078D7;color:white;border:none;padding:12px 30px;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer;display:block;width:100%;margin-top:20px;}
 
           /* â”€â”€ AI Assistant â”€â”€ */
-          .assistant-shell{position:fixed;right:90px;bottom:24px;z-index:10001;}
+          .assistant-shell{
+           position:fixed;
+           right:90px;
+           bottom:24px;
+           z-index:10001;
+           width:0;
+           height:0;
+           pointer-events:none;
+          }
+          .assistant-shell.open{pointer-events:auto;}
           .assistant-launcher{
            width:64px;
            height:64px;
@@ -4333,6 +4386,9 @@ app.get("/form", async (req, res) => {
            50%{opacity:0;}
           }
           .assistant-panel{
+           position:absolute;
+           right:0;
+           bottom:0;
            width:min(92vw,460px);
            height:min(72vh,620px);
            background:rgba(255,255,255,0.98);
@@ -4500,7 +4556,7 @@ app.get("/form", async (req, res) => {
               <div class="ca-modal-form-section" id="caModalFormSection" style="display:none;">
                 <div class="ca-modal-form-header">
                   <span class="ca-modal-form-title" id="caModalFormTitle">New Corrective Action</span>
-                  <button type="button" class="ca-tbl-btn ca-tbl-delete" id="caModalFormCollapse">âœ• Cancel</button>
+                  <button type="button" class="ca-tbl-btn ca-tbl-delete" id="caModalFormCollapse">&times; Cancel</button>
                 </div>
                 <div class="ca-modal-form-body">
                   <input type="hidden" id="caModalEditIndex" value="">
@@ -4563,20 +4619,20 @@ app.get("/form", async (req, res) => {
           <div class="assistant-panel" id="assistantPanel">
             <div class="assistant-header">
               <div class="assistant-title-wrap">
-                <div class="assistant-avatar">ðŸ¤–</div>
+                <div class="assistant-avatar" aria-hidden="true">&#129302;</div>
                 <div>
                   <div class="assistant-title">AI Assistant</div>
                   <div class="assistant-focus" id="assistantFocus">All KPIs on this form</div>
                 </div>
               </div>
-              <button type="button" class="assistant-close" id="assistantClose">Ã—</button>
+              <button type="button" class="assistant-close" id="assistantClose" aria-label="Close">&times;</button>
             </div>
             <div class="assistant-messages" id="assistantMessages"></div>
             <div class="assistant-composer">
               <div class="assistant-status" id="assistantStatus">Ask about KPI trends, quotation delays, root causes, owners, or corrective actions.</div>
               <form class="assistant-form" id="assistantForm">
                 <textarea class="assistant-input" id="assistantInput" placeholder="Ask about KPIs or quote delays" rows="1"></textarea>
-                <button type="submit" class="assistant-send" id="assistantSend">âž¤</button>
+                <button type="submit" class="assistant-send" id="assistantSend" aria-label="Send">&#10148;</button>
               </form>
             </div>
           </div>
@@ -4654,10 +4710,10 @@ function getCaModalActions(kvId) {
       <td title="\${escapeHtml(a.evidence || "")}">\${escapeHtml(truncate(a.evidence || "", 40))}</td>
       <td>\${escapeHtml(a.due_date)}</td>
       <td>\${escapeHtml(a.responsible)}</td>
-      <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "â€”"}</td>
+      <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "&mdash;"}</td>
       <td class="ca-col-actions">
         <button type="button" class="ca-table-edit-btn" onclick="caModalOpenForm(\${i})">Edit</button>
-        <button type="button" class="ca-table-delete-btn" onclick="caModalDeleteAction(\${i})">âœ•</button>
+        <button type="button" class="ca-table-delete-btn" onclick="caModalDeleteAction(\${i})">&times;</button>
       </td>
        </tr>\`;
         }).join("");
@@ -4815,6 +4871,7 @@ function syncDomFromStore(kvId) {
           function openCaTableModal(kvId) {
             caModalKvId = kvId;
             const overlay = document.getElementById("caTableModal");
+            if (!overlay) return;
             const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
             const title = card ? (card.querySelector(".kpi-title") || {}).textContent || "KPI" : "KPI";
 
@@ -4833,6 +4890,7 @@ function syncDomFromStore(kvId) {
 
           function closeCaTableModal() {
             const overlay = document.getElementById("caTableModal");
+            if (!overlay) return;
             overlay.classList.remove("active");
             overlay.setAttribute("aria-hidden", "true");
             if (!document.querySelector(".chart-modal-overlay.active") &&
@@ -5050,7 +5108,7 @@ function syncDomFromStore(kvId) {
           function openAssistant() {
             if (!assistantShell) return;
             assistantShell.classList.add("open");
-            if (assistantLauncher) assistantLauncher.textContent = "Ã—";
+            if (assistantLauncher) assistantLauncher.innerHTML = "&times;";
             if (assistantFocus) {
               if (!assistantState.selectedKpiId) {
                 assistantFocus.textContent = "All KPIs on this form";
@@ -5071,7 +5129,7 @@ function syncDomFromStore(kvId) {
           function closeAssistant() {
             if (!assistantShell) return;
             assistantShell.classList.remove("open");
-            if (assistantLauncher) assistantLauncher.textContent = "ðŸ¤–";
+            if (assistantLauncher) assistantLauncher.innerHTML = "&#129302;";
           }
           function openAssistantForKpi(kvId) {
             if (assistantState.selectedKpiId !== kvId) {
@@ -5524,6 +5582,58 @@ function getFallbackCurrentMonthLabel(card, labels) {
             }
           }
 
+          function hasCorrectiveActionContent(action) {
+            if (!action) return false;
+            return Boolean(
+              String(action.root_cause || "").trim() ||
+              String(action.implemented_solution || "").trim() ||
+              String(action.due_date || "").trim() ||
+              String(action.responsible || "").trim() ||
+              String(action.id || action.corrective_action_id || "").trim()
+            );
+          }
+
+          function renderHistoryActionsTable(actions, emptyMessage) {
+            if (!actions.length) {
+              return '<div class="history-empty">' + escapeHistoryHtml(emptyMessage) + '</div>';
+            }
+
+            return '' +
+              '<div class="history-table-wrap">' +
+                '<table class="history-table">' +
+                  '<thead>' +
+                    '<tr>' +
+                      '<th>#</th>' +
+                      '<th>Week</th>' +
+                      '<th>Root Cause</th>' +
+                      '<th>Implemented Solution</th>' +
+                      '<th>Due Date</th>' +
+                      '<th>Responsible</th>' +
+                      '<th>Status</th>' +
+                    '</tr>' +
+                  '</thead>' +
+                  '<tbody>' +
+                    actions.map(function(action, index) {
+                      return '' +
+                        '<tr>' +
+                          '<td>' + (index + 1) + '</td>' +
+                          '<td>' + escapeHistoryHtml(action.week || action.month_label || "Current") + '</td>' +
+                          '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
+                          '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
+                          '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
+                          '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
+                          '<td>' +
+                            (action.status
+                              ? '<span class="history-chip ' + getHistoryStatusClass(action.status) + '">' + escapeHistoryHtml(action.status) + '</span>'
+                              : '&mdash;') +
+                          '</td>' +
+                        '</tr>';
+                    }).join("") +
+                  '</tbody>' +
+                '</table>' +
+              '</div>';
+          }
+
         function openHistoryModal(kvId) {
   const historyModal = document.getElementById("historyModal");
   const historyModalTitle = document.getElementById("historyModalTitle");
@@ -5533,87 +5643,62 @@ function getFallbackCurrentMonthLabel(card, labels) {
 
   if (!card || !historyModal || !historyModalContent) return;
 
-  const titleText = getTrimmedText(card.querySelector(".kpi-title")) || "Corrective Action History";
+  const titleText = getTrimmedText(card.querySelector(".kpi-title")) || "Corrective Actions";
   const subtitleText = getTrimmedText(card.querySelector(".kpi-subtitle"));
+  const currentMonthLabel = card.dataset.currentMonthLabel || "Current month";
   const prevLabel = card.dataset.prevMonthLabel || "";
+  const liveActions = getCaModalActions(kvId).filter(hasCorrectiveActionContent).map(function(action) {
+    return Object.assign({ week: currentMonthLabel, status: action.status || "Open" }, action);
+  });
   const prevActions = decodeModalPayload(card.dataset.prevMonthActions, []);
   const prevComments = decodeModalPayload(card.dataset.prevMonthComments, []);
   const comments = Array.isArray(prevComments) ? prevComments : [];
-  const actions = Array.isArray(prevActions) ? prevActions : [];
+  const previousActions = (Array.isArray(prevActions) ? prevActions : []).filter(hasCorrectiveActionContent);
+  const sections = [];
 
   if (historyModalTitle) historyModalTitle.textContent = titleText;
   if (historyModalSubtitle) {
-    historyModalSubtitle.textContent = prevLabel
-      ? prevLabel + (subtitleText ? " â€¢ " + subtitleText : "")
-      : "No previous month data available";
+    historyModalSubtitle.textContent = subtitleText
+      ? currentMonthLabel + ' • ' + subtitleText
+      : currentMonthLabel;
   }
 
-  const chips = [];
+  sections.push(
+    '<div class="history-section">' +
+      '<h4 class="history-section-title">Current Corrective Actions</h4>' +
+      renderHistoryActionsTable(liveActions, 'No corrective actions saved yet for this KPI in the current month.') +
+    '</div>'
+  );
 
-let actionsHtml = "";
-if (actions.length) {
-  actionsHtml =
-    '<div class="history-table-wrap">' +
-      '<table class="history-table">' +
-        '<thead>' +
-          '<tr>' +
-            '<th>#</th>' +
-            '<th>Week</th>' +
-            '<th>Root Cause</th>' +
-            '<th>Implemented Solution</th>' +
-            '<th>Due Date</th>' +
-            '<th>Responsible</th>' +
-            '<th>Status</th>' +
-          '</tr>' +
-        '</thead>' +
-        '<tbody>' +
-          actions.map(function(action, index) {
-            return '' +
-              '<tr>' +
-                '<td>' + (index + 1) + '</td>' +
-                '<td>' + escapeHistoryHtml(action.week || "") + '</td>' +
-                '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
-                '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
-                '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
-                '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
-                '<td>' +
-                  (action.status
-                    ? '<span class="history-chip ' + getHistoryStatusClass(action.status) + '">' + escapeHistoryHtml(action.status) + '</span>'
-                    : 'â€”') +
-                '</td>' +
-              '</tr>';
-          }).join("") +
-        '</tbody>' +
-      '</table>' +
-    '</div>';
-} else {
-  actionsHtml = '<div class="history-empty">No corrective actions were saved for this KPI in the previous month.</div>';
-}
-
-  const commentsHtml = comments.length
-    ? '<div class="history-comments-list">' + comments.map(c =>
-        '<div class="history-comment-card">' +
-          '<div class="history-comment-label">' +
-            escapeHistoryHtml(c.month_label || prevLabel || "") +
-            (c.week ? ' â€¢ ' + formatHistoryWeek(c.week) : '') +
-          '</div>' +
-          '<div class="history-comment-text">' + formatHistoryText(c.text || "") + '</div>' +
-        '</div>'
-      ).join("") + '</div>'
-    : '<div class="history-empty">No comments were saved for this KPI in the previous month.</div>';
-
-  if (!actions.length && !comments.length) {
-    historyModalContent.innerHTML =
-      '<div class="history-empty">No previous-month corrective action or comment history was found for this KPI.</div>';
-  } else {
-    historyModalContent.innerHTML =
-      (chips.length ? '<div class="history-meta-row">' + chips.join("") + '</div>' : '') +
+  if (previousActions.length) {
+    sections.push(
       '<div class="history-section">' +
-        '<h4 class="history-section-title">âš ï¸ Corrective Actions</h4>' +
-        actionsHtml +
-      '</div>';
+        '<h4 class="history-section-title">Previous Month Corrective Actions</h4>' +
+        renderHistoryActionsTable(previousActions, 'No previous-month corrective actions were found.') +
+      '</div>'
+    );
   }
 
+  if (comments.length) {
+    const commentsHtml = '<div class="history-comments-list">' + comments.map(c =>
+      '<div class="history-comment-card">' +
+        '<div class="history-comment-label">' +
+          escapeHistoryHtml(c.month_label || prevLabel || "") +
+          (c.week ? ' • ' + formatHistoryWeek(c.week) : '') +
+        '</div>' +
+        '<div class="history-comment-text">' + formatHistoryText(c.text || "") + '</div>' +
+      '</div>'
+    ).join("") + '</div>';
+
+    sections.push(
+      '<div class="history-section">' +
+        '<h4 class="history-section-title">Previous Month Comments</h4>' +
+        commentsHtml +
+      '</div>'
+    );
+  }
+
+  historyModalContent.innerHTML = sections.join('');
   historyModal.classList.add("active");
   historyModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("chart-modal-open");
@@ -5751,6 +5836,8 @@ if (actions.length) {
 
           window.caModalOpenEdit = caModalOpenEdit;
           window.caModalDeleteAction = caModalDeleteAction;
+          window.openHistoryModal = openHistoryModal;
+          window.openCaTableModal = openCaTableModal;
         </script>
       </body>
       </html>
@@ -6678,6 +6765,24 @@ const generateVerticalBarChart = (chartData) => {
   if (cleanLow !== null) allVals.push(cleanLow);
   if (cleanTarget !== null) allVals.push(cleanTarget);
 
+  const thresholdValues = [cleanLow, cleanTarget, cleanHigh]
+    .filter((value) => value !== null)
+    .sort((a, b) => a - b);
+  const thresholdBand = thresholdValues.length >= 2
+    ? thresholdValues[thresholdValues.length - 1] - thresholdValues[0]
+    : null;
+  const thresholdTop = thresholdValues.length ? Math.max(...thresholdValues) : null;
+  const tightThresholdCluster = Boolean(
+    thresholdValues.length >= 2 &&
+    thresholdBand !== null &&
+    thresholdTop !== null &&
+    (
+      thresholdBand <= 3 ||
+      (thresholdBand / Math.max(Math.abs(thresholdTop), 1)) <= 0.08
+    )
+  );
+  const chartHeightPx = tightThresholdCluster ? 320 : 260;
+
   const dataMax = Math.max(...allVals, 1);
   const rawInt = dataMax / 10;
   const mag = Math.pow(10, Math.floor(Math.log10(rawInt || 1)));
@@ -6791,8 +6896,8 @@ const generateVerticalBarChart = (chartData) => {
       label: `High Limit (${fmt(cleanHigh)})`,
       data: new Array(values.length).fill(cleanHigh),
       borderColor: '#ff9800',
-      borderWidth: 2,
-      borderDash: [6, 4],
+      borderWidth: 3,
+      borderDash: [12, 5],
       pointRadius: 0,
       fill: false
     });
@@ -6803,8 +6908,8 @@ const generateVerticalBarChart = (chartData) => {
       label: `Low Limit (${fmt(cleanLow)})`,
       data: new Array(values.length).fill(cleanLow),
       borderColor: '#dc3545',
-      borderWidth: 2,
-      borderDash: [6, 4],
+      borderWidth: 3,
+      borderDash: [2, 6],
       pointRadius: 0,
       fill: false
     });
@@ -6815,8 +6920,8 @@ const generateVerticalBarChart = (chartData) => {
       label: `Target (${fmt(cleanTarget)})`,
       data: new Array(values.length).fill(cleanTarget),
       borderColor: '#16a34a',
-      borderWidth: 2,
-      borderDash: [3, 3],
+      borderWidth: 3.5,
+      borderDash: [],
       pointRadius: 0,
       fill: false
     });
@@ -6827,6 +6932,14 @@ const generateVerticalBarChart = (chartData) => {
     data: { labels, datasets },
     options: {
       legend: { display: false },
+      layout: {
+        padding: {
+          top: tightThresholdCluster ? 12 : 6,
+          right: 12,
+          bottom: 4,
+          left: 4
+        }
+      },
       scales: {
         xAxes: [{
           ticks: { fontSize: 10 },
@@ -6842,7 +6955,7 @@ const generateVerticalBarChart = (chartData) => {
 
   const chartUrl =
     `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}` +
-    `&w=500&h=260&bkg=white`;
+    `&w=500&h=${chartHeightPx}&bkg=white`;
 
   const commentsHtml = comments.length > 0 ? `
     <div style="margin-bottom:20px;">
@@ -6955,6 +7068,23 @@ const generateVerticalBarChart = (chartData) => {
   `;
   })();
 
+  const thresholdFocusHtml = tightThresholdCluster ? `
+    <div style="margin:0 0 16px;padding:12px 14px;background:#f8fbff;border:1px solid #dbeafe;
+                border-radius:12px;">
+      <div style="font-size:11px;font-weight:700;color:#0f6cbd;text-transform:uppercase;
+                  letter-spacing:0.08em;margin-bottom:6px;">Threshold Focus</div>
+      <div style="font-size:13px;color:#475569;line-height:1.5;">
+        High limit, target, and low limit are tightly grouped between
+        <strong>${fmt(thresholdValues[0])}</strong> and
+        <strong>${fmt(thresholdValues[thresholdValues.length - 1])}</strong>${unit ? ` ${unit}` : ''}.
+        Exact values are separated below to keep the report easier to read.
+      </div>
+    </div>
+  ` : '';
+
+  const preChartLimitsHtml = tightThresholdCluster ? limitsRowHtml : '';
+  const postChartLimitsHtml = tightThresholdCluster ? '' : limitsRowHtml;
+
   return `
     <table border="0" cellpadding="0" cellspacing="0" width="100%"
            style="margin:20px 0;background:white;border-radius:12px;
@@ -6967,10 +7097,12 @@ const generateVerticalBarChart = (chartData) => {
         </div>
 
         ${statsBox}
+        ${thresholdFocusHtml}
 
         <table border="0" cellpadding="0" cellspacing="0" width="100%">
           <tr>
             <td width="60%" valign="top" style="padding-right:20px;">
+              ${preChartLimitsHtml}
               <table border="0" cellpadding="0" cellspacing="0" width="100%">
                 <tr>
   
@@ -6980,7 +7112,7 @@ const generateVerticalBarChart = (chartData) => {
                         <td align="center">
                           <img src="${chartUrl}"
                                width="500"
-                               height="260"
+                               height="${chartHeightPx}"
                                alt="KPI Trend Chart"
                                style="max-width:100%;
                                       border-radius:8px;
@@ -6995,7 +7127,7 @@ const generateVerticalBarChart = (chartData) => {
               </table>
 
               <!-- âœ… High/Low limits beside each other -->
-              ${limitsRowHtml}
+              ${postChartLimitsHtml}
             </td>
 
             <td width="40%" valign="top" style="padding-left:20px;border-left:2px solid #f0f0f0;">
@@ -7478,8 +7610,8 @@ const createIndividualKPIChart = (kpi) => {
   const trendColor = currentStatus.isGood === false ? '#dc2626' : '#22c55e';
 
   const statusArrow = currentStatus.isGood === false
-    ? (direction === 'down' ? 'â†—' : 'â†˜')
-    : (direction === 'down' ? 'â†˜' : 'â†—');
+    ? (direction === 'down' ? '\u2197' : '\u2198')
+    : (direction === 'down' ? '\u2198' : '\u2197');
 
 
 
@@ -7925,9 +8057,9 @@ function processKPIChartData(rows) {
     if (vals.length >= 2) {
       const cur = vals[vals.length - 1], prev = vals[vals.length - 2];
       kpi.trend = ((cur - prev) / prev) * 100;
-      kpi.trendIcon = cur > prev ? 'â†—' : cur < prev ? 'â†˜' : 'â†’';
+      kpi.trendIcon = cur > prev ? '\u2197' : cur < prev ? '\u2198' : '\u2192';
       kpi.trendColor = cur > prev ? '#10b981' : cur < prev ? '#ef4444' : '#6b7280';
-    } else { kpi.trend = 0; kpi.trendIcon = 'â†’'; kpi.trendColor = '#6b7280'; }
+    } else { kpi.trend = 0; kpi.trendIcon = '\u2192'; kpi.trendColor = '#6b7280'; }
     if (kpi.low_limit !== null || kpi.high_limit !== null) {
       const latest = vals[vals.length - 1];
       kpi.achievementVsLimit = !needsCorrectiveAction(latest, kpi.low_limit, kpi.high_limit, kpi.direction);
