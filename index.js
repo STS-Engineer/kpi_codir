@@ -7,6 +7,9 @@ const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 const { registerRecommendationRoutes } = require('./kpi-recommendations');
 const { generateKPIRecommendationsPDFBuffer, generatePlantKPIRecommendationsPDFBuffer } = require('./kpi-recommendations');
+const {
+  buildDelayKnowledgeBaseContext
+} = require("./delay-knowledge-base");
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -296,28 +299,15 @@ const getLatestCorrectiveAction = (actions = []) => {
 
 const hasMeaningfulCorrectiveActionInput = (action = {}) =>
   Boolean(
-    normalizeText(action.correctiveActionId ?? action.corrective_action_id) ||
-    normalizeText(action.rootCause ?? action.root_cause) ||
-    normalizeText(action.implementedSolution ?? action.implemented_solution) ||
-    normalizeText(action.evidence) ||
-    normalizeText(action.dueDate ?? action.due_date)
+    normalizeText(action.rootCause ?? action.root_cause) &&
+    normalizeText(action.implementedSolution ?? action.implemented_solution) &&
+    normalizeText(action.dueDate ?? action.due_date) &&
+    normalizeText(action.responsibleName ?? action.responsible)
   );
 
 const getCorrectiveActionStatusValue = ({
-  rootCause,
-  implementedSolution,
-  evidence,
-  dueDate,
-  responsibleName
-}) => (
-  rootCause &&
-  implementedSolution &&
-  evidence &&
-  dueDate &&
-  normalizeText(responsibleName)
-)
-    ? "Waiting for validation"
-    : "Open";
+  status
+}) => normalizeText(status) || "Open";
 
 const readSubmittedFieldList = (formData, fieldName) =>
   toArray(formData?.[`${fieldName}[]`] ?? formData?.[fieldName]);
@@ -325,32 +315,31 @@ const readSubmittedFieldList = (formData, fieldName) =>
 const getSubmittedCorrectiveActions = (formData, kpiValuesId, defaultResponsibleName = null) => {
   const actionIds = readSubmittedFieldList(formData, `ca_action_id_${kpiValuesId}`);
   const rootCauses = readSubmittedFieldList(formData, `root_cause_${kpiValuesId}`);
-  const implementedSolutions = readSubmittedFieldList(formData, `impl_solution_${kpiValuesId}`);
-  const evidences = readSubmittedFieldList(formData, `evidence_${kpiValuesId}`);
+  const implementedSolutions = readSubmittedFieldList(formData, `implemented_solution_${kpiValuesId}`);
   const dueDates = readSubmittedFieldList(formData, `due_date_${kpiValuesId}`);
   const responsibleNames = readSubmittedFieldList(formData, `responsible_${kpiValuesId}`);
+  const statuses = readSubmittedFieldList(formData, `ca_status_${kpiValuesId}`);
 
   const actionCount = Math.max(
     actionIds.length,
     rootCauses.length,
     implementedSolutions.length,
-    evidences.length,
     dueDates.length,
-    responsibleNames.length
+    responsibleNames.length,
+    statuses.length
   );
 
   return Array.from({ length: actionCount }, (_, index) => ({
     correctiveActionId: normalizeText(actionIds[index]),
     rootCause: normalizeText(rootCauses[index]),
     implementedSolution: normalizeText(implementedSolutions[index]),
-    evidence: normalizeText(evidences[index]),
     dueDate: normalizeText(dueDates[index]),
     responsibleName:
       normalizeText(responsibleNames[index]) ||
-      normalizeText(defaultResponsibleName)
+      normalizeText(defaultResponsibleName),
+    status: normalizeText(statuses[index]) || "Open"
   }));
 };
-
 const buildCorrectiveActionEntryHtml = ({
   kpiValuesId,
   actionIndex,
@@ -361,10 +350,9 @@ const buildCorrectiveActionEntryHtml = ({
   const correctiveActionId = action.corrective_action_id ?? action.correctiveActionId ?? "";
   const rootCause = action.root_cause ?? action.rootCause ?? "";
   const implementedSolution = action.implemented_solution ?? action.implementedSolution ?? "";
-  const evidence = action.evidence ?? "";
   const dueDate = formatInputDate(action.due_date ?? action.dueDate);
   const responsibleName = action.responsible ?? action.responsibleName ?? defaultResponsibleName ?? "";
-  const statusText = normalizeText(action.status) || (correctiveActionId ? "Open" : "");
+  const statusText = "Open";
   const safeStatusClass = String(statusText || "")
     .toLowerCase()
     .replace(/\s+/g, "-");
@@ -374,6 +362,7 @@ const buildCorrectiveActionEntryHtml = ({
   return `
     <div class="ca-action-card" data-existing-action="${correctiveActionId ? "1" : "0"}">
       <input type="hidden" name="ca_action_id_${kpiValuesId}[]" value="${escapeHtml(correctiveActionId)}" />
+      <input type="hidden" name="ca_status_${kpiValuesId}[]" value="${escapeHtml(statusText)}" data-ca-field="status" />
 
       <div class="ca-action-head">
         <div class="ca-action-title">
@@ -434,25 +423,12 @@ const buildCorrectiveActionEntryHtml = ({
           Implemented Solution <span class="ca-required">*</span>
         </label>
         <textarea
-          name="impl_solution_${kpiValuesId}[]"
+          name="implemented_solution_${kpiValuesId}[]"
           class="ca-textarea ca-required-field"
-          data-ca-field="impl_solution"
+          data-ca-field="implemented_solution"
           placeholder="Describe the implemented solution..."
           ${requiredAttr}
         >${escapeHtml(implementedSolution)}</textarea>
-      </div>
-
-      <div class="ca-field">
-        <label class="ca-label">
-          Evidence of Improvement <span class="ca-required">*</span>
-        </label>
-        <textarea
-          name="evidence_${kpiValuesId}[]"
-          class="ca-textarea ca-required-field"
-          data-ca-field="evidence"
-          placeholder="Provide evidence showing the improvement..."
-          ${requiredAttr}
-        >${escapeHtml(evidence)}</textarea>
       </div>
     </div>
   `;
@@ -491,6 +467,532 @@ const buildAssistantKpiContext = (kpis = []) =>
       : []
   }));
 
+const buildAssistantKpiDisplayName = (title, subtitle) => {
+  const cleanTitle = normalizeText(title);
+  const cleanSubtitle = normalizeText(subtitle);
+
+  if (cleanSubtitle && cleanTitle) {
+    return `${cleanSubtitle} (${cleanTitle})`;
+  }
+
+  return cleanSubtitle || cleanTitle || "Untitled KPI";
+};
+
+const KPI_DELAY_KB_RULES = Object.freeze([
+  {
+    id: "quote_flow",
+    patterns: [/\bquote\b/i, /\bquotation\b/i, /\bdevis\b/i, /\brfq\b/i, /\bcosting\b/i, /\bestimat/i],
+    rationale: "This KPI is directly connected to the quotation and costing process, so the delay knowledge base is directly relevant.",
+    preferredNodeIds: ["P008", "M001", "P001", "P003", "P007", "P005", "P002", "P006", "S001", "S004", "S006"],
+    kbHints: [
+      "quote released late",
+      "incomplete RFQ package at intake",
+      "late supplier quotation",
+      "detailed costing blocked",
+      "costing rework",
+      "quote OTD"
+    ],
+    ownerFocus: ["Sales", "Costing", "Purchasing", "Management"],
+    metricFocus: ["Quote OTD", "Average quote lead time", "Supplier response lead time", "% RFQ complete at intake", "Backlog days"],
+    nextChecks: [
+      "Check committed quote date versus actual release date",
+      "Review whether the RFQ package was complete before costing started",
+      "Identify blocked cost lines waiting on supplier or engineering input",
+      "Review reprioritization or backlog changes during the quote cycle"
+    ],
+    nodeRelevanceMap: {
+      P008: "This KPI is directly affected when quotes are released after the committed customer date.",
+      M001: "Quote OTD is the primary timing metric to verify whether quotation lateness is driving this KPI.",
+      P001: "Incomplete RFQ intake delays quote start and creates clarification loops before a customer-ready offer exists.",
+      P003: "Late supplier prices delay quote completion when bought parts or material costs are still open.",
+      P007: "Blocked detailed costing prevents a complete and reliable commercial release.",
+      P005: "Repeated costing rework consumes time and pushes quote release later.",
+      P002: "Insufficient costing capacity increases backlog and slows quotation throughput.",
+      P006: "Frequent reprioritization interrupts quote completion and causes missed due dates.",
+      S001: "An intake gate reduces late starts caused by unstable or missing RFQ inputs.",
+      S004: "Should-cost and supplier SLAs reduce waiting time on supplier-dependent cost lines.",
+      S006: "Priority governance protects the quote flow from constant interruption."
+    }
+  },
+  {
+    id: "commercial_outcome",
+    patterns: [/\bbusiness take\b/i, /\border intake\b/i, /\bsales\b/i, /\brevenue\b/i, /\bbookings?\b/i],
+    rationale: "Commercial performance can be reduced when quotes are late, incomplete, or blocked before customer release.",
+    preferredNodeIds: ["P008", "M001", "P001", "P003", "P002", "P006", "S001", "S004", "S006"],
+    kbHints: [
+      "quote released late",
+      "quote OTD",
+      "incomplete RFQ package at intake",
+      "late supplier quotation",
+      "insufficient costing capacity",
+      "shifting priorities and permanent urgencies"
+    ],
+    ownerFocus: ["Sales", "Purchasing", "Costing", "Management"],
+    metricFocus: ["Quote OTD", "% RFQ complete at intake", "Supplier response lead time", "Backlog days", "Priority changes per week"],
+    nextChecks: [
+      "Review the last 5 missed or delayed business opportunities",
+      "Map each one to the quotation stage where time was lost",
+      "Check whether quotes were released after the customer's expected response window",
+      "Review missing RFQ inputs, supplier delays, and internal backlog on those cases"
+    ],
+    nodeRelevanceMap: {
+      P008: "Late quote release can directly reduce business take because the customer receives the offer too late to place the order.",
+      M001: "Quote OTD is the best direct metric to test whether quotation timing is affecting business take.",
+      P001: "Incomplete RFQ intake delays the costing start and shortens the commercial response window.",
+      P003: "Supplier quotation delays keep the commercial offer open longer and can delay customer submission.",
+      P002: "Insufficient costing capacity slows opportunity handling and can reduce captured business.",
+      P006: "Shifting priorities can leave valuable opportunities unfinished or submitted too late.",
+      S001: "An RFQ intake gate helps start opportunities with complete data and fewer commercial delays.",
+      S004: "Should-cost and supplier response targets reduce wait time on bought parts before submission.",
+      S006: "Priority governance protects strategic opportunities from constant interruption."
+    }
+  },
+  {
+    id: "flow_timeliness",
+    patterns: [/\botd\b/i, /\blead time\b/i, /\bdelay\b/i, /\bbacklog\b/i, /\bcycle time\b/i, /\bdeadline\b/i],
+    rationale: "This KPI measures timeliness or flow performance, so delay, backlog, and prioritization nodes are directly relevant.",
+    preferredNodeIds: ["M001", "P008", "P002", "P006", "P005", "P003", "S003", "S006"],
+    kbHints: [
+      "quote OTD",
+      "quote released late",
+      "insufficient costing capacity",
+      "shifting priorities and permanent urgencies",
+      "costing rework"
+    ],
+    ownerFocus: ["Management", "Costing", "Sales"],
+    metricFocus: ["Quote OTD", "Average quote lead time", "Backlog days", "WIP count", "Priority changes per week"],
+    nextChecks: [
+      "Break the delay into intake, costing, supplier, validation, and release stages",
+      "Measure backlog and WIP at the same time as the KPI drop",
+      "Check how often work sequence changed before completion"
+    ],
+    nodeRelevanceMap: {
+      M001: "This KPI is itself a timing metric or is strongly linked to quote timeliness.",
+      P008: "Late release is the visible end effect when the quotation process misses its date.",
+      P002: "Capacity shortages create queue buildup and longer lead times.",
+      P006: "Frequent reprioritization creates stop-start work and delay accumulation.",
+      P005: "Rework adds avoidable cycle time before release.",
+      P003: "Supplier waits can extend the total quote timeline.",
+      S003: "Flow segmentation helps keep simple and strategic work from being delayed by one shared path.",
+      S006: "Priority governance reduces WIP churn and keeps due dates stable."
+    }
+  },
+  {
+    id: "cost_margin",
+    patterns: [/\bcost\b/i, /\bmargin\b/i, /\bprofit\b/i],
+    rationale: "Cost and margin KPIs can be affected by blocked or unstable costing inputs, supplier quotation delays, and rework.",
+    preferredNodeIds: ["P003", "P007", "P005", "P004", "S004", "S005", "P002"],
+    kbHints: [
+      "late supplier quotation",
+      "detailed costing blocked",
+      "costing rework",
+      "should-cost plus supplier SLA",
+      "simplify costing model"
+    ],
+    ownerFocus: ["Purchasing", "Costing", "Management"],
+    metricFocus: ["Supplier response lead time", "Time quote stays in draft", "Rework hours per quote", "Manual data entry time", "Throughput per analyst"],
+    nextChecks: [
+      "Identify which cost lines stayed uncertain longest",
+      "Review bought-part quotations and should-cost coverage",
+      "Measure how much time was lost to re-entry or recalculation"
+    ],
+    nodeRelevanceMap: {
+      P003: "Late supplier prices can force assumptions or delays in cost completion, affecting margin quality.",
+      P007: "Blocked detailed costing leaves key cost lines unresolved and weakens margin confidence.",
+      P005: "Rework changes assumptions repeatedly and can destabilize the final cost position.",
+      P004: "A heavy costing tool adds manual effort and slows cost-ready decision making.",
+      S004: "Should-cost and supplier SLAs provide faster backup pricing for bought parts.",
+      S005: "Simplifying the costing model reduces manual effort and repeated assumptions.",
+      P002: "Limited analyst capacity can delay detailed cost completion on margin-critical opportunities."
+    }
+  }
+]);
+
+const buildSelectedKpiSummary = (selectedKpi = null) => {
+  if (!selectedKpi) return null;
+
+  const currentValue = parseMetricNumber(selectedKpi.current_value);
+  const targetValue = parseMetricNumber(selectedKpi.target);
+  const lowLimit = parseMetricNumber(selectedKpi.low_limit);
+  const highLimit = parseMetricNumber(selectedKpi.high_limit);
+  const goodDirection = normalizeKpiDirection(selectedKpi.good_direction) || "up";
+  const status = getKpiStatus(currentValue, lowLimit, highLimit, goodDirection);
+
+  const gapToTarget =
+    currentValue !== null && targetValue !== null
+      ? Number((currentValue - targetValue).toFixed(2))
+      : null;
+
+  let targetAssessment = "Target data is not available.";
+  if (currentValue !== null && targetValue !== null) {
+    if (goodDirection === "down") {
+      if (currentValue > targetValue) {
+        targetAssessment = `${Number((currentValue - targetValue).toFixed(2))} above target, so improvement is needed.`;
+      } else if (currentValue < targetValue) {
+        targetAssessment = `${Number((targetValue - currentValue).toFixed(2))} better than target.`;
+      } else {
+        targetAssessment = "On target.";
+      }
+    } else if (currentValue < targetValue) {
+      targetAssessment = `${Number((targetValue - currentValue).toFixed(2))} below target, so improvement is needed.`;
+    } else if (currentValue > targetValue) {
+      targetAssessment = `${Number((currentValue - targetValue).toFixed(2))} above target.`;
+    } else {
+      targetAssessment = "On target.";
+    }
+  }
+
+  let thresholdAssessment = "Threshold status is not available.";
+  if (status.isGood === false) {
+    if (goodDirection === "down" && status.upperBound !== null && currentValue !== null) {
+      thresholdAssessment = `${Number((currentValue - status.upperBound).toFixed(2))} above the acceptable limit.`;
+    } else if (goodDirection === "up" && status.lowerBound !== null && currentValue !== null) {
+      thresholdAssessment = `${Number((status.lowerBound - currentValue).toFixed(2))} below the acceptable limit.`;
+    } else {
+      thresholdAssessment = "Outside the acceptable threshold.";
+    }
+  } else if (status.isGood === true) {
+    thresholdAssessment = "Inside the acceptable threshold.";
+  }
+
+  return {
+    display_name: buildAssistantKpiDisplayName(selectedKpi.title, selectedKpi.subtitle),
+    title: selectedKpi.title || "Untitled KPI",
+    subtitle: selectedKpi.subtitle || null,
+    unit: selectedKpi.unit || null,
+    week: selectedKpi.week || null,
+    good_direction: goodDirection,
+    current_value: currentValue,
+    target: targetValue,
+    low_limit: lowLimit,
+    high_limit: highLimit,
+    gap_to_target: gapToTarget,
+    target_assessment: targetAssessment,
+    threshold_assessment: thresholdAssessment,
+    corrective_action_status: selectedKpi.corrective_action_status || null,
+    comment: selectedKpi.comment || null,
+    latest_root_cause: selectedKpi.root_cause || null,
+    latest_implemented_solution: selectedKpi.implemented_solution || null,
+    due_date: selectedKpi.due_date || null,
+    responsible: selectedKpi.responsible || null
+  };
+};
+
+const buildSelectedKpiDelayFocus = (selectedKpi = null) => {
+  if (!selectedKpi) {
+    return {
+      is_direct_match: false,
+      matched_rule_id: null,
+      rationale: "No KPI is selected, so the knowledge base should be used only if the user explicitly asks about quotation or costing delay.",
+      kb_hints: [],
+      preferred_node_ids: [],
+      node_relevance_map: {},
+      owner_focus: [],
+      metric_focus: [],
+      next_checks: []
+    };
+  }
+
+  const searchableText = [
+    selectedKpi.title,
+    selectedKpi.subtitle,
+    selectedKpi.comment,
+    selectedKpi.root_cause,
+    selectedKpi.implemented_solution
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const matchedRule = KPI_DELAY_KB_RULES.find((rule) =>
+    rule.patterns.some((pattern) => pattern.test(searchableText))
+  ) || null;
+
+  if (!matchedRule) {
+    return {
+      is_direct_match: false,
+      matched_rule_id: null,
+      rationale: "This KPI does not clearly map to a delay knowledge-base category from its title alone. Use the knowledge base only if the user or KPI context points to quotation, RFQ, costing, supplier, backlog, lead time, or OTD issues.",
+      kb_hints: [],
+      preferred_node_ids: [],
+      node_relevance_map: {},
+      owner_focus: [],
+      metric_focus: [],
+      next_checks: []
+    };
+  }
+
+  return {
+    is_direct_match: true,
+    matched_rule_id: matchedRule.id,
+    rationale: matchedRule.rationale,
+    kb_hints: matchedRule.kbHints,
+    preferred_node_ids: matchedRule.preferredNodeIds || [],
+    node_relevance_map: matchedRule.nodeRelevanceMap || {},
+    owner_focus: matchedRule.ownerFocus || [],
+    metric_focus: matchedRule.metricFocus || [],
+    next_checks: matchedRule.nextChecks || []
+  };
+};
+
+const applySelectedKpiKnowledgeBaseFocus = (knowledgeBaseContext, selectedKpiDelayFocus) => {
+  if (!knowledgeBaseContext) return knowledgeBaseContext;
+
+  const preferredNodeIds = Array.isArray(selectedKpiDelayFocus?.preferred_node_ids)
+    ? selectedKpiDelayFocus.preferred_node_ids
+    : [];
+  const nodeRelevanceMap = selectedKpiDelayFocus?.node_relevance_map || {};
+  const targetMatchCount = Math.max(knowledgeBaseContext.matches?.length || 0, 4);
+  const targetRelatedCount = Math.max(knowledgeBaseContext.related?.length || 0, 4);
+
+  const byNodeId = new Map();
+  [...(knowledgeBaseContext.matches || []), ...(knowledgeBaseContext.related || [])].forEach((entry) => {
+    const key = entry?.node_id || entry?.id;
+    if (!key) return;
+    const existing = byNodeId.get(key);
+    if (!existing || Number(existing.score || 0) < Number(entry.score || 0)) {
+      byNodeId.set(key, entry);
+    }
+  });
+
+  const annotateEntry = (entry) => {
+    const preferredIndex = preferredNodeIds.indexOf(entry.node_id);
+    const preferredBoost = preferredIndex >= 0
+      ? Math.max(0, 220 - (preferredIndex * 14))
+      : 0;
+
+    return {
+      ...entry,
+      kpi_relevance_reason: nodeRelevanceMap[entry.node_id] || null,
+      preferred_for_selected_kpi: preferredIndex >= 0,
+      kpi_priority_score: Number((Number(entry.score || 0) + preferredBoost).toFixed(2))
+    };
+  };
+
+  const prioritizedEntries = [...byNodeId.values()]
+    .map(annotateEntry)
+    .sort((a, b) => Number(b.kpi_priority_score || 0) - Number(a.kpi_priority_score || 0));
+
+  return {
+    ...knowledgeBaseContext,
+    matches: prioritizedEntries.slice(0, targetMatchCount),
+    related: prioritizedEntries.slice(targetMatchCount, targetMatchCount + targetRelatedCount),
+    kpi_specific_focus: {
+      matched_rule_id: selectedKpiDelayFocus?.matched_rule_id || null,
+      preferred_node_ids: preferredNodeIds,
+      owner_focus: selectedKpiDelayFocus?.owner_focus || [],
+      metric_focus: selectedKpiDelayFocus?.metric_focus || [],
+      next_checks: selectedKpiDelayFocus?.next_checks || []
+    }
+  };
+};
+
+const buildKpiScopedKnowledgeBaseQuery = ({
+  message,
+  selectedKpi,
+  selectedKpiSummary,
+  selectedKpiDelayFocus
+}) => {
+  const queryParts = [String(message || "").trim()];
+
+  if (selectedKpiSummary?.display_name) {
+    queryParts.push(
+      `Selected KPI: ${selectedKpiSummary.display_name}`
+    );
+  }
+
+  if (selectedKpiSummary?.target_assessment) {
+    queryParts.push(`KPI target assessment: ${selectedKpiSummary.target_assessment}`);
+  }
+
+  if (selectedKpiSummary?.threshold_assessment) {
+    queryParts.push(`KPI threshold assessment: ${selectedKpiSummary.threshold_assessment}`);
+  }
+
+  if (selectedKpi?.comment) {
+    queryParts.push(`KPI comment: ${selectedKpi.comment}`);
+  }
+
+  if (selectedKpiDelayFocus?.kb_hints?.length) {
+    queryParts.push(`Delay knowledge-base hints: ${selectedKpiDelayFocus.kb_hints.join(", ")}`);
+  }
+
+  if (selectedKpiDelayFocus?.preferred_node_ids?.length) {
+    queryParts.push(`Preferred node IDs for this KPI: ${selectedKpiDelayFocus.preferred_node_ids.join(", ")}`);
+  }
+
+  return queryParts.filter(Boolean).join("\n");
+};
+
+const buildKpiAssistantFallbackReply = ({
+  selectedKpiSummary,
+  selectedKpiDelayFocus,
+  knowledgeBaseContext
+}) => {
+  const lines = [];
+
+  if (selectedKpiSummary) {
+    lines.push(`Focused KPI: ${selectedKpiSummary.display_name}.`);
+
+    if (selectedKpiSummary.current_value !== null || selectedKpiSummary.target !== null) {
+      lines.push(
+        `Current value: ${selectedKpiSummary.current_value ?? "N/A"}${selectedKpiSummary.unit ? ` ${selectedKpiSummary.unit}` : ""}; target: ${selectedKpiSummary.target ?? "N/A"}${selectedKpiSummary.unit ? ` ${selectedKpiSummary.unit}` : ""}.`
+      );
+    }
+
+    lines.push(selectedKpiSummary.target_assessment);
+    lines.push(selectedKpiSummary.threshold_assessment);
+  }
+
+  if (selectedKpiDelayFocus?.rationale) {
+    lines.push(`Delay KB relevance: ${selectedKpiDelayFocus.rationale}`);
+  }
+
+  if (knowledgeBaseContext?.matches?.length) {
+    const topMatches = knowledgeBaseContext.matches.slice(0, 3);
+    const kbSummary = topMatches
+      .map((entry) => `${entry.node_id} - ${entry.subject}${entry.kpi_relevance_reason ? `: ${entry.kpi_relevance_reason}` : ""}`)
+      .join(" | ");
+    lines.push(`Most relevant knowledge-base nodes: ${kbSummary}.`);
+
+    const actionSummary = topMatches
+      .flatMap((entry) => entry.actions || [])
+      .filter(Boolean)
+      .slice(0, 4);
+    if (actionSummary.length) {
+      lines.push(`Recommended actions: ${actionSummary.join("; ")}.`);
+    }
+
+    const metricSummary = [
+      ...(selectedKpiDelayFocus?.metric_focus || []),
+      ...topMatches.flatMap((entry) => entry.metrics || [])
+    ].filter(Boolean);
+    if (metricSummary.length) {
+      lines.push(`Track with: ${[...new Set(metricSummary)].slice(0, 5).join("; ")}.`);
+    }
+  } else {
+    lines.push("No strong delay knowledge-base node matched this KPI and question.");
+  }
+
+  if (selectedKpiDelayFocus?.owner_focus?.length) {
+    lines.push(`Owner functions to involve: ${selectedKpiDelayFocus.owner_focus.join("; ")}.`);
+  }
+
+  if (selectedKpiDelayFocus?.next_checks?.length) {
+    lines.push(`Best next checks: ${selectedKpiDelayFocus.next_checks.slice(0, 3).join("; ")}.`);
+  }
+
+  return lines.filter(Boolean).join(" ");
+};
+
+const isFastKpiAssistantRequest = ({
+  message,
+  selectedKpi,
+  knowledgeBaseContext
+}) => {
+  if (!selectedKpi) return false;
+
+  const normalizedMessage = String(message || "").trim().toLowerCase();
+  if (!normalizedMessage) return true;
+
+  if (normalizedMessage.length <= 80) return true;
+
+  if (
+    /\b(analy[sz]e|analysis|why|cause|causes|driver|drivers|action|actions|owner|owners|metric|metrics|what happened|what should|next step|next steps|kb|knowledge base|delay|quotation|quote|rfq|costing)\b/.test(normalizedMessage)
+  ) {
+    return true;
+  }
+
+  return Boolean(knowledgeBaseContext?.diagnostics?.has_strong_match);
+};
+
+const buildFastKpiAssistantReply = ({
+  selectedKpiSummary,
+  selectedKpiDelayFocus,
+  knowledgeBaseContext
+}) => {
+  const lines = [];
+  const topMatches = (knowledgeBaseContext?.matches || []).slice(0, 4);
+  const topActions = [...new Set(topMatches.flatMap((entry) => entry.actions || []).filter(Boolean))].slice(0, 4);
+  const topMetrics = [
+    ...(selectedKpiDelayFocus?.metric_focus || []),
+    ...topMatches.flatMap((entry) => entry.metrics || [])
+  ].filter(Boolean);
+
+  if (selectedKpiSummary) {
+    lines.push(`### KPI Status`);
+    lines.push(`- **KPI**: ${selectedKpiSummary.display_name}`);
+
+    if (selectedKpiSummary.current_value !== null) {
+      lines.push(`- **Current Value**: ${selectedKpiSummary.current_value}${selectedKpiSummary.unit ? ` ${selectedKpiSummary.unit}` : ""}`);
+    }
+
+    if (selectedKpiSummary.target !== null) {
+      lines.push(`- **Target**: ${selectedKpiSummary.target}${selectedKpiSummary.unit ? ` ${selectedKpiSummary.unit}` : ""}`);
+    }
+
+    if (selectedKpiSummary.gap_to_target !== null) {
+      const gapDirection = selectedKpiSummary.gap_to_target < 0 ? "below" : "above";
+      lines.push(`- **Gap To Target**: ${selectedKpiSummary.gap_to_target}${selectedKpiSummary.unit ? ` ${selectedKpiSummary.unit}` : ""} (${Math.abs(selectedKpiSummary.gap_to_target)} ${gapDirection} target)`);
+    }
+
+    lines.push(`- **Target Assessment**: ${selectedKpiSummary.target_assessment}`);
+    lines.push(`- **Threshold Assessment**: ${selectedKpiSummary.threshold_assessment}`);
+  }
+
+  if (selectedKpiDelayFocus?.rationale) {
+    lines.push("");
+    lines.push(`The delay knowledge base is relevant here because ${selectedKpiDelayFocus.rationale.charAt(0).toLowerCase()}${selectedKpiDelayFocus.rationale.slice(1)}`);
+  }
+
+  if (topMatches.length) {
+    lines.push("");
+    lines.push(`### Likely Delay-Related Drivers`);
+    topMatches.forEach((entry, index) => {
+      const reason = entry.kpi_relevance_reason || entry.description || "This node may influence the KPI through the quotation flow.";
+      lines.push(`${index + 1}. **${entry.node_id} - ${entry.subject}**: ${reason}`);
+    });
+  } else {
+    lines.push("");
+    lines.push(`### Likely Delay-Related Drivers`);
+    lines.push(`No strong knowledge-base match was found for this KPI and question.`);
+  }
+
+  if (topActions.length) {
+    lines.push("");
+    lines.push(`### Recommended Actions`);
+    topActions.forEach((action, index) => {
+      lines.push(`${index + 1}. ${action}`);
+    });
+  }
+
+  if (selectedKpiDelayFocus?.owner_focus?.length) {
+    lines.push("");
+    lines.push(`### Owners`);
+    selectedKpiDelayFocus.owner_focus.forEach((owner) => {
+      lines.push(`- ${owner}`);
+    });
+  }
+
+  const uniqueMetrics = [...new Set(topMetrics)].slice(0, 5);
+  if (uniqueMetrics.length) {
+    lines.push("");
+    lines.push(`### Metrics To Monitor`);
+    uniqueMetrics.forEach((metric) => {
+      lines.push(`- ${metric}`);
+    });
+  }
+
+  if (selectedKpiDelayFocus?.next_checks?.length) {
+    lines.push("");
+    lines.push(`### Next Checks`);
+    selectedKpiDelayFocus.next_checks.slice(0, 3).forEach((check) => {
+      lines.push(`- ${check}`);
+    });
+  }
+
+  return lines.join("\n");
+};
+
 const generateKpiAssistantReply = async ({
   responsible,
   week,
@@ -498,24 +1000,89 @@ const generateKpiAssistantReply = async ({
   kpis,
   message
 }) => {
-  const openai = getOpenAIClient();
   const assistantKpis = buildAssistantKpiContext(kpis);
   const selectedKpi = assistantKpis.find((kpi) =>
     String(kpi.kpi_id) === String(selectedKpiId) ||
     String(kpi.kpi_values_id) === String(selectedKpiId)
   ) || null;
+  const selectedKpiSummary = buildSelectedKpiSummary(selectedKpi);
+  const selectedKpiDelayFocus = buildSelectedKpiDelayFocus(selectedKpi);
+  const knowledgeBaseQuery = buildKpiScopedKnowledgeBaseQuery({
+    message,
+    selectedKpi,
+    selectedKpiSummary,
+    selectedKpiDelayFocus
+  });
+  const rawKnowledgeBaseContext = buildDelayKnowledgeBaseContext(knowledgeBaseQuery, {
+    limit: 4,
+    relatedLimit: 4,
+    preferredNodeIds: selectedKpiDelayFocus.preferred_node_ids || []
+  });
+  const knowledgeBaseContext = applySelectedKpiKnowledgeBaseFocus(
+    rawKnowledgeBaseContext,
+    selectedKpiDelayFocus
+  );
+  const fastLocalReply = buildFastKpiAssistantReply({
+    selectedKpiSummary,
+    selectedKpiDelayFocus,
+    knowledgeBaseContext
+  });
+
+  if (isFastKpiAssistantRequest({
+    message,
+    selectedKpi,
+    knowledgeBaseContext
+  })) {
+    return fastLocalReply;
+  }
+
+  const promptKpiContext = selectedKpi ? [selectedKpi] : assistantKpis.slice(0, 8);
+  const promptKnowledgeMatches = (knowledgeBaseContext.matches || []).slice(0, 3);
+  const promptKnowledgeRelated = (knowledgeBaseContext.related || []).slice(0, 2);
 
   const prompt = `
-You are an AI KPI assistant for a manufacturing performance form.
+You are an AI support assistant for manufacturing teams.
 
-You help a plant/department responsible understand KPI status, target gaps, low-limit risks, and corrective actions.
+You support two grounded use cases:
+1. KPI form interpretation from the page context.
+2. Estimating and quotation delay diagnosis from the local knowledge base.
 
 RULES
-- Base your answer only on the KPI context below and the user question.
+- Base your answer only on the grounded context below and the user question.
+- If a KPI is selected, your answer must be dedicated to that KPI first. Do not give a generic all-KPI answer.
+- Start from the selected KPI facts: current value, target, threshold position, and corrective-action status if available.
+- Distinguish clearly between confirmed KPI facts and delay-related hypotheses.
+- Only connect knowledge-base nodes that could plausibly influence the selected KPI.
+- If the selected KPI is not itself a quote-delay KPI, explain the causal path briefly, for example "late quote release can reduce business take".
+- Use the KPI-specific relevance notes below when explaining why a node matters for this KPI.
+- If the user asks about RFQ, quotation, costing delay, supplier quotes, rework, priorities, backlog, should-cost, owners, or quote OTD, rely on the knowledge base matches first.
+- Mention node IDs when you use knowledge base entries, for example P003 or S004.
+- Prefer concrete actions, evidence to collect, metrics, owner functions, and linked nodes when helpful.
+- If the knowledge base match is weak or incomplete, say that clearly instead of inventing facts.
 - If data is missing, say that clearly instead of inventing values.
 - Give practical manufacturing-oriented guidance.
 - Keep the answer concise and easy to act on.
-- If a KPI is selected, prioritize that KPI while still using the wider page context when useful.
+- Ignore unrelated KPI cards unless the user explicitly asks for comparison.
+
+RESPONSE SHAPE
+- If a KPI is selected, structure the answer around that KPI.
+- Prefer this flow: KPI status, likely delay-related drivers from the knowledge base if relevant, recommended actions, owners, metrics.
+- When listing KB nodes, explain each node's KPI-specific impact in one sentence.
+
+DELAY KNOWLEDGE BASE OVERVIEW
+${JSON.stringify(knowledgeBaseContext.overview, null, 2)}
+
+DELAY KNOWLEDGE BASE MATCHES
+${JSON.stringify(promptKnowledgeMatches, null, 2)}
+
+DELAY KNOWLEDGE BASE RELATED NODES
+${JSON.stringify(promptKnowledgeRelated, null, 2)}
+
+KNOWLEDGE BASE SEARCH DIAGNOSTICS
+${JSON.stringify(knowledgeBaseContext.diagnostics, null, 2)}
+
+KNOWLEDGE BASE SEARCH QUERY
+${knowledgeBaseQuery}
 
 PAGE CONTEXT
 - Responsible: ${responsible?.name || "N/A"}
@@ -526,30 +1093,67 @@ PAGE CONTEXT
 SELECTED KPI
 ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
 
-ALL KPI SNAPSHOT
-${JSON.stringify(assistantKpis, null, 2)}
+SELECTED KPI SUMMARY
+${JSON.stringify(selectedKpiSummary, null, 2)}
+
+SELECTED KPI DELAY-KB FOCUS
+${JSON.stringify(selectedKpiDelayFocus, null, 2)}
+
+SELECTED KPI KB PRIORITIES
+${JSON.stringify(knowledgeBaseContext.kpi_specific_focus, null, 2)}
+
+KPI CONTEXT FOR PROMPT
+${JSON.stringify(promptKpiContext, null, 2)}
 
 USER QUESTION
 ${message}
 `;
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: "You are a concise KPI assistant for manufacturing teams."
-      },
-      {
-        role: "user",
-        content: prompt
-      }
-    ],
-    temperature: 0.35,
-    max_tokens: 700
-  });
+  let openai = null;
+  try {
+    openai = getOpenAIClient();
+  } catch (err) {
+    return buildKpiAssistantFallbackReply({
+      selectedKpiSummary,
+      selectedKpiDelayFocus,
+      knowledgeBaseContext
+    });
+  }
 
-  return completion.choices[0]?.message?.content?.trim() || "";
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are a concise, grounded manufacturing support assistant."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 450
+    });
+
+    return (
+      completion.choices[0]?.message?.content?.trim() ||
+      fastLocalReply ||
+      buildKpiAssistantFallbackReply({
+        selectedKpiSummary,
+        selectedKpiDelayFocus,
+        knowledgeBaseContext
+      })
+    );
+  } catch (err) {
+    console.error("KPI assistant OpenAI error:", err.message);
+    return fastLocalReply || buildKpiAssistantFallbackReply({
+      selectedKpiSummary,
+      selectedKpiDelayFocus,
+      knowledgeBaseContext
+    });
+  }
 };
 
 
@@ -733,38 +1337,47 @@ const upsertCorrectiveAction = async (
   responsibleId,
   kpiId,
   week,
-  { correctiveActionId, rootCause, implementedSolution, evidence, dueDate, responsibleName }
+  { correctiveActionId, rootCause, implementedSolution, dueDate, responsibleName, status }
 ) => {
   try {
     const normalizedPayload = {
       rootCause: normalizeText(rootCause),
       implementedSolution: normalizeText(implementedSolution),
-      evidence: normalizeText(evidence),
       dueDate: normalizeText(dueDate),
-      responsibleName: normalizeText(responsibleName)
+      responsibleName: normalizeText(responsibleName),
+      status: "Open"
     };
-    const status = getCorrectiveActionStatusValue(normalizedPayload);
+    let resolvedStatus = getCorrectiveActionStatusValue(normalizedPayload);
+
+    if (normalizeText(correctiveActionId) && !normalizedPayload.status) {
+      const existingStatusRes = await pool.query(
+        `SELECT status
+         FROM public.corrective_actions
+         WHERE corrective_action_id = $1
+         LIMIT 1`,
+        [correctiveActionId]
+      );
+      resolvedStatus = normalizeText(existingStatusRes.rows[0]?.status) || "Open";
+    }
 
     if (normalizeText(correctiveActionId)) {
       const result = await pool.query(
         `UPDATE public.corrective_actions
-         SET root_cause = $2::text,
-             implemented_solution = $3::text,
-             evidence = $4::text,
-             due_date = $5::date,
-             responsible = $6::text,
-             status = $7::text,
-             updated_date = NOW()
-         WHERE corrective_action_id = $1
-         RETURNING corrective_action_id`,
+     SET root_cause = $2::text,
+       implemented_solution = $3::text,
+       due_date = $4::date,
+       responsible = $5::text,
+       status = $6::text,
+       updated_date = NOW()
+      WHERE corrective_action_id = $1
+       RETURNING corrective_action_id`,
         [
           correctiveActionId,
           normalizedPayload.rootCause,
           normalizedPayload.implementedSolution,
-          normalizedPayload.evidence,
           normalizedPayload.dueDate,
           normalizedPayload.responsibleName,
-          status
+          normalizedPayload.status
         ]
       );
 
@@ -775,24 +1388,23 @@ const upsertCorrectiveAction = async (
 
     await pool.query(
       `INSERT INTO public.corrective_actions
-       (
-         responsible_id, kpi_id, week,
-         root_cause, implemented_solution, evidence,
-         due_date, responsible, status
-       )
-       VALUES (
-         $1,$2,$3,$4::text,$5::text,$6::text,$7::date,$8::text,$9::text
-       )`,
+   (
+     responsible_id, kpi_id, week,
+     root_cause, implemented_solution,
+     due_date, responsible, status
+   )
+   VALUES (
+     $1,$2,$3,$4::text,$5::text,$6::date,$7::text,$8::text
+   )`,
       [
         responsibleId,
         kpiId,
         week,
         normalizedPayload.rootCause,
         normalizedPayload.implementedSolution,
-        normalizedPayload.evidence,
         normalizedPayload.dueDate,
         normalizedPayload.responsibleName,
-        status
+        normalizedPayload.status
       ]
     );
 
@@ -1771,10 +2383,7 @@ app.get("/corrective-action-form", async (req, res) => {
   <textarea id="implemented_solution" name="implemented_solution" required>${escapeHtml(ed.implemented_solution || "")}</textarea>
 </div>
 
-<div class="form-group">
-  <label for="evidence">📊 Evidence of Improvement *</label>
-  <textarea id="evidence" name="evidence" required>${escapeHtml(ed.evidence || "")}</textarea>
-</div>
+
               <div class="actions">
                 <button type="submit" class="submit-btn">${submitLabel}</button>
                 <a class="back-btn"
@@ -1816,7 +2425,6 @@ app.post("/submit-corrective-action", async (req, res) => {
       corrective_action_id,
       root_cause,
       implemented_solution,
-      evidence,
       due_date,
       responsible
     } = req.body || {};
@@ -1829,9 +2437,9 @@ app.post("/submit-corrective-action", async (req, res) => {
       correctiveActionId: normalizeText(corrective_action_id),
       rootCause: normalizeText(root_cause),
       implementedSolution: normalizeText(implemented_solution),
-      evidence: normalizeText(evidence),
       dueDate: due_date || null,
-      responsibleName: normalizeText(responsible)
+      responsibleName: normalizeText(responsible),
+      status: "Open"
     });
 
     if (!saved) {
@@ -2368,32 +2976,32 @@ app.post("/redirect", async (req, res) => {
       // Save corrective action if the KPI is outside the good-direction limit
       // and the user filled in the corrective action fields
       // -------------------------------------------------------
-      if (
+      const meaningfulActions = submittedActions.filter(hasMeaningfulCorrectiveActionInput);
+
+      if (meaningfulActions.length) {
+        for (const action of meaningfulActions) {
+          await upsertCorrectiveAction(responsible_id, kpi_id, week, action);
+          correctiveActionsCount++;
+        }
+      } else if (
         !isNaN(numValue) &&
         needsCorrectiveAction(numValue, lowLimit, highLimit, goodDirection)
       ) {
-        const meaningfulActions = submittedActions.filter(hasMeaningfulCorrectiveActionInput);
+        const existing = await pool.query(
+          `SELECT corrective_action_id
+     FROM public.corrective_actions
+     WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3
+     LIMIT 1`,
+          [responsible_id, kpi_id, week]
+        );
 
-        if (meaningfulActions.length) {
-          for (const action of meaningfulActions) {
-            await upsertCorrectiveAction(responsible_id, kpi_id, week, action);
-            correctiveActionsCount++;
-          }
-        } else {
-          // Create an Open corrective action record (without content) if none exists
-          const existing = await pool.query(
-            `SELECT corrective_action_id FROM public.corrective_actions
-             WHERE responsible_id = $1 AND kpi_id = $2 AND week = $3 LIMIT 1`,
-            [responsible_id, kpi_id, week]
+        if (existing.rows.length === 0) {
+          await pool.query(
+            `INSERT INTO public.corrective_actions
+       (responsible_id, kpi_id, week, status, due_date, responsible)
+       VALUES ($1, $2, $3, 'Open', CURRENT_DATE + 7, $4)`,
+            [responsible_id, kpi_id, week, normalizeText(defaultResponsibleName)]
           );
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `INSERT INTO public.corrective_actions
-             (responsible_id, kpi_id, week, status, due_date, responsible)
-              VALUES ($1, $2, $3, 'Open', CURRENT_DATE + 7, $4)`,
-              [responsible_id, kpi_id, week, normalizeText(defaultResponsibleName)]
-            );
-          }
         }
       }
 
@@ -2727,36 +3335,36 @@ app.get("/form", async (req, res) => {
         .filter((h) => !isNaN(h.value))
         .sort((a, b) => weekLabelToDate(a.week) - weekLabelToDate(b.week));
 
-   const currentMonthLabel = weekToMonthLabel(week);
-const monthMap = {};
+      const currentMonthLabel = weekToMonthLabel(week);
+      const monthMap = {};
 
-sortedHistory.forEach((item) => {
-  const monthLabel = weekToMonthLabel(item.week);
+      sortedHistory.forEach((item) => {
+        const monthLabel = weekToMonthLabel(item.week);
 
-  if (!monthMap[monthLabel]) {
-    monthMap[monthLabel] = { sum: 0, count: 0 };
-  }
+        if (!monthMap[monthLabel]) {
+          monthMap[monthLabel] = { sum: 0, count: 0 };
+        }
 
-  monthMap[monthLabel].sum += item.value;
-  monthMap[monthLabel].count += 1;
-});
+        monthMap[monthLabel].sum += item.value;
+        monthMap[monthLabel].count += 1;
+      });
 
-// also force the current input value into the current month
-if (currentValue !== null) {
-  monthMap[currentMonthLabel] = {
-    sum: currentValue,
-    count: 1
-  };
-}
+      // also force the current input value into the current month
+      if (currentValue !== null) {
+        monthMap[currentMonthLabel] = {
+          sum: currentValue,
+          count: 1
+        };
+      }
 
-let historyLabels = Object.keys(monthMap).sort(
-  (a, b) => monthLabelToDate(a) - monthLabelToDate(b)
-);
+      let historyLabels = Object.keys(monthMap).sort(
+        (a, b) => monthLabelToDate(a) - monthLabelToDate(b)
+      );
 
-let historyValues = historyLabels.map((label) => {
-  const m = monthMap[label];
-  return Number((m.sum / m.count).toFixed(2));
-});
+      let historyValues = historyLabels.map((label) => {
+        const m = monthMap[label];
+        return Number((m.sum / m.count).toFixed(2));
+      });
 
       const commentMonths = Object.keys(commentsByKpiMonth[kpi.kpi_id] || {});
       const correctiveActionMonths = Object.keys(correctiveActionsByKpiMonth[kpi.kpi_id] || {});
@@ -2872,13 +3480,15 @@ let historyValues = historyLabels.map((label) => {
                     <!-- ── Unified card action bar ── -->
         <div class="kpi-card-actions">
        <div class="kpi-card-actions-left">
-        <button
+       <button
         type="button"
         class="card-action-btn card-action-btn--ai"
         onclick="openAssistantForKpi('${kpi.kpi_values_id}')">
-      <span class="ai-btn-glow"></span>
-      🤖 AI Support
-    </button>
+        <span class="ai-btn-glow"></span>
+        <span class="ai-btn-shine"></span>
+        <span class="ai-btn-icon">🤖</span>
+        <span class="ai-btn-text">AI Support</span>
+       </button>
   </div>
 
   <div class="kpi-card-actions-right">
@@ -2914,13 +3524,9 @@ let historyValues = historyLabels.map((label) => {
               </div>
             </div>
           </div>
-
-    
-
-     
-
-       
-
+         <div class="ca-actions-stack" data-kpi-values-id="${kpi.kpi_values_id}" style="display:none;">
+         ${correctiveActionsHtml}
+           </div>
         </div>
       `;
     });
@@ -3279,19 +3885,75 @@ let historyValues = historyLabels.map((label) => {
           }
           .card-action-btn--primary:hover{box-shadow:0 8px 20px rgba(220,38,38,0.30);}
 
-          .card-action-btn--ai{
-            position:relative;overflow:hidden;
-            background:linear-gradient(135deg,#2f87d6,#ff944d);
-            color:white;
-            box-shadow:0 6px 16px rgba(47,135,214,0.24);
-            padding:9px 18px;
-          }
-          .card-action-btn--ai:hover{box-shadow:0 10px 22px rgba(47,135,214,0.34);}
-          .ai-btn-glow{
-            position:absolute;inset:0;
-            background:radial-gradient(circle at 30% 50%,rgba(255,255,255,0.18),transparent 60%);
-            pointer-events:none;
-          }
+       .card-action-btn--ai{
+  position:relative;
+  overflow:hidden;
+  background:linear-gradient(135deg,#2f87d6,#ff944d);
+  color:white;
+  box-shadow:0 6px 16px rgba(47,135,214,0.24);
+  padding:9px 18px;
+  isolation:isolate;
+}
+
+.card-action-btn--ai:hover{
+  box-shadow:0 10px 22px rgba(47,135,214,0.34);
+  transform:translateY(-1px) scale(1.02);
+}
+
+.ai-btn-glow{
+  position:absolute;
+  inset:0;
+  background:radial-gradient(circle at 30% 50%,rgba(255,255,255,0.18),transparent 60%);
+  pointer-events:none;
+  animation:aiPulseGlow 2.8s ease-in-out infinite;
+  z-index:0;
+}
+
+.ai-btn-shine{
+  position:absolute;
+  top:-20%;
+  left:-35%;
+  width:38%;
+  height:140%;
+  transform:rotate(18deg);
+  background:linear-gradient(
+    90deg,
+    rgba(255,255,255,0) 0%,
+    rgba(255,255,255,0.18) 50%,
+    rgba(255,255,255,0) 100%
+  );
+  animation:aiShineSweep 3.2s linear infinite;
+  pointer-events:none;
+  z-index:0;
+}
+
+.ai-btn-icon,
+.ai-btn-text{
+  position:relative;
+  z-index:1;
+}
+
+.ai-btn-icon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  animation:aiRobotFloat 2.2s ease-in-out infinite;
+}
+
+@keyframes aiPulseGlow{
+  0%,100%{opacity:0.65;}
+  50%{opacity:1;}
+}
+
+@keyframes aiShineSweep{
+  0%{left:-35%;}
+  100%{left:120%;}
+}
+
+@keyframes aiRobotFloat{
+  0%,100%{transform:translateY(0);}
+  50%{transform:translateY(-2px);}
+}
 
           /* ── CA Table Modal ── */
           .ca-modal-overlay{
@@ -3345,6 +4007,95 @@ let historyValues = historyLabels.map((label) => {
             padding:12px 14px;border-bottom:1px solid #fef2f2;
             vertical-align:top;color:#374151;line-height:1.5;
           }
+          .ca-col-actions{
+            width: 130px;
+            text-align: right;
+            white-space: nowrap;
+          }
+
+          .ca-table td.ca-col-actions{
+            text-align: right;
+            white-space: nowrap;
+          }
+
+
+.ca-table-edit-btn,
+.ca-table-delete-btn{
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.ca-table-edit-btn{
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  box-shadow: 0 2px 6px rgba(29, 78, 216, 0.08);
+}
+
+.ca-table-edit-btn:hover{
+  background: #eff6ff;
+  border-color: #93c5fd;
+  box-shadow: 0 6px 14px rgba(29, 78, 216, 0.14);
+  transform: translateY(-1px);
+}
+  .ca-table-edit-btn:active{
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(29, 78, 216, 0.08);
+}
+
+.ca-table-delete-btn{
+  background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
+  color: #dc2626;
+  border-color: #fecaca;
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.08);
+  padding: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ca-table-delete-btn:hover{
+  background: #fef2f2;
+  border-color: #fca5a5;
+  box-shadow: 0 6px 14px rgba(220, 38, 38, 0.14);
+  transform: translateY(-1px);
+}
+
+.ca-table-delete-btn:active{
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.08);
+}
+
+.ca-table-edit-btn:focus-visible,
+.ca-table-delete-btn:focus-visible{
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.18),
+    0 4px 12px rgba(15, 23, 42, 0.10);
+}
+
+.ca-table-delete-btn:focus-visible{
+  box-shadow:
+    0 0 0 3px rgba(239, 68, 68, 0.18),
+    0 4px 12px rgba(15, 23, 42, 0.10);
+}
+
           .ca-table tr:last-child td{border-bottom:none;}
           .ca-table tr:hover td{background:#fff5f5;}
           .ca-table .ca-col-num{width:36px;font-weight:800;color:#b91c1c;}
@@ -3531,9 +4282,71 @@ let historyValues = historyLabels.map((label) => {
 
           /* ── AI Assistant ── */
           .assistant-shell{position:fixed;right:90px;bottom:24px;z-index:10001;}
-          .assistant-launcher{width:64px;height:64px;border:none;border-radius:999px;background:linear-gradient(135deg,#2f87d6,#ff944d);color:white;box-shadow:0 18px 35px rgba(15,23,42,0.26);font-size:30px;cursor:pointer;}
-          .assistant-panel{width:min(92vw,460px);height:min(72vh,620px);background:rgba(255,255,255,0.98);border:1px solid #dbe7f4;border-radius:26px;box-shadow:0 30px 60px rgba(15,23,42,0.22);overflow:hidden;display:none;flex-direction:column;margin-bottom:18px;backdrop-filter:blur(12px);}
-          .assistant-shell.open .assistant-panel{display:flex;}
+          .assistant-launcher{
+           width:64px;
+           height:64px;
+           border:none;
+           border-radius:999px;
+           background:linear-gradient(135deg,#2f87d6,#ff944d);
+           color:white;
+           box-shadow:0 18px 35px rgba(15,23,42,0.26);
+           font-size:30px;
+           cursor:pointer;
+           animation:assistantLauncherPulse 2.4s ease-in-out infinite;
+           transition:transform 0.18s ease, box-shadow 0.18s ease;
+          }
+          .assistant-launcher:hover{
+           transform:translateY(-6px) scale(1.04);
+           box-shadow:0 22px 42px rgba(15,23,42,0.32);
+          }
+
+          @keyframes assistantLauncherPulse{
+          0%,100%{
+           box-shadow:0 18px 35px rgba(15,23,42,0.26), 0 0 0 0 rgba(47,135,214,0.28);
+            }
+          50%{
+            box-shadow:0 18px 35px rgba(15,23,42,0.26), 0 0 0 10px rgba(47,135,214,0);
+           }
+          }
+
+         .assistant-cursor{
+           display:inline-block;
+            margin-left:2px;
+            color:#0f6cbd;
+            animation:assistantBlink 0.8s step-end infinite;
+           }
+
+           @keyframes assistantBlink{
+           50%{opacity:0;}
+          }
+          .assistant-panel{
+           width:min(92vw,460px);
+           height:min(72vh,620px);
+           background:rgba(255,255,255,0.98);
+           border:1px solid #dbe7f4;
+           border-radius:26px;
+           box-shadow:0 30px 60px rgba(15,23,42,0.22);
+           overflow:hidden;
+           display:flex;
+           flex-direction:column;
+           margin-bottom:18px;
+           backdrop-filter:blur(12px);
+           opacity:0;
+           transform:translateY(18px) scale(0.96);
+           pointer-events:none;
+           visibility:hidden;
+           transition:
+           opacity 0.28s ease,
+           transform 0.28s ease,
+           visibility 0.28s ease;
+         }
+
+          .assistant-shell.open .assistant-panel{
+            opacity:1;
+            transform:translateY(0) scale(1);
+            pointer-events:auto;
+            visibility:visible;
+              }
           .assistant-header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid #e5edf6;background:linear-gradient(180deg,#ffffff,#f6fbff);}
           .assistant-title-wrap{display:flex;align-items:center;gap:12px;}
           .assistant-avatar{width:42px;height:42px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:#eef6ff;color:#0f6cbd;font-size:22px;border:1px solid #c6def5;}
@@ -3696,20 +4509,6 @@ let historyValues = historyLabels.map((label) => {
                     <label>Immediate Action / Solution <span class="ca-required">*</span></label>
                     <textarea id="caModalSolution" class="ca-modal-textarea" placeholder="Describe the implemented solution..."></textarea>
                   </div>
-                  <div class="ca-modal-field">
-                    <label>Evidence of Improvement</label>
-                    <textarea id="caModalEvidence" class="ca-modal-textarea" placeholder="Provide evidence..."></textarea>
-                  </div>
-                  <div class="ca-modal-field">
-                    <label>Status</label>
-                    <select id="caModalStatus" class="ca-modal-select ca-modal-input">
-                      <option value="">— Select Status —</option>
-                      <option value="Open">Open</option>
-                      <option value="Waiting for Validation">Waiting for Validation</option>
-                      <option value="Completed">Completed</option>
-                      <option value="Closed">Closed</option>
-                    </select>
-                  </div>
                 </div>
                 <div class="ca-modal-form-footer">
                   <button type="button" class="ca-modal-cancel-btn" id="caModalCancelForm">Cancel</button>
@@ -3761,9 +4560,9 @@ let historyValues = historyLabels.map((label) => {
             </div>
             <div class="assistant-messages" id="assistantMessages"></div>
             <div class="assistant-composer">
-              <div class="assistant-status" id="assistantStatus">Ask about KPI trends, target gaps, or corrective actions.</div>
+              <div class="assistant-status" id="assistantStatus">Ask about KPI trends, quotation delays, root causes, owners, or corrective actions.</div>
               <form class="assistant-form" id="assistantForm">
-                <textarea class="assistant-input" id="assistantInput" placeholder="Type your message" rows="1"></textarea>
+                <textarea class="assistant-input" id="assistantInput" placeholder="Ask about KPIs or quote delays" rows="1"></textarea>
                 <button type="submit" class="assistant-send" id="assistantSend">➤</button>
               </form>
             </div>
@@ -3780,24 +4579,34 @@ let historyValues = historyLabels.map((label) => {
           // In-memory store: kvId → array of action objects
           const caModalStore = {};
 
-          function getCaModalActions(kvId) {
-            if (!caModalStore[kvId]) {
-              // Seed from existing DOM cards
-              caModalStore[kvId] = [];
-              getCorrectiveActionCards(kvId).forEach((card) => {
-                caModalStore[kvId].push({
-                  id: getTrimmedValue(card.querySelector('input[name="ca_action_id_' + kvId + '[]"]')),
-                  root_cause: getTrimmedValue(getCorrectiveActionField(card, "root_cause")),
-                  impl_solution: getTrimmedValue(getCorrectiveActionField(card, "impl_solution")),
-                  evidence: getTrimmedValue(getCorrectiveActionField(card, "evidence")),
-                  due_date: getInputValue(getCorrectiveActionField(card, "due_date")),
-                  responsible: getTrimmedValue(getCorrectiveActionField(card, "responsible")),
-                  status: getTrimmedText(card.querySelector(".ca-status-badge"))
-                });
-              });
-            }
-            return caModalStore[kvId];
-          }
+function getCaModalActions(kvId) {
+  if (!caModalStore[kvId]) {
+    caModalStore[kvId] = [];
+
+    getCorrectiveActionCards(kvId).forEach((card) => {
+      const rootCause = getTrimmedValue(getCorrectiveActionField(card, "root_cause"));
+      const implSolution = getTrimmedValue(getCorrectiveActionField(card, "implemented_solution"));
+      const dueDate = getInputValue(getCorrectiveActionField(card, "due_date"));
+      const responsible = getTrimmedValue(getCorrectiveActionField(card, "responsible"));
+      const actionId = getTrimmedValue(
+        card.querySelector('input[name="ca_action_id_' + kvId + '[]"]')
+      );
+
+      if (rootCause || implSolution || dueDate || responsible || actionId) {
+        caModalStore[kvId].push({
+        id: actionId,
+        root_cause: rootCause,
+       implemented_solution: implSolution, // ✅ FIXED
+       due_date: dueDate,
+       responsible: responsible,
+       status: "Open"
+      });
+      }
+    });
+  }
+
+  return caModalStore[kvId];
+}
 
           function escapeHtml(v) {
             return String(v || "")
@@ -3814,72 +4623,64 @@ let historyValues = historyLabels.map((label) => {
             return s.length > n ? s.slice(0, n) + "…" : s;
           }
 
-          function renderCaModalTable(kvId) {
-            const tbody = document.getElementById("caModalTableBody");
-            if (!tbody) return;
-            const actions = getCaModalActions(kvId);
-            if (!actions.length) {
-              tbody.innerHTML = '<tr><td colspan="8" class="ca-table-empty">No corrective actions yet. Click "Add" below to get started.</td></tr>';
-              return;
-            }
-            tbody.innerHTML = actions.map((a, i) => {
-              const sc = statusClass(a.status);
-              return \`<tr>
-                <td class="ca-col-num">\${i + 1}</td>
-                <td title="\${escapeHtml(a.root_cause)}">\${escapeHtml(truncate(a.root_cause, 60))}</td>
-                <td title="\${escapeHtml(a.impl_solution)}">\${escapeHtml(truncate(a.impl_solution, 60))}</td>
-                <td title="\${escapeHtml(a.evidence)}">\${escapeHtml(truncate(a.evidence, 40))}</td>
-                <td>\${escapeHtml(a.due_date)}</td>
-                <td>\${escapeHtml(a.responsible)}</td>
-                <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "—"}</td>
-                <td class="ca-col-actions">
-                  <button type="button" class="ca-tbl-btn ca-tbl-edit" onclick="caModalOpenEdit(\${i})">Edit</button>
-                  <button type="button" class="ca-tbl-btn ca-tbl-delete" onclick="caModalDeleteRow(\${i})">✕</button>
-                </td>
-              </tr>\`;
-            }).join("");
-          }
+        function renderCaModalTable(kvId) {
+       const tbody = document.getElementById("caModalTableBody");
+       if (!tbody) return;
+       const actions = getCaModalActions(kvId);
+       if (!actions.length) {
+       tbody.innerHTML = '<tr><td colspan="8" class="ca-table-empty">No corrective actions yet. Click "Add" below to get started.</td></tr>';
+       return;
+       }
 
-          function caModalOpenForm(editIndex) {
-            const section = document.getElementById("caModalFormSection");
-            const formTitle = document.getElementById("caModalFormTitle");
-            const editIdx = document.getElementById("caModalEditIndex");
-            if (!section) return;
+       tbody.innerHTML = actions.map((a, i) => {
+      const sc = statusClass(a.status);
+      return \`<tr>
+      <td class="ca-col-num">\${i + 1}</td>
+      <td title="\${escapeHtml(a.root_cause)}">\${escapeHtml(truncate(a.root_cause, 60))}</td>
+      <td title="\${escapeHtml(a.implemented_solution)}">\${escapeHtml(truncate(a.implemented_solution, 60))}</td>
+      <td title="\${escapeHtml(a.evidence || "")}">\${escapeHtml(truncate(a.evidence || "", 40))}</td>
+      <td>\${escapeHtml(a.due_date)}</td>
+      <td>\${escapeHtml(a.responsible)}</td>
+      <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "—"}</td>
+      <td class="ca-col-actions">
+        <button type="button" class="ca-table-edit-btn" onclick="caModalOpenForm(\${i})">Edit</button>
+        <button type="button" class="ca-table-delete-btn" onclick="caModalDeleteAction(\${i})">✕</button>
+      </td>
+       </tr>\`;
+        }).join("");
+      }
 
-            section.style.display = "";
-            if (editIndex !== null && editIndex !== undefined && editIndex >= 0) {
-              const actions = getCaModalActions(caModalKvId);
-              const a = actions[editIndex];
-              if (!a) return;
-              if (formTitle) formTitle.textContent = "Edit Action #" + (editIndex + 1);
-              if (editIdx) editIdx.value = String(editIndex);
-              document.getElementById("caModalDueDate").value = a.due_date || "";
-              document.getElementById("caModalResponsible").value = a.responsible || "";
-              document.getElementById("caModalRootCause").value = a.root_cause || "";
-              document.getElementById("caModalSolution").value = a.impl_solution || "";
-              document.getElementById("caModalEvidence").value = a.evidence || "";
-              document.getElementById("caModalStatus").value = a.status || "";
-            } else {
-              if (formTitle) formTitle.textContent = "New Corrective Action";
-              if (editIdx) editIdx.value = "";
-              ["caModalDueDate","caModalResponsible","caModalRootCause","caModalSolution","caModalEvidence"].forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.value = "";
-              });
-              document.getElementById("caModalStatus").value = "";
-            }
-            section.scrollIntoView({ behavior: "smooth", block: "nearest" });
-          }
+    function caModalOpenForm(editIndex) {
+     const section = document.getElementById("caModalFormSection");
+     const formTitle = document.getElementById("caModalFormTitle");
+     const editIdx = document.getElementById("caModalEditIndex");
+     if (!section) return;
+
+     section.style.display = "";
+     if (editIndex !== null && editIndex !== undefined && editIndex >= 0) {
+     const actions = getCaModalActions(caModalKvId);
+     const a = actions[editIndex];
+     if (!a) return;
+    if (formTitle) formTitle.textContent = "Edit Action #" + (editIndex + 1);
+    if (editIdx) editIdx.value = String(editIndex);
+    document.getElementById("caModalDueDate").value = a.due_date || "";
+    document.getElementById("caModalResponsible").value = a.responsible || "";
+    document.getElementById("caModalRootCause").value = a.root_cause || "";
+    document.getElementById("caModalSolution").value = a.implemented_solution || "";
+  } else {
+    if (formTitle) formTitle.textContent = "New Corrective Action";
+    if (editIdx) editIdx.value = "";
+    ["caModalDueDate","caModalResponsible","caModalRootCause","caModalSolution"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+  }
+
+  section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 
           function caModalOpenEdit(index) {
             caModalOpenForm(index);
-          }
-
-          function caModalDeleteRow(index) {
-            const actions = getCaModalActions(caModalKvId);
-            actions.splice(index, 1);
-            renderCaModalTable(caModalKvId);
-            syncDomFromStore(caModalKvId);
           }
 
           function caModalCollapseForm() {
@@ -3887,79 +4688,116 @@ let historyValues = historyLabels.map((label) => {
             if (section) section.style.display = "none";
           }
 
-          function caModalSaveForm() {
-            const rootCause = document.getElementById("caModalRootCause").value.trim();
-            const solution = document.getElementById("caModalSolution").value.trim();
-            const dueDate = document.getElementById("caModalDueDate").value.trim();
-            const responsible = document.getElementById("caModalResponsible").value.trim();
-            const evidence = document.getElementById("caModalEvidence").value.trim();
-            const status = document.getElementById("caModalStatus").value;
-            const editIdx = document.getElementById("caModalEditIndex").value;
+function caModalSaveForm() {
+  if (!caModalKvId) return;
 
-            if (!rootCause || !solution || !dueDate || !responsible) {
-              alert("Please fill in Root Cause, Immediate Action, Due Date, and Responsible.");
-              return;
-            }
+  const rootCauseEl = document.getElementById("caModalRootCause");
+  const solutionEl = document.getElementById("caModalSolution");
+  const dueDateEl = document.getElementById("caModalDueDate");
+  const responsibleEl = document.getElementById("caModalResponsible");
+  const editIndexEl = document.getElementById("caModalEditIndex");
 
-            const entry = { root_cause: rootCause, impl_solution: solution, evidence, due_date: dueDate, responsible, status, id: "" };
-            const actions = getCaModalActions(caModalKvId);
+  const rootCause = rootCauseEl ? rootCauseEl.value.trim() : "";
+  const solution = solutionEl ? solutionEl.value.trim() : "";
+  const dueDate = dueDateEl ? dueDateEl.value : "";
+  const responsible = responsibleEl ? responsibleEl.value.trim() : "";
+  const editIndex = editIndexEl ? editIndexEl.value : "";
 
-            if (editIdx !== "" && !isNaN(parseInt(editIdx))) {
-              const idx = parseInt(editIdx);
-              if (actions[idx]) entry.id = actions[idx].id;
-              actions[idx] = entry;
-            } else {
-              actions.push(entry);
-            }
+  if (!rootCause || !solution || !dueDate || !responsible) {
+    alert("Please fill in Root Cause, Corrective Action, Due Date, and Responsible.");
+    return;
+  }
 
-            renderCaModalTable(caModalKvId);
-            syncDomFromStore(caModalKvId);
-            caModalCollapseForm();
-          }
+  const actions = getCaModalActions(caModalKvId);
 
-          function syncDomFromStore(kvId) {
-            // Rebuild the hidden CA stack so form submission still works
-            const stack = getCorrectiveActionStack(kvId);
-            if (!stack) return;
+  const entry = {
+   id: "",
+   root_cause: rootCause,
+   implemented_solution: solution, // ✅ FIXED
+   due_date: dueDate,
+   responsible: responsible,
+   status: "Open"
+  };
 
-            const actions = getCaModalActions(kvId);
-            const template = stack.querySelector(".ca-action-card");
-            if (!template) return;
+  if (editIndex !== "" && !isNaN(parseInt(editIndex, 10))) {
+    const idx = parseInt(editIndex, 10);
+    if (actions[idx] && actions[idx].id) {
+      entry.id = actions[idx].id;
+    }
+    actions[idx] = entry;
+  } else {
+    actions.push(entry);
+  }
 
-            // Remove all existing cards
-            stack.querySelectorAll(".ca-action-card").forEach(c => c.remove());
+  renderCaModalTable(caModalKvId);
+  syncDomFromStore(caModalKvId);
+  caModalCollapseForm();
+}
 
-            // Re-create one per store entry (or blank if empty)
-            const toRender = actions.length ? actions : [{ responsible: "${responsible.name || ""}" }];
-            toRender.forEach((action, idx) => {
-              const newCard = template.cloneNode(true);
-              const idInput = newCard.querySelector('input[name="ca_action_id_' + kvId + '[]"]');
-              if (idInput) idInput.value = action.id || "";
+function caModalDeleteAction(index) {
+  if (!caModalKvId) return;
 
-              const setField = (name, val) => {
-                const f = getCorrectiveActionField(newCard, name);
-                if (f) f.value = val || "";
-              };
-              setField("due_date", action.due_date);
-              setField("responsible", action.responsible);
-              setField("root_cause", action.root_cause);
-              setField("impl_solution", action.impl_solution);
-              setField("evidence", action.evidence);
+  const actions = getCaModalActions(caModalKvId);
+  actions.splice(index, 1);
 
-              const removeBtn = newCard.querySelector(".ca-remove-btn");
-              if (removeBtn) removeBtn.classList.toggle("is-hidden", idx === 0 && toRender.length === 1);
+  renderCaModalTable(caModalKvId);
+  syncDomFromStore(caModalKvId);
+}
 
-              stack.appendChild(newCard);
-              bindCorrectiveActionCard(newCard, kvId);
-            });
 
-            renumberCorrectiveActionCards(kvId);
+function syncDomFromStore(kvId) {
+  const stack = getCorrectiveActionStack(kvId);
+  if (!stack) return;
 
-            // Update count badge
-            const countBadge = document.getElementById("ca-count-badge-" + kvId);
-            const count = actions.length;
-            if (countBadge) countBadge.textContent = count + " Action" + (count === 1 ? "" : "s");
-          }
+  const actions = getCaModalActions(kvId);
+
+  const existingCards = Array.from(stack.querySelectorAll(".ca-action-card"));
+  const template = existingCards[0];
+  if (!template) return;
+
+  stack.innerHTML = "";
+
+  actions.forEach((action, idx) => {
+    const newCard = template.cloneNode(true);
+
+    const idInput = newCard.querySelector('input[name="ca_action_id_' + kvId + '[]"]');
+    if (idInput) idInput.value = action.id || "";
+
+    const statusInput = newCard.querySelector('input[name="ca_status_' + kvId + '[]"]');
+    if (statusInput) statusInput.value = "Open";
+
+    const dueDateField = getCorrectiveActionField(newCard, "due_date");
+    const responsibleField = getCorrectiveActionField(newCard, "responsible");
+    const rootCauseField = getCorrectiveActionField(newCard, "root_cause");
+    const implSolutionField = getCorrectiveActionField(newCard, "implemented_solution");
+
+    if (dueDateField) dueDateField.value = action.due_date || "";
+    if (responsibleField) responsibleField.value = action.responsible || "";
+    if (rootCauseField) rootCauseField.value = action.root_cause || "";
+    if (implSolutionField) implSolutionField.value = action.implemented_solution || "";
+
+    const badge = newCard.querySelector(".ca-status-badge");
+    if (badge) {
+      badge.textContent = "Open";
+      badge.className = "ca-status-badge ca-status-open";
+    }
+
+    const removeBtn = newCard.querySelector(".ca-remove-btn");
+    if (removeBtn) {
+      removeBtn.classList.toggle("is-hidden", actions.length === 1);
+    }
+
+    stack.appendChild(newCard);
+    bindCorrectiveActionCard(newCard, kvId);
+  });
+
+  renumberCorrectiveActionCards(kvId);
+
+  const countBadge = document.getElementById("ca-count-badge-" + kvId);
+  if (countBadge) {
+    countBadge.textContent = actions.length + " Action" + (actions.length === 1 ? "" : "s");
+  }
+}
 
           function openCaTableModal(kvId) {
             caModalKvId = kvId;
@@ -4083,7 +4921,7 @@ let historyValues = historyLabels.map((label) => {
               const correctiveActions = actionCards.map(ac => ({
                 corrective_action_id: getTrimmedValue(ac.querySelector('input[name="ca_action_id_' + kvId + '[]"]')),
                 root_cause: getTrimmedValue(getCorrectiveActionField(ac, "root_cause")),
-                implemented_solution: getTrimmedValue(getCorrectiveActionField(ac, "impl_solution")),
+                implemented_solution: getTrimmedValue(getCorrectiveActionField(ac, "implemented_solution")),
                 evidence: getTrimmedValue(getCorrectiveActionField(ac, "evidence")),
                 due_date: getInputValue(getCorrectiveActionField(ac, "due_date")),
                 responsible: getTrimmedValue(getCorrectiveActionField(ac, "responsible"))
@@ -4125,18 +4963,76 @@ let historyValues = historyLabels.map((label) => {
           const assistantForm = document.getElementById("assistantForm");
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
-          const assistantState = { selectedKpiId: null, booted: false, pending: false };
+          const assistantState = { selectedKpiId: null, booted: false, pending: false, greetingKey: null };
 
-          function addAssistantMessage(role, text) {
-            if (!assistantMessages) return;
-            const msg = document.createElement("div");
-            msg.className = "assistant-message " + role;
-            msg.innerHTML = String(text || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").split("\\n").join("<br>");
-            assistantMessages.appendChild(msg);
-            assistantMessages.scrollTop = assistantMessages.scrollHeight;
-          }
+         function addAssistantMessage(role, text) {
+  if (!assistantMessages) return;
+
+  const msg = document.createElement("div");
+  msg.className = "assistant-message " + role;
+  assistantMessages.appendChild(msg);
+  assistantMessages.scrollTop = assistantMessages.scrollHeight;
+
+  const safeText = String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  if (role !== "assistant") {
+    msg.innerHTML = safeText.split("\\n").join("<br>");
+    assistantMessages.scrollTop = assistantMessages.scrollHeight;
+    return;
+  }
+
+  let i = 0;
+  const typingSpeed = 16;
+
+  function typeNext() {
+    const partial = safeText.slice(0, i).split("\\n").join("<br>");
+    msg.innerHTML = partial + '<span class="assistant-cursor">|</span>';
+    assistantMessages.scrollTop = assistantMessages.scrollHeight;
+
+    if (i < safeText.length) {
+      i++;
+      setTimeout(typeNext, typingSpeed);
+    } else {
+      msg.innerHTML = safeText.split("\\n").join("<br>");
+    }
+  }
+
+  typeNext();
+}
           function setAssistantStatus(text) { if (assistantStatus) assistantStatus.textContent = text; }
           function getKpiCardById(kvId) { return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]'); }
+          function getAssistantKpiDisplayName(card) {
+            if (!card) return "Selected KPI";
+            const title = getTrimmedText(card.querySelector(".kpi-title"));
+            const subtitle = getTrimmedText(card.querySelector(".kpi-subtitle"));
+            return subtitle && title ? (subtitle + " (" + title + ")") : (subtitle || title || "Selected KPI");
+          }
+          function resetAssistantConversation() {
+            if (assistantMessages) assistantMessages.innerHTML = "";
+            assistantState.booted = false;
+            assistantState.greetingKey = null;
+          }
+          function buildAssistantGreeting() {
+            if (!assistantState.selectedKpiId) {
+              return "Hello! I can help with KPI context and with quotation or costing delay diagnosis based on the knowledge base. Ask about causes, actions, owners, metrics, or linked issues.";
+            }
+            const card = getKpiCardById(assistantState.selectedKpiId);
+            const kpiName = getAssistantKpiDisplayName(card);
+            return "Hello! I am focused on " + kpiName + ". I will analyze this KPI first and connect it to the estimating-delay knowledge base when relevant. Ask why it is off target, which KB nodes relate, what actions to take, and which owners or metrics to follow.";
+          }
+          function syncAssistantInputPlaceholder() {
+            if (!assistantInput) return;
+            if (!assistantState.selectedKpiId) {
+              assistantInput.placeholder = "Ask about KPIs or quote delays";
+              return;
+            }
+            const card = getKpiCardById(assistantState.selectedKpiId);
+            const kpiName = getAssistantKpiDisplayName(card);
+            assistantInput.placeholder = "Ask about " + kpiName;
+          }
 
           function openAssistant() {
             if (!assistantShell) return;
@@ -4147,12 +5043,15 @@ let historyValues = historyLabels.map((label) => {
                 assistantFocus.textContent = "All KPIs on this form";
               } else {
                 const card = getKpiCardById(assistantState.selectedKpiId);
-                assistantFocus.textContent = "Focused on: " + ((card && getTrimmedText(card.querySelector(".kpi-title"))) || "Selected KPI");
+                assistantFocus.textContent = "Focused on: " + getAssistantKpiDisplayName(card);
               }
             }
-            if (!assistantState.booted) {
-              addAssistantMessage("assistant", "Hello! I'm your assistant for the key performance indicators. Feel free to ask me about anything related to the KPIs.");
+            syncAssistantInputPlaceholder();
+            const greetingKey = assistantState.selectedKpiId || "all";
+            if (!assistantState.booted || assistantState.greetingKey !== greetingKey) {
+              addAssistantMessage("assistant", buildAssistantGreeting());
               assistantState.booted = true;
+              assistantState.greetingKey = greetingKey;
             }
             if (assistantInput) assistantInput.focus();
           }
@@ -4162,11 +5061,14 @@ let historyValues = historyLabels.map((label) => {
             if (assistantLauncher) assistantLauncher.textContent = "🤖";
           }
           function openAssistantForKpi(kvId) {
+            if (assistantState.selectedKpiId !== kvId) {
+              resetAssistantConversation();
+            }
             assistantState.selectedKpiId = kvId;
             openAssistant();
             const card = getKpiCardById(kvId);
-            const title = (card && getTrimmedText(card.querySelector(".kpi-title"))) || "Selected KPI";
-            setAssistantStatus("Focused on " + title + ". Ask a question about this KPI.");
+            const kpiName = getAssistantKpiDisplayName(card);
+            setAssistantStatus("Focused on " + kpiName + ". This AI support is dedicated to this KPI and will use the knowledge base when relevant.");
           }
           window.openAssistantForKpi = openAssistantForKpi;
 
@@ -4203,7 +5105,15 @@ let historyValues = historyLabels.map((label) => {
           }
 
           if (assistantLauncher) assistantLauncher.addEventListener("click", () => {
-            assistantShell.classList.contains("open") ? closeAssistant() : (assistantState.selectedKpiId = null, openAssistant());
+            if (assistantShell.classList.contains("open")) {
+              closeAssistant();
+              return;
+            }
+            if (assistantState.selectedKpiId !== null) {
+              resetAssistantConversation();
+            }
+            assistantState.selectedKpiId = null;
+            openAssistant();
           });
           if (assistantClose) assistantClose.addEventListener("click", closeAssistant);
           if (assistantInput) {
@@ -4612,7 +5522,6 @@ if (actions.length) {
             '<th>Week</th>' +
             '<th>Root Cause</th>' +
             '<th>Implemented Solution</th>' +
-            '<th>Evidence</th>' +
             '<th>Due Date</th>' +
             '<th>Responsible</th>' +
             '<th>Status</th>' +
@@ -4626,7 +5535,6 @@ if (actions.length) {
                 '<td>' + escapeHistoryHtml(action.week || "") + '</td>' +
                 '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
                 '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
-                '<td><pre>' + escapeHistoryHtml(action.evidence || "") + '</pre></td>' +
                 '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
                 '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
                 '<td>' +
@@ -4664,10 +5572,6 @@ if (actions.length) {
       '<div class="history-section">' +
         '<h4 class="history-section-title">⚠️ Corrective Actions</h4>' +
         actionsHtml +
-      '</div>' +
-      '<div class="history-section">' +
-        '<h4 class="history-section-title">💬 Comments</h4>' +
-        commentsHtml +
       '</div>';
   }
 
@@ -4807,7 +5711,7 @@ if (actions.length) {
           });
 
           window.caModalOpenEdit = caModalOpenEdit;
-          window.caModalDeleteRow = caModalDeleteRow;
+          window.caModalDeleteAction = caModalDeleteAction;
         </script>
       </body>
       </html>
