@@ -1,0 +1,435 @@
+[
+  {
+    "id": "kb_overview",
+    "type": "overview",
+    "subject": "Estimating delay diagnostic knowledge base",
+    "description": "Collaborative knowledge base for diagnosing why costing and quotation processes are late and for proposing corrective actions through linked causes, effects, solutions, and metrics.",
+    "language": "multilingual",
+    "keywords": [
+      "costing delay",
+      "quotation delay",
+      "root cause",
+      "action",
+      "owner",
+      "deadline",
+      "chiffrage en retard",
+      "devis en retard",
+      "Ursachenanalyse",
+      "견적 지연",
+      "报价延迟"
+    ],
+    "source": "internal_generated"
+  },
+  {
+    "id": "nodes_1",
+    "type": "problem",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P001",
+      "type": "problem",
+      "6M_category": "Method",
+      "process_stage": "intake",
+      "severity": "high",
+      "function_owner": "Sales",
+      "subject": "Incomplete RFQ package at intake",
+      "description": "Costing starts without complete drawings, BOM, confirmed volumes, or fixed logistics assumptions. This creates clarification loops and rework.",
+      "keywords": ["RFQ incomplète", "entrée", "données manquantes", "BOM", "plan", "volume", "clarification", "incomplete RFQ", "intake", "missing data", "drawing", "unvollständige RFQ", "fehlende Daten", "RFQ ناقص", "داتا ناقصة", "RFQ不完整", "缺失数据", "불완전한 RFQ", "누락 데이터"],
+      "symptoms": ["Repeated questions back to sales or customer", "Several costing file revisions before first release", "Late start despite RFQ officially received"],
+      "questions": ["Was the RFQ package complete on day 0?", "Which mandatory inputs were missing?", "Did the team start anyway before receiving all inputs?"],
+      "evidence_to_collect": ["Checklist of mandatory RFQ inputs", "Date when each missing item was received", "Number of costing file revisions"],
+      "root_cause_hypotheses": ["No intake gate", "Sales not trained on mandatory costing inputs", "Pressure to start early with unstable assumptions"],
+      "actions": ["Create RFQ completeness checklist", "Block detailed costing until minimum inputs are present", "Use provisional quote mode for incomplete cases"],
+      "metrics": ["% RFQ complete at intake", "Average clarification cycles per RFQ", "Lead time from RFQ receipt to usable package"],
+      "effect_links": [
+        { "target_node_id": "P005", "relation_type": "causes", "relation_label": "creates rework", "strength": 0.95 },
+        { "target_node_id": "S001", "relation_type": "solved_by", "relation_label": "reduced by intake gate", "strength": 0.92 }
+      ],
+      "collaboration": {
+        "decision_needed": "Define mandatory RFQ entry criteria",
+        "workshop_prompt": "Review the last 10 late RFQs and list which inputs were missing at intake."
+      },
+      "tags": ["rfq", "intake", "method", "rework"]
+    }
+  },
+  {
+    "id": "nodes_2",
+    "type": "cause",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P002",
+      "type": "cause",
+      "6M_category": "Manpower",
+      "process_stage": "cost_build",
+      "severity": "high",
+      "function_owner": "Costing",
+      "subject": "Insufficient costing capacity",
+      "description": "The number of requests exceeds the real capacity of the costing team. Backlog grows and priorities collide.",
+      "keywords": ["capacité", "charge", "backlog", "surcharge", "capacity", "workload", "overload", "resources", "Kapazität", "Arbeitslast", "Rückstand", "طاقة", "باكلوغ", "产能", "积压", "용량", "백로그"],
+      "symptoms": ["Constant firefighting mode", "Growing queue of open RFQs", "Frequent overtime with no lead-time improvement"],
+      "questions": ["How many RFQs arrive per week versus completed per week?", "What is the current backlog in days or RFQs?", "Which tasks consume the most analyst time?"],
+      "evidence_to_collect": ["Weekly incoming RFQ volume", "Weekly completed RFQ volume", "Time spent per RFQ by complexity level"],
+      "root_cause_hypotheses": ["Too many low-probability RFQs treated like priority jobs", "No segmentation by complexity", "Not enough trained costing analysts"],
+      "actions": ["Segment RFQs by strategic value and complexity", "Create fast lane for simple quotes", "Add backup resources or cross-train staff"],
+      "metrics": ["Backlog days", "Throughput per analyst", "On-time quote release rate"],
+      "effect_links": [
+        { "target_node_id": "P006", "relation_type": "causes", "relation_label": "feeds emergency reprioritization", "strength": 0.84 },
+        { "target_node_id": "S003", "relation_type": "solved_by", "relation_label": "improved by flow segmentation", "strength": 0.8 }
+      ],
+      "collaboration": {
+        "decision_needed": "Prioritize RFQs and rebalance resources",
+        "workshop_prompt": "Classify the current RFQ backlog by complexity, customer importance, probability, and deadline."
+      },
+      "tags": ["capacity", "backlog", "manpower"]
+    }
+  },
+  {
+    "id": "nodes_3",
+    "type": "cause",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P003",
+      "type": "cause",
+      "6M_category": "Material",
+      "process_stage": "supplier_quote",
+      "severity": "high",
+      "function_owner": "Purchasing",
+      "subject": "Late supplier quotation",
+      "description": "Costing waits for supplier prices, material prices, or external process data. Repeated follow-ups block the estimate.",
+      "keywords": ["supplier", "purchase price", "material", "follow-up", "supplier quote", "fournisseur", "prix achat", "devis fournisseur", "Lieferant", "Lieferantenangebot", "مورد", "عرض مورد", "供应商报价", "공급업체 견적"],
+      "symptoms": ["Quote waits on purchasing for several days", "Same supplier is repeatedly a bottleneck", "Internal should-cost is not available"],
+      "questions": ["What percentage of quote lead time is spent waiting for suppliers?", "Which supplier categories respond late most often?", "Can a provisional should-cost be used while waiting?"],
+      "evidence_to_collect": ["Supplier RFQ issue date vs supplier reply date", "Category-wise supplier response time", "History of similar bought parts"],
+      "root_cause_hypotheses": ["Supplier panel not prepared", "RFQ package sent to suppliers incomplete", "Purchasing lacks should-cost backup"],
+      "actions": ["Create prequalified supplier panels", "Standardize supplier RFQ request template", "Build should-cost library for recurrent components"],
+      "metrics": ["Supplier response lead time", "% quote files blocked by supplier delay", "% recurrent components with should-cost available"],
+      "effect_links": [
+        { "target_node_id": "P007", "relation_type": "blocks", "relation_label": "blocks detailed costing", "strength": 0.91 },
+        { "target_node_id": "S004", "relation_type": "solved_by", "relation_label": "reduced by should-cost and supplier SLA", "strength": 0.88 }
+      ],
+      "collaboration": {
+        "decision_needed": "Use provisional costing or escalate supplier delay",
+        "workshop_prompt": "Map the top 20 bought parts that most often block quotation timing."
+      },
+      "tags": ["supplier", "material", "purchasing", "delay"]
+    }
+  },
+  {
+    "id": "nodes_4",
+    "type": "cause",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P004",
+      "type": "cause",
+      "6M_category": "Machine",
+      "process_stage": "cost_build",
+      "severity": "medium",
+      "function_owner": "Costing",
+      "subject": "Costing tool too heavy or poorly integrated",
+      "description": "Analysts lose time through re-entry, file navigation, or an overly complex Excel model.",
+      "keywords": ["tool", "excel", "re-entry", "integration", "slowness", "automation", "outil", "ressaisie", "Doppelerfassung", "أداة", "إكسال", "工具", "重复录入", "도구", "엑셀"],
+      "symptoms": ["Many manual copy-paste actions", "Model crashes or freezes", "Same assumptions entered several times"],
+      "questions": ["How much time is spent on calculation versus data entry?", "Which data must be entered manually more than once?", "Can standard assumptions be preloaded?"],
+      "evidence_to_collect": ["Process timing study of one quote", "List of repeated manual entries", "Count of tools or files opened per quote"],
+      "root_cause_hypotheses": ["No single source of truth", "Excel model grew without simplification", "ERP, PLM, and costing are not connected"],
+      "actions": ["Simplify templates by quote type", "Preload standard assumptions", "Create one quote package folder or digital form"],
+      "metrics": ["Manual data entry time per quote", "Number of files used per quote", "Time to first cost draft"],
+      "effect_links": [
+        { "target_node_id": "S005", "relation_type": "solved_by", "relation_label": "reduced by tool simplification", "strength": 0.78 }
+      ],
+      "collaboration": {
+        "decision_needed": "Approve template redesign or automation effort",
+        "workshop_prompt": "Shadow one analyst during a full quote and identify all non-value-added tool steps."
+      },
+      "tags": ["tool", "excel", "machine", "automation"]
+    }
+  },
+  {
+    "id": "nodes_5",
+    "type": "effect",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P005",
+      "type": "effect",
+      "6M_category": "Method",
+      "process_stage": "clarification",
+      "severity": "high",
+      "function_owner": "Costing",
+      "subject": "Costing rework",
+      "description": "The file is recalculated several times because of unstable inputs, late-corrected assumptions, or multiple versions.",
+      "keywords": ["rework", "revision", "versions", "loops", "recalculation", "révision", "Nacharbeit", "返工", "재작업"],
+      "symptoms": ["More than two major quote revisions", "Confusion on latest valid assumptions", "Analyst repeats the same work"],
+      "questions": ["How many revisions happened before release?", "Which assumptions changed after the first build?", "Could a version freeze have prevented this?"],
+      "evidence_to_collect": ["Version history", "Change log", "List of late assumption changes"],
+      "root_cause_hypotheses": ["RFQ not frozen", "No version control discipline", "Decision timing too late"],
+      "actions": ["Freeze input version before detailed costing", "Use change log with impact assessment", "Escalate if assumptions change after gate"],
+      "metrics": ["Average revisions per quote", "Rework hours per quote", "% quotes released without major revision"],
+      "effect_links": [
+        { "target_node_id": "P008", "relation_type": "worsens", "relation_label": "worsens total lead time", "strength": 0.97 }
+      ],
+      "collaboration": {
+        "decision_needed": "Define version freeze and exception rule",
+        "workshop_prompt": "Review the last 5 quotes with more than 2 revisions and identify the late-changing assumptions."
+      },
+      "tags": ["rework", "versioning", "method"]
+    }
+  },
+  {
+    "id": "nodes_6",
+    "type": "cause",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P006",
+      "type": "cause",
+      "6M_category": "Milieu",
+      "process_stage": "validation",
+      "severity": "high",
+      "function_owner": "Management",
+      "subject": "Shifting priorities and permanent urgencies",
+      "description": "Work is interrupted by more urgent requests. Analysts start several quotes without properly finishing one.",
+      "keywords": ["priority", "urgency", "interruption", "multitasking", "arbitration", "priorité", "urgence", "Priorität", "أولوية", "优先级", "우선순위"],
+      "symptoms": ["Frequent stop-start pattern", "Large number of open quotes with slow completion", "Internal conflict on what is really urgent"],
+      "questions": ["Who decides quote priority today?", "How many times was the work sequence changed this week?", "What percentage of urgent quotes were truly strategic?"],
+      "evidence_to_collect": ["Priority change log", "Open quote list by age", "Strategic value or probability score"],
+      "root_cause_hypotheses": ["No priority governance", "Everything treated as urgent", "Sales escalation overrides discipline"],
+      "actions": ["Create quote prioritization board", "Limit work in progress", "Separate fast lane and strategic lane"],
+      "metrics": ["Priority changes per week", "WIP count", "Completion rate by priority class"],
+      "effect_links": [
+        { "target_node_id": "P008", "relation_type": "causes", "relation_label": "causes overall delay", "strength": 0.87 },
+        { "target_node_id": "S006", "relation_type": "solved_by", "relation_label": "reduced by priority governance", "strength": 0.89 }
+      ],
+      "collaboration": {
+        "decision_needed": "Set a formal quote prioritization mechanism",
+        "workshop_prompt": "Rank current open quotes by probability, margin potential, customer criticality, and due date."
+      },
+      "tags": ["priority", "milieu", "governance", "urgency"]
+    }
+  },
+  {
+    "id": "nodes_7",
+    "type": "effect",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P007",
+      "type": "effect",
+      "6M_category": "Method",
+      "process_stage": "cost_build",
+      "severity": "medium",
+      "function_owner": "Costing",
+      "subject": "Detailed costing blocked",
+      "description": "The team cannot complete the estimate because reliable cost data is missing on one or more key items.",
+      "keywords": ["blocked", "calculation", "cost element", "cost data", "missing", "bloqué", "Kostendaten", "بلوكاج", "阻塞", "차단"],
+      "symptoms": ["Quote stays in draft status", "Large placeholder values remain unresolved", "Final margin cannot be validated"],
+      "questions": ["Which cost line is still uncertain?", "Can a bounded estimate be used?", "Who owns the missing data?"],
+      "evidence_to_collect": ["Open issues list by cost line", "Range estimate for uncertain cost lines", "Owner and due date per open issue"],
+      "root_cause_hypotheses": ["Critical purchase price missing", "Industrial assumptions not validated", "Site or process not chosen"],
+      "actions": ["Escalate blocking cost items early", "Use bounded assumptions with risk note", "Force owner assignment on each open issue"],
+      "metrics": ["Time quote stays in draft", "Open critical assumptions at release review", "Average time to close blocking issue"],
+      "effect_links": [
+        { "target_node_id": "P008", "relation_type": "causes", "relation_label": "drives final delay", "strength": 0.9 }
+      ],
+      "collaboration": {
+        "decision_needed": "Approve bounded assumption or wait for missing data",
+        "workshop_prompt": "List the three cost lines that most often block quote completion and define default fallback assumptions."
+      },
+      "tags": ["blocked", "cost build", "open issues"]
+    }
+  },
+  {
+    "id": "nodes_8",
+    "type": "effect",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "P008",
+      "type": "effect",
+      "6M_category": "Management",
+      "process_stage": "release",
+      "severity": "critical",
+      "function_owner": "Management",
+      "subject": "Quote released late",
+      "description": "The customer or sales team receives the quote after the expected date, with high commercial and operational risk.",
+      "keywords": ["delay", "late quote", "commercial risk", "quote OTD", "deadline missed", "retard", "OTD chiffrage", "Verzug", "报价过晚", "늦은 견적"],
+      "symptoms": ["Missed customer deadline", "Sales escalation", "Lower win probability or rushed poor-quality release"],
+      "questions": ["How late was the quote compared with the committed date?", "Was quality also degraded to catch up?", "What was the most time-consuming stage?"],
+      "evidence_to_collect": ["Committed due date vs release date", "Stage-by-stage timeline", "Commercial impact or lost opportunity note"],
+      "root_cause_hypotheses": ["Combination of upstream causes not treated early", "No timeline ownership", "Late management escalation"],
+      "actions": ["Track quote timeline by stage", "Review late quotes weekly with root-cause Pareto", "Assign single owner for due-date commitment"],
+      "metrics": ["Quote on-time delivery", "Average quote lead time", "Delay Pareto by cause"],
+      "effect_links": [
+        { "target_node_id": "M001", "relation_type": "measured_by", "relation_label": "measured by quote OTD", "strength": 0.99 }
+      ],
+      "collaboration": {
+        "decision_needed": "Define weekly late-quote review with action ownership",
+        "workshop_prompt": "For each late quote this month, mark the stage where time was lost and the preventable root cause."
+      },
+      "tags": ["late release", "otd", "critical"]
+    }
+  },
+  {
+    "id": "nodes_9",
+    "type": "solution",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "S001",
+      "type": "solution",
+      "6M_category": "Method",
+      "process_stage": "intake",
+      "severity": "high",
+      "function_owner": "Sales",
+      "subject": "Mandatory RFQ intake gate",
+      "description": "Define a minimum set of inputs without which detailed costing cannot start.",
+      "keywords": ["gate", "checklist", "eligibility", "intake", "complete RFQ", "recevabilité", "Gate", "RFQ كاملة", "完整RFQ", "완전한 RFQ"],
+      "questions": ["Which fields are mandatory for detailed costing?"],
+      "evidence_to_collect": ["Top recurring missing inputs"],
+      "root_cause_hypotheses": ["No formal intake discipline"],
+      "actions": ["Create intake checklist", "Define owner for completeness verification", "Allow only bounded budgetary quote without full inputs"],
+      "metrics": ["% RFQ complete at intake", "Clarification cycles"],
+      "effect_links": [
+        { "target_node_id": "P001", "relation_type": "requires", "relation_label": "targets this issue", "strength": 1.0 }
+      ],
+      "collaboration": {
+        "decision_needed": "Approve mandatory fields and exceptions",
+        "workshop_prompt": "Agree the minimum RFQ dataset required for detailed costing."
+      },
+      "tags": ["solution", "intake gate"]
+    }
+  },
+  {
+    "id": "nodes_10",
+    "type": "solution",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "S003",
+      "type": "solution",
+      "6M_category": "Manpower",
+      "process_stage": "cost_build",
+      "severity": "high",
+      "function_owner": "Management",
+      "subject": "Segmentation of quote flow",
+      "description": "Separate simple, strategic, complex, and exploratory quotes so everything does not follow the same path.",
+      "keywords": ["segmentation", "flow", "simple", "complex", "prioritization", "flux", "Segmentierung", "تقسيم", "分层", "세분화"],
+      "questions": ["Which quote types really need full detailed costing?"],
+      "evidence_to_collect": ["Lead time by quote type"],
+      "actions": ["Define quote classes", "Set standard lead times per class", "Assign resources by class"],
+      "metrics": ["Lead time by class", "Backlog by class"],
+      "collaboration": {
+        "decision_needed": "Approve classes and SLA",
+        "workshop_prompt": "Create 3 to 4 quote classes with expected depth and lead time."
+      },
+      "tags": ["solution", "capacity", "flow"]
+    }
+  },
+  {
+    "id": "nodes_11",
+    "type": "solution",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "S004",
+      "type": "solution",
+      "6M_category": "Material",
+      "process_stage": "supplier_quote",
+      "severity": "high",
+      "function_owner": "Purchasing",
+      "subject": "Should-cost plus supplier SLA",
+      "description": "Create a backup price basis and set a target supplier response time.",
+      "keywords": ["should-cost", "SLA", "supplier", "backup", "standard price", "fournisseur", "Lieferant", "مورد", "供应商", "공급업체"],
+      "questions": ["Which bought parts most often block the quote?"],
+      "evidence_to_collect": ["Supplier response delays by commodity"],
+      "actions": ["Create should-cost for top recurring parts", "Set supplier response expectation", "Escalate late supplier quotes"],
+      "metrics": ["Supplier response lead time", "% bought parts with should-cost"],
+      "collaboration": {
+        "decision_needed": "Choose supplier categories for should-cost first",
+        "workshop_prompt": "Prioritize the top purchased items that create the biggest quoting delays."
+      },
+      "tags": ["solution", "supplier", "should-cost"]
+    }
+  },
+  {
+    "id": "nodes_12",
+    "type": "solution",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "S005",
+      "type": "solution",
+      "6M_category": "Machine",
+      "process_stage": "cost_build",
+      "severity": "medium",
+      "function_owner": "Costing",
+      "subject": "Simplify costing model",
+      "description": "Reduce re-entry, unnecessary tabs, and repeated assumptions.",
+      "keywords": ["simplification", "excel", "template", "automation", "automatisation", "Vereinfachung", "تبسيط", "简化", "단순화"],
+      "questions": ["Which manual steps can be removed first?"],
+      "evidence_to_collect": ["Top repetitive manual entries"],
+      "actions": ["Build quote templates by complexity", "Preload standard assumptions", "Remove duplicated calculations"],
+      "metrics": ["Manual entry time", "Time to first draft"],
+      "collaboration": {
+        "decision_needed": "Select first simplification scope",
+        "workshop_prompt": "Map all manual steps in the current model and remove non-value-added ones."
+      },
+      "tags": ["solution", "tool", "excel"]
+    }
+  },
+  {
+    "id": "nodes_13",
+    "type": "solution",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "S006",
+      "type": "solution",
+      "6M_category": "Management",
+      "process_stage": "validation",
+      "severity": "high",
+      "function_owner": "Management",
+      "subject": "Quote priority governance",
+      "description": "Implement an explicit prioritization rule and limit work in progress.",
+      "keywords": ["priority", "governance", "WIP", "arbitration", "urgency", "gouvernance", "Governance", "حوكمة", "治理", "거버넌스"],
+      "questions": ["Who owns final priority decision?"],
+      "evidence_to_collect": ["Current open RFQ list with strategic score"],
+      "actions": ["Define priority board", "Limit active RFQs per analyst", "Separate emergency and standard lanes"],
+      "metrics": ["WIP count", "Priority changes per week", "On-time release by class"],
+      "collaboration": {
+        "decision_needed": "Approve scoring model and WIP limits",
+        "workshop_prompt": "Define 3 to 5 criteria that make a quote truly urgent."
+      },
+      "tags": ["solution", "governance", "priority"]
+    }
+  },
+  {
+    "id": "nodes_14",
+    "type": "metric",
+    "language": "multilingual",
+    "source": "internal_generated",
+    "data": {
+      "node_id": "M001",
+      "type": "metric",
+      "6M_category": "Management",
+      "process_stage": "release",
+      "severity": "critical",
+      "function_owner": "Management",
+      "subject": "Quote OTD",
+      "description": "Percentage of quotes released on or before the committed date.",
+      "keywords": ["OTD", "service level", "lead time", "due date", "tenue délai", "Servicegrad", "deadline", "服务水平", "서비스 수준"],
+      "questions": ["What is the current OTD by quote class?"],
+      "evidence_to_collect": ["Committed date", "Release date", "Quote class"],
+      "actions": ["Track weekly", "Review by cause Pareto"],
+      "metrics": ["OTD %", "OTD by class", "OTD by owner"],
+      "collaboration": {
+        "decision_needed": "Set target OTD and review cadence",
+        "workshop_prompt": "Agree what committed date should be counted when several dates exist."
+      },
+      "tags": ["metric", "otd"]
+    }
+  }
+]
