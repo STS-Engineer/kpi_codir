@@ -2735,10 +2735,6 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
          </p>
           </div>
 
-            <div class="hero-badge">
-              <span>Responsible</span>
-              <strong>#${responsibleId}</strong>
-            </div>
           </div>
         </div>
 
