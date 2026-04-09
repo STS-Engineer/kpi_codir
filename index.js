@@ -2734,11 +2734,6 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           Track, maintain and optimize your KPI portfolio with a cleaner, more professional interface.
          </p>
           </div>
-
-            <div class="hero-badge">
-              <span>Responsible</span>
-              <strong>#${responsibleId}</strong>
-            </div>
           </div>
         </div>
 
