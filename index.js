@@ -13,10 +13,6 @@ const {
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
 // ---------- Postgres ----------
 const pool = new Pool({
   user: "administrationSTS",
@@ -27,6 +23,3537 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// ========== KPI ADMIN API ==========
+
+// GET all KPIs
+app.get("/api/kpis", async (req, res) => {
+  try {
+    const { search = "" } = req.query;
+
+    const result = await pool.query(
+      `
+      SELECT
+        kpi_id,
+        indicator_title,
+        indicator_sub_title,
+        subject,
+        definition,
+        unit,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        high_limit,
+        low_limit,
+        created_at
+      FROM public."Kpi"
+      WHERE
+        COALESCE(indicator_title, '') ILIKE $1
+        OR COALESCE(indicator_sub_title, '') ILIKE $1
+        OR COALESCE(subject, '') ILIKE $1
+      ORDER BY kpi_id DESC
+      `,
+      [`%${search}%`]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/kpis error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET one KPI
+app.get("/api/kpis/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM public."Kpi" WHERE kpi_id = $1 LIMIT 1`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("GET /api/kpis/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CREATE KPI
+app.post("/api/kpis", async (req, res) => {
+  try {
+    const {
+      indicator_title,
+      indicator_sub_title,
+      unit,
+      subject,
+      definition,
+      frequency,
+      target,
+      tolerance_type,
+      up_tolerance,
+      low_tolerance,
+      max,
+      min,
+      calculation_on,
+      target_auto_adjustment,
+      high_limit,
+      low_limit
+    } = req.body;
+
+    const result = await pool.query(
+      `
+      INSERT INTO public."Kpi" (
+        indicator_title,
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        high_limit,
+        low_limit
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+      )
+      RETURNING *;
+      `,
+      [
+        indicator_title || null,
+        indicator_sub_title || null,
+        unit || null,
+        subject || null,
+        definition || null,
+        frequency || null,
+        target || null,
+        tolerance_type || null,
+        up_tolerance || null,
+        low_tolerance || null,
+        max || null,
+        min || null,
+        calculation_on || null,
+        target_auto_adjustment || null,
+        high_limit || null,
+        low_limit || null
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("POST /api/kpis error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// UPDATE KPI
+app.put("/api/kpis/:id", async (req, res) => {
+  try {
+    const {
+      indicator_title,
+      indicator_sub_title,
+      unit,
+      subject,
+      definition,
+      frequency,
+      target,
+      tolerance_type,
+      up_tolerance,
+      low_tolerance,
+      max,
+      min,
+      calculation_on,
+      target_auto_adjustment,
+      high_limit,
+      low_limit
+    } = req.body;
+
+    const result = await pool.query(
+      `
+      UPDATE public."Kpi"
+      SET
+        indicator_title = $1,
+        indicator_sub_title = $2,
+        unit = $3,
+        subject = $4,
+        definition = $5,
+        frequency = $6,
+        target = $7,
+        tolerance_type = $8,
+        up_tolerance = $9,
+        low_tolerance = $10,
+        max = $11,
+        min = $12,
+        calculation_on = $13,
+        target_auto_adjustment = $14,
+        high_limit = $15,
+        low_limit = $16
+      WHERE kpi_id = $17
+      RETURNING *;
+      `,
+      [
+        indicator_title || null,
+        indicator_sub_title || null,
+        unit || null,
+        subject || null,
+        definition || null,
+        frequency || null,
+        target || null,
+        tolerance_type || null,
+        up_tolerance || null,
+        low_tolerance || null,
+        max || null,
+        min || null,
+        calculation_on || null,
+        target_auto_adjustment || null,
+        high_limit || null,
+        low_limit || null,
+        req.params.id
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("PUT /api/kpis/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE KPI
+app.delete("/api/kpis/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM public."Kpi" WHERE kpi_id = $1 RETURNING kpi_id`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/kpis/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== KPI ADMIN PAGE ==========
+// ========== KPI ADMIN PAGE ==========
+app.get("/kpi-admin", async (req, res) => {
+  res.send(`
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>KPI Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #f4f7fb;
+        --bg-soft: #eef3f9;
+        --surface: rgba(255, 255, 255, 0.88);
+        --surface-strong: #ffffff;
+        --border: rgba(15, 23, 42, 0.08);
+        --border-strong: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --muted: #64748b;
+        --muted-2: #94a3b8;
+        --primary: #2563eb;
+        --primary-2: #4f46e5;
+        --cyan: #06b6d4;
+        --success: #10b981;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --shadow-sm: 0 6px 18px rgba(15, 23, 42, 0.05);
+        --shadow-md: 0 14px 34px rgba(15, 23, 42, 0.08);
+        --shadow-lg: 0 22px 60px rgba(15, 23, 42, 0.10);
+        --radius-xl: 28px;
+        --radius-lg: 22px;
+        --radius-md: 16px;
+        --radius-sm: 12px;
+      }
+
+      body {
+        font-family: "Inter", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(79,70,229,0.08), transparent 22%),
+          radial-gradient(circle at top right, rgba(6,182,212,0.08), transparent 22%),
+          linear-gradient(180deg, #f8fbff 0%, #f3f7fc 100%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      .page {
+        max-width: 1600px;
+        margin: 0 auto;
+        padding: 28px;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #ffffff 0%, #f6f9ff 100%);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-lg);
+        padding: 32px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(37,99,235,0.10), transparent 70%);
+        top: -110px;
+        right: -60px;
+        pointer-events: none;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        width: 200px;
+        height: 200px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(6,182,212,0.10), transparent 70%);
+        bottom: -90px;
+        left: -40px;
+        pointer-events: none;
+      }
+
+      .hero-left h1 {
+        font-size: 40px;
+        font-weight: 900;
+        letter-spacing: -1.7px;
+        color: #0b1220;
+      }
+
+      .hero-left p {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+        max-width: 760px;
+      }
+
+      .hero-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        border: none;
+        outline: none;
+        cursor: pointer;
+        transition: all 0.22s ease;
+        font-weight: 800;
+        border-radius: 14px;
+        padding: 13px 18px;
+        font-size: 14px;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+      }
+
+      .btn-primary {
+        color: #fff;
+        background: linear-gradient(135deg, var(--primary-2), var(--primary), var(--cyan));
+        box-shadow: 0 14px 28px rgba(37, 99, 235, 0.20);
+      }
+
+      .btn-soft {
+        color: var(--text);
+        background: rgba(255,255,255,0.8);
+        border: 1px solid var(--border-strong);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .btn-danger {
+        color: white;
+        background: linear-gradient(135deg, #f87171, #ef4444);
+        box-shadow: 0 12px 22px rgba(239,68,68,0.16);
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        margin-bottom: 24px;
+      }
+
+      .stat-card {
+        position: relative;
+        overflow: hidden;
+        background: rgba(255,255,255,0.84);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(255,255,255,0.7);
+        border-radius: var(--radius-lg);
+        padding: 22px;
+        box-shadow: var(--shadow-md);
+      }
+
+      .stat-card::before {
+        content: "";
+        position: absolute;
+        top: -25px;
+        right: -25px;
+        width: 110px;
+        height: 110px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, rgba(79,70,229,0.09), rgba(6,182,212,0.08));
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 10px;
+      }
+
+      .stat-value {
+        font-size: 30px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -1px;
+      }
+
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+      }
+
+      .search-wrap {
+        flex: 1;
+        min-width: 280px;
+        position: relative;
+      }
+
+      .search {
+        width: 100%;
+        border: 1px solid rgba(148,163,184,0.25);
+        background: rgba(255,255,255,0.88);
+        color: var(--text);
+        border-radius: 18px;
+        padding: 16px 18px;
+        font-size: 14px;
+        outline: none;
+        box-shadow: var(--shadow-sm);
+        transition: all 0.18s ease;
+      }
+
+      .search::placeholder {
+        color: #94a3b8;
+      }
+
+      .search:focus {
+        border-color: rgba(37,99,235,0.35);
+        box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
+      }
+
+      .table-shell {
+        background: rgba(255,255,255,0.86);
+        border: 1px solid rgba(255,255,255,0.72);
+        border-radius: var(--radius-xl);
+        overflow: hidden;
+        box-shadow: var(--shadow-lg);
+        backdrop-filter: blur(18px);
+      }
+
+      .table-headbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 20px 22px;
+        border-bottom: 1px solid rgba(15,23,42,0.06);
+        background: linear-gradient(180deg, #ffffff, #fafcff);
+      }
+
+      .table-headbar h3 {
+        font-size: 18px;
+        font-weight: 800;
+        color: #0f172a;
+      }
+
+      .table-headbar span {
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .table-wrap {
+        overflow: auto;
+      }
+
+      table {
+        width: 100%;
+        min-width: 1300px;
+        border-collapse: separate;
+        border-spacing: 0;
+      }
+
+      thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        text-align: left;
+        padding: 18px 16px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: #64748b;
+        background: #f8fbff;
+        border-bottom: 1px solid rgba(15,23,42,0.06);
+        white-space: nowrap;
+      }
+
+      tbody tr {
+        transition: all 0.16s ease;
+      }
+
+      tbody tr:hover {
+        background: #f8fbff;
+      }
+
+      tbody tr.selected {
+        background: linear-gradient(90deg, rgba(37,99,235,0.06), rgba(6,182,212,0.05));
+      }
+
+      tbody td {
+        padding: 18px 16px;
+        border-bottom: 1px solid rgba(15,23,42,0.05);
+        vertical-align: middle;
+        font-size: 14px;
+        color: #1e293b;
+      }
+
+      .kpi-title {
+        font-weight: 800;
+        font-size: 15px;
+        color: #0f172a;
+      }
+
+      .kpi-subtitle {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 5px;
+        line-height: 1.5;
+      }
+
+      .number-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 54px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, rgba(79,70,229,0.10), rgba(37,99,235,0.10));
+        color: #1d4ed8;
+        font-weight: 800;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+
+      .pill-blue {
+        background: rgba(37,99,235,0.08);
+        color: #1d4ed8;
+        border-color: rgba(37,99,235,0.12);
+      }
+
+      .pill-indigo {
+        background: rgba(79,70,229,0.08);
+        color: #4338ca;
+        border-color: rgba(79,70,229,0.12);
+      }
+
+      .pill-gold {
+        background: rgba(245,158,11,0.10);
+        color: #b45309;
+        border-color: rgba(245,158,11,0.14);
+      }
+
+      .row-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .icon-btn {
+        border: none;
+        border-radius: 12px;
+        padding: 10px 14px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+        transition: all 0.18s ease;
+      }
+
+      .icon-btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .edit-btn {
+        background: rgba(37,99,235,0.08);
+        color: #1d4ed8;
+        border: 1px solid rgba(37,99,235,0.10);
+      }
+
+      .delete-btn {
+        background: rgba(239,68,68,0.08);
+        color: #dc2626;
+        border: 1px solid rgba(239,68,68,0.10);
+      }
+
+      .drawer {
+        position: fixed;
+        top: 0;
+        right: -680px;
+        width: 680px;
+        max-width: 100%;
+        height: 100vh;
+        z-index: 999;
+        background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+        border-left: 1px solid rgba(15,23,42,0.06);
+        box-shadow: -18px 0 50px rgba(15,23,42,0.10);
+        transition: right 0.30s ease;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .drawer.open {
+        right: 0;
+      }
+
+      .drawer-header {
+        padding: 24px 24px 18px;
+        border-bottom: 1px solid rgba(15,23,42,0.06);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255,255,255,0.92);
+        backdrop-filter: blur(12px);
+      }
+
+      .drawer-header h2 {
+        font-size: 26px;
+        font-weight: 900;
+        color: #0f172a;
+      }
+
+      .drawer-body {
+        padding: 22px 24px 130px;
+        overflow: auto;
+      }
+
+      .section-title {
+        margin: 24px 0 12px;
+        font-size: 12px;
+        font-weight: 900;
+        color: #4f46e5;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      .field label {
+        font-size: 12px;
+        font-weight: 800;
+        color: #334155;
+      }
+
+      .field input,
+      .field textarea,
+      .field select {
+        width: 100%;
+        border: 1px solid rgba(148,163,184,0.24);
+        background: #ffffff;
+        color: #0f172a;
+        border-radius: 16px;
+        padding: 13px 14px;
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: all 0.18s ease;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.03);
+      }
+
+      .field input:focus,
+      .field textarea:focus,
+      .field select:focus {
+        border-color: rgba(37,99,235,0.34);
+        box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
+      }
+
+      .field textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      .drawer-footer {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 18px 24px;
+        background: rgba(255,255,255,0.96);
+        border-top: 1px solid rgba(15,23,42,0.06);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 14px 18px;
+        border-radius: 14px;
+        display: none;
+        z-index: 9999;
+        border: 1px solid rgba(15,23,42,0.08);
+        box-shadow: var(--shadow-md);
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 56px 20px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgba(148,163,184,0.35);
+        border-radius: 999px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      @media (max-width: 1100px) {
+        .stats-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 900px) {
+        .page {
+          padding: 16px;
+        }
+
+        .hero {
+          padding: 24px;
+        }
+
+        .hero-left h1 {
+          font-size: 30px;
+        }
+
+        .drawer {
+          width: 100%;
+          right: -100%;
+        }
+
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .stats-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="hero">
+        <div class="hero-left">
+          <h1>KPI Management Dashboard</h1>
+          <p>
+            A clean and professional KPI workspace to create, update, manage and delete all your performance indicators with a premium enterprise design.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="btn btn-soft" onclick="refreshTable()">Refresh</button>
+          <button class="btn btn-primary" onclick="openNewDrawer()">+ Add KPI</button>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total KPIs</div>
+          <div class="stat-value" id="statTotal">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Monthly KPIs</div>
+          <div class="stat-value" id="statMonthly">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">With Targets</div>
+          <div class="stat-value" id="statTargets">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Tolerance Rules</div>
+          <div class="stat-value" id="statTolerance">0</div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="search-wrap">
+          <input id="search" class="search" placeholder="Search by title, subtitle, subject, frequency..." />
+        </div>
+      </div>
+
+      <div class="table-shell">
+        <div class="table-headbar">
+          <h3>KPI Master List</h3>
+          <span>Total rows: <strong id="rowCount">0</strong></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Indicator</th>
+                <th>Subject</th>
+                <th>Unit</th>
+                <th>Frequency</th>
+                <th>Target</th>
+                <th>Low Limit</th>
+                <th>High Limit</th>
+                <th>Tolerance Type</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody">
+              <tr><td colspan="10" class="empty-state">Loading KPIs...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="drawer" class="drawer">
+      <div class="drawer-header">
+        <h2 id="drawerTitle">Edit KPI</h2>
+        <button class="btn btn-soft" onclick="closeDrawer()">Close</button>
+      </div>
+
+      <div class="drawer-body">
+        <input type="hidden" id="kpi_id" />
+
+        <div class="section-title">Identity</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Indicator Title</label>
+            <input id="indicator_title" />
+          </div>
+          <div class="field">
+            <label>Indicator Subtitle</label>
+            <input id="indicator_sub_title" />
+          </div>
+          <div class="field">
+            <label>Subject</label>
+            <input id="subject" />
+          </div>
+          <div class="field">
+            <label>Unit</label>
+            <input id="unit" />
+          </div>
+          <div class="field full">
+            <label>Definition</label>
+            <textarea id="definition"></textarea>
+          </div>
+        </div>
+
+        <div class="section-title">Performance Rules</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Frequency</label>
+            <input id="frequency" />
+          </div>
+          <div class="field">
+            <label>Calculation On</label>
+            <input id="calculation_on" />
+          </div>
+          <div class="field">
+            <label>Target</label>
+            <input id="target" />
+          </div>
+          <div class="field">
+            <label>Target Auto Adjustment</label>
+            <input id="target_auto_adjustment" />
+          </div>
+        </div>
+
+        <div class="section-title">Limits & Tolerances</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Tolerance Type</label>
+            <input id="tolerance_type" />
+          </div>
+          <div class="field">
+            <label>Up Tolerance</label>
+            <input id="up_tolerance" />
+          </div>
+          <div class="field">
+            <label>Low Tolerance</label>
+            <input id="low_tolerance" />
+          </div>
+          <div class="field">
+            <label>High Limit</label>
+            <input id="high_limit" type="number" step="any" />
+          </div>
+          <div class="field">
+            <label>Low Limit</label>
+            <input id="low_limit" type="number" step="any" />
+          </div>
+          <div class="field">
+            <label>Max</label>
+            <input id="max" />
+          </div>
+          <div class="field">
+            <label>Min</label>
+            <input id="min" />
+          </div>
+        </div>
+      </div>
+
+      <div class="drawer-footer">
+        <button class="btn btn-danger" onclick="deleteKpi()">Delete</button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-soft" onclick="closeDrawer()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+      let currentRows = [];
+      let selectedKpiId = null;
+
+      function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.style.display = "block";
+        setTimeout(() => {
+          toast.style.display = "none";
+        }, 2400);
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function updateStats(rows) {
+        const total = rows.length;
+        const monthly = rows.filter(r => String(r.frequency || "").toLowerCase().includes("month")).length;
+        const withTargets = rows.filter(r => r.target !== null && r.target !== undefined && String(r.target).trim() !== "").length;
+        const tolerance = rows.filter(r => r.tolerance_type && String(r.tolerance_type).trim() !== "").length;
+
+        document.getElementById("statTotal").textContent = total;
+        document.getElementById("statMonthly").textContent = monthly;
+        document.getElementById("statTargets").textContent = withTargets;
+        document.getElementById("statTolerance").textContent = tolerance;
+        document.getElementById("rowCount").textContent = total;
+      }
+
+      function renderTable(rows) {
+        currentRows = rows || [];
+        updateStats(currentRows);
+
+        const tbody = document.getElementById("tableBody");
+
+        if (!currentRows.length) {
+          tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No KPI found.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = currentRows.map(row => \`
+          <tr class="\${String(selectedKpiId) === String(row.kpi_id) ? 'selected' : ''}">
+            <td><span class="number-badge">#\${escapeHtml(row.kpi_id)}</span></td>
+            <td>
+              <div class="kpi-title">\${escapeHtml(row.indicator_title || 'Untitled KPI')}</div>
+              <div class="kpi-subtitle">\${escapeHtml(row.indicator_sub_title || '')}</div>
+            </td>
+            <td>\${escapeHtml(row.subject || '')}</td>
+            <td><span class="pill pill-blue">\${escapeHtml(row.unit || '-')}</span></td>
+            <td><span class="pill pill-indigo">\${escapeHtml(row.frequency || '-')}</span></td>
+            <td>\${escapeHtml(row.target || '-')}</td>
+            <td>\${escapeHtml(row.low_limit ?? '-')}</td>
+            <td>\${escapeHtml(row.high_limit ?? '-')}</td>
+            <td><span class="pill pill-gold">\${escapeHtml(row.tolerance_type || '-')}</span></td>
+            <td>
+              <div class="row-actions">
+                <button class="icon-btn edit-btn" onclick="openEditDrawer(\${row.kpi_id})">Edit</button>
+                <button class="icon-btn delete-btn" onclick="deleteRowQuick(\${row.kpi_id})">Delete</button>
+              </div>
+            </td>
+          </tr>
+        \`).join("");
+      }
+
+      async function loadKpis(search = "") {
+        try {
+          const res = await fetch('/api/kpis?search=' + encodeURIComponent(search));
+          const data = await res.json();
+          renderTable(data);
+        } catch (err) {
+          document.getElementById("tableBody").innerHTML =
+            '<tr><td colspan="10" class="empty-state">Failed to load KPI table.</td></tr>';
+        }
+      }
+
+      async function loadKpiCharts() {
+  const chartsGrid = document.getElementById("chartsGrid");
+
+  try {
+    const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-graphs');
+    if (!res.ok) throw new Error("Failed to load chart data");
+
+    const rows = await res.json();
+
+    if (!rows.length) {
+      chartsGrid.innerHTML = '<div class="empty">No KPI graph data found for this responsible.</div>';
+      return;
+    }
+
+    chartsGrid.innerHTML = rows.map((row, index) => \`
+      <div class="chart-card">
+        <h3>\${escapeHtml(row.indicator_title || "Untitled KPI")}</h3>
+        <p>\${escapeHtml(row.indicator_sub_title || "Weekly KPI trend")}</p>
+        <div class="chart-wrap">
+          <canvas id="chart_\${index}"></canvas>
+        </div>
+      </div>
+    \`).join("");
+
+    chartInstances.forEach(chart => chart.destroy());
+    chartInstances = [];
+
+    rows.forEach((row, index) => {
+      const canvas = document.getElementById('chart_' + index);
+      const ctx = canvas.getContext('2d');
+
+    const chart = new Chart(ctx, {
+  data: {
+    labels: row.labels,
+    datasets: [
+      {
+        type: 'bar',
+        label: 'Actual Value',
+        data: row.values,
+        borderWidth: 0,
+        backgroundColor: 'rgba(34, 197, 94, 0.85)',
+        borderRadius: 6,
+        barThickness: 26
+      },
+      {
+        type: 'line',
+        label: 'Target',
+        data: row.target,
+        borderColor: 'rgba(239, 68, 68, 0.95)',
+        backgroundColor: 'rgba(239, 68, 68, 0.15)',
+        borderWidth: 2,
+        tension: 0,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderDash: [6, 4]
+      },
+      {
+        type: 'line',
+        label: 'High Limit',
+        data: row.highLimits,
+        borderColor: 'rgba(245, 158, 11, 0.95)',
+        backgroundColor: 'rgba(245, 158, 11, 0.15)',
+        borderWidth: 2,
+        tension: 0,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderDash: [8, 5]
+      },
+      {
+        type: 'line',
+        label: 'Low Limit',
+        data: row.lowLimits,
+        borderColor: 'rgba(59, 130, 246, 0.95)',
+        backgroundColor: 'rgba(59, 130, 246, 0.15)',
+        borderWidth: 2,
+        tension: 0,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderDash: [8, 5]
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: true
+      },
+      tooltip: {
+        mode: 'index',
+        intersect: false
+      }
+    },
+    interaction: {
+      mode: 'nearest',
+      axis: 'x',
+      intersect: false
+    },
+    scales: {
+      x: {
+        grid: {
+          display: false
+        },
+        ticks: {
+          color: '#64748b'
+        }
+      },
+      y: {
+        beginAtZero: true,
+        ticks: {
+          color: '#64748b'
+        },
+        grid: {
+          color: 'rgba(148,163,184,0.15)'
+        }
+      }
+    }
+  }
+});
+      chartInstances.push(chart);
+      });
+    } catch (error) {
+    chartsGrid.innerHTML = '<div class="empty">Failed to load KPI charts.</div>';
+     }
+   }
+
+
+      async function refreshTable() {
+        await loadKpis(document.getElementById("search").value || "");
+        showToast("Dashboard refreshed");
+      }
+
+      function openDrawer() {
+        document.getElementById("drawer").classList.add("open");
+      }
+
+      function closeDrawer() {
+        document.getElementById("drawer").classList.remove("open");
+      }
+
+      function resetForm() {
+        const fields = [
+          "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
+          "frequency","target","tolerance_type","up_tolerance","low_tolerance",
+          "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
+        ];
+
+        fields.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = "";
+        });
+      }
+
+      function fillForm(data) {
+        const fields = [
+          "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
+          "frequency","target","tolerance_type","up_tolerance","low_tolerance",
+          "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
+        ];
+
+        fields.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = data[id] ?? "";
+        });
+      }
+
+      function openNewDrawer() {
+        selectedKpiId = null;
+        resetForm();
+        document.getElementById("drawerTitle").textContent = "Create KPI";
+        openDrawer();
+      }
+
+      async function openEditDrawer(id) {
+        try {
+          const res = await fetch('/api/kpis/' + id);
+          const data = await res.json();
+          selectedKpiId = data.kpi_id;
+          fillForm(data);
+          document.getElementById("drawerTitle").textContent = "Edit KPI #" + data.kpi_id;
+          openDrawer();
+          await loadKpis(document.getElementById("search").value || "");
+        } catch (err) {
+          showToast("Unable to load KPI");
+        }
+      }
+
+      function buildPayload() {
+        return {
+          indicator_title: document.getElementById("indicator_title").value,
+          indicator_sub_title: document.getElementById("indicator_sub_title").value,
+          unit: document.getElementById("unit").value,
+          subject: document.getElementById("subject").value,
+          definition: document.getElementById("definition").value,
+          frequency: document.getElementById("frequency").value,
+          target: document.getElementById("target").value,
+          tolerance_type: document.getElementById("tolerance_type").value,
+          up_tolerance: document.getElementById("up_tolerance").value,
+          low_tolerance: document.getElementById("low_tolerance").value,
+          max: document.getElementById("max").value,
+          min: document.getElementById("min").value,
+          calculation_on: document.getElementById("calculation_on").value,
+          target_auto_adjustment: document.getElementById("target_auto_adjustment").value,
+          high_limit: document.getElementById("high_limit").value || null,
+          low_limit: document.getElementById("low_limit").value || null
+        };
+      }
+
+      async function saveKpi() {
+        const id = document.getElementById("kpi_id").value;
+        const method = id ? "PUT" : "POST";
+        const url = id ? '/api/kpis/' + id : '/api/kpis';
+
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildPayload())
+          });
+
+          if (!res.ok) {
+            showToast("Save failed");
+            return;
+          }
+
+          const saved = await res.json();
+          selectedKpiId = saved.kpi_id;
+          document.getElementById("kpi_id").value = saved.kpi_id;
+          await loadKpis(document.getElementById("search").value || "");
+          showToast("KPI saved successfully");
+          closeDrawer();
+        } catch (err) {
+          showToast("Save failed");
+        }
+      }
+
+      async function deleteKpi() {
+        const id = document.getElementById("kpi_id").value;
+        if (!id) {
+          showToast("Select a KPI first");
+          return;
+        }
+
+        const ok = confirm("Delete this KPI?");
+        if (!ok) return;
+
+        try {
+          const res = await fetch('/api/kpis/' + id, { method: "DELETE" });
+          if (!res.ok) {
+            showToast("Delete failed");
+            return;
+          }
+
+          resetForm();
+          selectedKpiId = null;
+          closeDrawer();
+          await loadKpis(document.getElementById("search").value || "");
+          showToast("KPI deleted");
+        } catch (err) {
+          showToast("Delete failed");
+        }
+      }
+
+      async function deleteRowQuick(id) {
+        const ok = confirm("Delete KPI #" + id + " ?");
+        if (!ok) return;
+
+        try {
+          const res = await fetch('/api/kpis/' + id, { method: "DELETE" });
+          if (!res.ok) {
+            showToast("Delete failed");
+            return;
+          }
+
+          if (String(document.getElementById("kpi_id").value) === String(id)) {
+            resetForm();
+            closeDrawer();
+          }
+
+          await loadKpis(document.getElementById("search").value || "");
+          showToast("KPI deleted");
+        } catch (err) {
+          showToast("Delete failed");
+        }
+      }
+
+      document.getElementById("search").addEventListener("input", (e) => {
+        loadKpis(e.target.value);
+      });
+
+      loadKpis();
+    </script>
+  </body>
+  </html>
+  `);
+});
+
+
+app.get("/api/responsibles/:responsibleId/kpi-graphs", async (req, res) => {
+  const { responsibleId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+          k.kpi_id,
+          k.indicator_title,
+          k.indicator_sub_title,
+          kv.week,
+          kv.value
+      FROM public.kpi_values kv
+      JOIN public."Kpi" k
+        ON k.kpi_id = kv.kpi_id
+      WHERE kv.responsible_id = $1
+      ORDER BY k.kpi_id ASC, kv.week ASC
+      `,
+      [responsibleId]
+    );
+
+    const result1 = await pool.query(
+      `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
+      [responsibleId]
+    );
+
+    const responsibleName = result1.rows[0]?.name || "Unknown";
+
+
+const grouped = {};
+
+for (const row of result.rows) {
+  if (!grouped[row.kpi_id]) {
+    grouped[row.kpi_id] = {
+      kpi_id: row.kpi_id,
+      indicator_title: row.indicator_title,
+      indicator_sub_title: row.indicator_sub_title,
+      labels: [],
+      values: [],
+      targetValue: row.target !== null ? Number(row.target) : null,
+      highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
+      lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null
+    };
+  }
+
+  grouped[row.kpi_id].labels.push(row.month_label);
+  grouped[row.kpi_id].values.push(Number(row.new_value_num) || 0);
+}
+
+    res.json(Object.values(grouped));
+  } catch (error) {
+    console.error("GET KPI graphs error:", error);
+    res.status(500).json({ error: "Failed to load KPI graph data" });
+  }
+});
+
+app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
+  const { responsibleId } = req.params;
+
+  const {
+    indicator_title,
+    indicator_sub_title,
+    unit,
+    subject,
+    definition,
+    frequency,
+    target,
+    tolerance_type,
+    up_tolerance,
+    low_tolerance,
+    max,
+    min,
+    calculation_on,
+    target_auto_adjustment,
+    high_limit,
+    low_limit
+  } = req.body;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const insertKpi = await client.query(
+      `
+      INSERT INTO public."Kpi" (
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        indicator_title,
+        high_limit,
+        low_limit
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12, $13, $14, $15, $16
+      )
+      RETURNING *
+      `,
+      [
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        indicator_title,
+        high_limit,
+        low_limit
+      ]
+    );
+
+    const newKpi = insertKpi.rows[0];
+
+    await client.query(
+      `
+      INSERT INTO public.kpi_values (
+        responsible_id,
+        kpi_id,
+        week,
+        value,
+        "Date"
+      )
+      VALUES ($1, $2, $3, $4, CURRENT_DATE)
+      `,
+      [responsibleId, newKpi.kpi_id, 'Initial', null]
+    );
+
+    await client.query("COMMIT");
+
+    res.status(201).json(newKpi);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error(error);
+    res.status(500).json({ error: "Failed to create KPI" });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
+  const { responsibleId } = req.params;
+  const search = req.query.search || "";
+  const searchTerm = `%${search}%`;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT DISTINCT
+          k.kpi_id,
+          k.indicator_title,
+          k.indicator_sub_title,
+          k.unit,
+          k.subject,
+          k.definition,
+          k.frequency,
+          k.target,
+          k.tolerance_type,
+          k.up_tolerance,
+          k.low_tolerance,
+          k.max,
+          k.min,
+          k.calculation_on,
+          k.target_auto_adjustment,
+          k.high_limit,
+          k.low_limit
+      FROM public.kpi_values kv
+      JOIN public."Kpi" k
+        ON k.kpi_id = kv.kpi_id
+      WHERE kv.responsible_id = $1
+        AND (
+          k.indicator_title ILIKE $2
+          OR COALESCE(k.indicator_sub_title, '') ILIKE $2
+          OR COALESCE(k.subject, '') ILIKE $2
+          OR COALESCE(k.definition, '') ILIKE $2
+          OR COALESCE(k.frequency, '') ILIKE $2
+          OR COALESCE(k.target, '') ILIKE $2
+        )
+      ORDER BY k.kpi_id DESC
+      `,
+      [responsibleId, searchTerm]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("GET /api/responsibles/:responsibleId/kpis error:", error);
+    res.status(500).json({ error: "Failed to load KPIs" });
+  }
+});
+
+app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
+  const { responsibleId, kpiId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT DISTINCT
+          k.kpi_id,
+          k.indicator_title,
+          k.indicator_sub_title,
+          k.unit,
+          k.subject,
+          k.definition,
+          k.frequency,
+          k.target,
+          k.tolerance_type,
+          k.up_tolerance,
+          k.low_tolerance,
+          k.max,
+          k.min,
+          k.calculation_on,
+          k.target_auto_adjustment,
+          k.high_limit,
+          k.low_limit
+      FROM public.kpi_values kv
+      JOIN public."Kpi" k
+        ON k.kpi_id = kv.kpi_id
+      WHERE kv.responsible_id = $1
+        AND k.kpi_id = $2
+      LIMIT 1
+      `,
+      [responsibleId, kpiId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found for this responsible" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("GET one KPI error:", error);
+    res.status(500).json({ error: "Failed to load KPI" });
+  }
+});
+
+app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
+  const { responsibleId, kpiId } = req.params;
+
+  const {
+    indicator_title,
+    indicator_sub_title,
+    unit,
+    subject,
+    definition,
+    frequency,
+    target,
+    tolerance_type,
+    up_tolerance,
+    low_tolerance,
+    max,
+    min,
+    calculation_on,
+    target_auto_adjustment,
+    high_limit,
+    low_limit
+  } = req.body;
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE public."Kpi" k
+      SET
+          indicator_title = $1,
+          indicator_sub_title = $2,
+          unit = $3,
+          subject = $4,
+          definition = $5,
+          frequency = $6,
+          target = $7,
+          tolerance_type = $8,
+          up_tolerance = $9,
+          low_tolerance = $10,
+          max = $11,
+          min = $12,
+          calculation_on = $13,
+          target_auto_adjustment = $14,
+          high_limit = $15,
+          low_limit = $16
+      FROM public.kpi_values kv
+      WHERE k.kpi_id = kv.kpi_id
+        AND k.kpi_id = $17
+        AND kv.responsible_id = $18
+      RETURNING k.*
+      `,
+      [
+        indicator_title,
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        high_limit,
+        low_limit,
+        kpiId,
+        responsibleId
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found or not allowed" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to update KPI" });
+  }
+});
+
+app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
+  const { responsibleId, kpiId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM public."Kpi" k
+      USING public.kpi_values kv
+      WHERE k.kpi_id = kv.kpi_id
+        AND k.kpi_id = $1
+        AND kv.responsible_id = $2
+      RETURNING k.*
+      `,
+      [kpiId, responsibleId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI not found or not allowed" });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to delete KPI" });
+  }
+});
+
+
+app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res) => {
+  const { responsibleId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      WITH ranked AS (
+        SELECT
+          h.kpi_id,
+          k.indicator_title,
+          k.indicator_sub_title,
+          k.high_limit,
+          k.low_limit,
+          k.target,
+          date_trunc('month', h.updated_at)::date AS month_start,
+          to_char(date_trunc('month', h.updated_at), 'Mon YYYY') AS month_label,
+          COALESCE(NULLIF(h.new_value, ''), '0')::numeric AS new_value_num,
+          h.updated_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY h.kpi_id, date_trunc('month', h.updated_at)
+            ORDER BY h.updated_at DESC
+          ) AS rn
+        FROM public.kpi_values_hist26 h
+        JOIN public."Kpi" k
+          ON k.kpi_id = h.kpi_id
+        WHERE h.responsible_id = $1
+      )
+      SELECT
+        kpi_id,
+        indicator_title,
+        indicator_sub_title,
+        high_limit,
+        low_limit,
+        target,
+        month_start,
+        month_label,
+        new_value_num
+      FROM ranked
+      WHERE rn = 1
+      ORDER BY kpi_id, month_start
+      `,
+      [responsibleId]
+    );
+
+    const grouped = {};
+
+    for (const row of result.rows) {
+      if (!grouped[row.kpi_id]) {
+        grouped[row.kpi_id] = {
+          kpi_id: row.kpi_id,
+          indicator_title: row.indicator_title,
+          indicator_sub_title: row.indicator_sub_title,
+          labels: [],
+          values: [],
+          targetValue: row.target !== null && row.target !== "" ? Number(row.target) : null,
+          highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
+          lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null
+        };
+      }
+
+      grouped[row.kpi_id].labels.push(row.month_label);
+      grouped[row.kpi_id].values.push(Number(row.new_value_num) || 0);
+    }
+
+    const finalRows = Object.values(grouped).map(item => ({
+      kpi_id: item.kpi_id,
+      indicator_title: item.indicator_title,
+      indicator_sub_title: item.indicator_sub_title,
+      labels: item.labels,
+      values: item.values,
+      targetValue: item.targetValue,
+      highLimitValue: item.highLimitValue,
+      lowLimitValue: item.lowLimitValue
+    }));
+
+    res.json(finalRows);
+  } catch (error) {
+    console.error("GET monthly KPI history error:", error);
+    res.status(500).json({ error: "Failed to load monthly KPI history" });
+  }
+});
+
+app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
+  const { responsibleId } = req.params;
+    const responsibleResult = await pool.query(
+      `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
+      [responsibleId]
+    );
+
+    const responsibleName = responsibleResult.rows[0]?.name || "Unknown";
+  res.send(`
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Responsible KPI Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #f4f7fb;
+        --bg-2: #eef4ff;
+        --sidebar: #0f172a;
+        --sidebar-2: #111c33;
+        --card: rgba(255, 255, 255, 0.88);
+        --card-solid: #ffffff;
+        --line: rgba(15, 23, 42, 0.08);
+        --line-strong: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --muted: #64748b;
+        --muted-2: #94a3b8;
+        --primary: #2563eb;
+        --primary-2: #4f46e5;
+        --cyan: #06b6d4;
+        --success: #10b981;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --shadow-sm: 0 8px 20px rgba(15, 23, 42, 0.05);
+        --shadow-md: 0 18px 40px rgba(15, 23, 42, 0.08);
+        --shadow-lg: 0 28px 70px rgba(15, 23, 42, 0.10);
+        --radius-xl: 28px;
+        --radius-lg: 22px;
+        --radius-md: 16px;
+        --radius-sm: 12px;
+      }
+
+      body {
+        font-family: "Inter", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(79,70,229,0.08), transparent 18%),
+          radial-gradient(circle at top right, rgba(6,182,212,0.08), transparent 18%),
+          linear-gradient(180deg, #f8fbff 0%, #f3f7fc 100%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        background:
+          radial-gradient(circle at top right, rgba(59,130,246,0.16), transparent 28%),
+          linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
+        color: white;
+        padding: 24px 20px;
+        border-right: 1px solid rgba(255,255,255,0.06);
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 12px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+
+      .brand-badge {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, var(--primary-2), var(--cyan));
+        font-weight: 900;
+        font-size: 18px;
+        box-shadow: 0 14px 28px rgba(37,99,235,0.28);
+      }
+
+      .brand h2 {
+        font-size: 18px;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+      }
+
+      .brand p {
+        margin-top: 4px;
+        font-size: 12px;
+        color: rgba(255,255,255,0.68);
+      }
+
+      .sidebar-section-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: rgba(255,255,255,0.45);
+        font-weight: 800;
+        margin: 6px 12px 0;
+      }
+
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: rgba(255,255,255,0.82);
+        text-decoration: none;
+        padding: 14px 14px;
+        border-radius: 16px;
+        transition: 0.22s ease;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+
+      .nav-item:hover,
+      .nav-item.active {
+        background: rgba(255,255,255,0.08);
+        border-color: rgba(255,255,255,0.08);
+        color: white;
+        transform: translateX(2px);
+      }
+
+      .nav-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+      }
+
+      .sidebar-footer {
+        margin-top: auto;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 20px;
+        padding: 18px;
+      }
+
+      .sidebar-footer h4 {
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .sidebar-footer p {
+        margin-top: 8px;
+        font-size: 13px;
+        color: rgba(255,255,255,0.7);
+        line-height: 1.6;
+      }
+
+      .content {
+        padding: 26px;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 22px;
+        flex-wrap: wrap;
+      }
+
+      .topbar-left h1 {
+        font-size: 38px;
+        font-weight: 900;
+        letter-spacing: -1.4px;
+        color: #0b1220;
+      }
+
+      .topbar-left p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .topbar-right {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        border: none;
+        cursor: pointer;
+        border-radius: 14px;
+        padding: 13px 18px;
+        font-size: 14px;
+        font-weight: 800;
+        transition: all 0.22s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+      }
+
+      .btn-primary {
+        color: white;
+        background: linear-gradient(135deg, var(--primary-2), var(--primary), var(--cyan));
+        box-shadow: 0 14px 28px rgba(37,99,235,0.18);
+      }
+
+      .btn-soft {
+        color: var(--text);
+        background: rgba(255,255,255,0.88);
+        border: 1px solid var(--line-strong);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .btn-danger {
+        color: white;
+        background: linear-gradient(135deg, #f87171, #ef4444);
+        box-shadow: 0 12px 22px rgba(239,68,68,0.16);
+      }
+
+      .hero-panel {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #ffffff 0%, #f7faff 100%);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-lg);
+        padding: 26px;
+        margin-bottom: 22px;
+      }
+
+      .hero-panel::before {
+        content: "";
+        position: absolute;
+        width: 260px;
+        height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(37,99,235,0.08), transparent 70%);
+        top: -120px;
+        right: -80px;
+      }
+
+      .hero-panel::after {
+        content: "";
+        position: absolute;
+        width: 220px;
+        height: 220px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(6,182,212,0.08), transparent 70%);
+        bottom: -120px;
+        left: -60px;
+      }
+
+      .hero-row {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
+      }
+
+      .hero-meta h3 {
+        font-size: 22px;
+        font-weight: 900;
+      }
+
+      .hero-meta p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.86);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow-sm);
+        font-weight: 800;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        margin-bottom: 22px;
+      }
+
+      .stat-card {
+        position: relative;
+        overflow: hidden;
+        background: rgba(255,255,255,0.88);
+        border: 1px solid rgba(255,255,255,0.8);
+        border-radius: var(--radius-lg);
+        padding: 22px;
+        box-shadow: var(--shadow-md);
+      }
+
+      .stat-card::before {
+        content: "";
+        position: absolute;
+        top: -20px;
+        right: -20px;
+        width: 100px;
+        height: 100px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, rgba(79,70,229,0.10), rgba(6,182,212,0.08));
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 10px;
+      }
+
+      .stat-value {
+        font-size: 30px;
+        font-weight: 900;
+        letter-spacing: -1px;
+      }
+
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+      }
+
+      .search-wrap {
+        flex: 1;
+        min-width: 280px;
+      }
+
+      .search {
+        width: 100%;
+        border: 1px solid rgba(148,163,184,0.25);
+        background: rgba(255,255,255,0.92);
+        color: var(--text);
+        border-radius: 18px;
+        padding: 16px 18px;
+        font-size: 14px;
+        outline: none;
+        box-shadow: var(--shadow-sm);
+        transition: all 0.18s ease;
+      }
+
+      .search::placeholder {
+        color: #94a3b8;
+      }
+
+      .search:focus {
+        border-color: rgba(37,99,235,0.35);
+        box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .section-head h2 {
+        font-size: 20px;
+        font-weight: 900;
+      }
+
+      .section-head p {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 4px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0,1fr));
+        gap: 20px;
+      }
+
+      .kpi-card {
+        position: relative;
+        overflow: hidden;
+        background: rgba(255,255,255,0.9);
+        border: 1px solid rgba(255,255,255,0.8);
+        border-radius: 24px;
+        box-shadow: var(--shadow-lg);
+        padding: 22px;
+        transition: all 0.22s ease;
+      }
+
+      .kpi-card:hover {
+        transform: translateY(-4px);
+      }
+
+      .kpi-card::before {
+        content: "";
+        position: absolute;
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(37,99,235,0.08), transparent 70%);
+        top: -20px;
+        right: -20px;
+      }
+
+      .kpi-head {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .kpi-title {
+        font-size: 22px;
+        font-weight: 900;
+        letter-spacing: -0.03em;
+      }
+
+      .kpi-subtitle {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+        min-height: 40px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 900;
+        white-space: nowrap;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .pill-blue {
+        background: rgba(37,99,235,0.08);
+        color: #1d4ed8;
+      }
+
+      .meta {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0,1fr));
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .meta-box {
+        background: #f8fbff;
+        border: 1px solid #edf2f9;
+        border-radius: 14px;
+        padding: 12px 13px;
+      }
+
+      .meta-box .label {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .meta-box .value {
+        margin-top: 6px;
+        font-size: 14px;
+        color: #0f172a;
+        font-weight: 800;
+      }
+
+      .card-actions {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+
+      .action-btn {
+        border: none;
+        border-radius: 12px;
+        padding: 11px 14px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+        transition: 0.18s ease;
+      }
+
+      .action-btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .edit-btn {
+        background: rgba(37,99,235,0.08);
+        color: #1d4ed8;
+        border: 1px solid rgba(37,99,235,0.10);
+      }
+
+      .delete-btn {
+        background: rgba(239,68,68,0.08);
+        color: #dc2626;
+        border: 1px solid rgba(239,68,68,0.10);
+      }
+
+      .empty {
+        grid-column: 1 / -1;
+        background: rgba(255,255,255,0.92);
+        border: 1px dashed #dbe5f0;
+        border-radius: 24px;
+        padding: 60px 20px;
+        text-align: center;
+        color: var(--muted);
+        box-shadow: var(--shadow-md);
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15,23,42,0.34);
+        backdrop-filter: blur(6px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        z-index: 999;
+      }
+
+      .modal-backdrop.open {
+        display: flex;
+      }
+
+      .chart-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.chart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  border: 1px solid transparent;
+}
+
+.chart-chip-target {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.12);
+}
+
+.chart-chip-high {
+  background: rgba(245, 158, 11, 0.10);
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.14);
+}
+
+.chart-chip-low {
+  background: rgba(59, 130, 246, 0.08);
+  color: #2563eb;
+  border-color: rgba(59, 130, 246, 0.12);
+}
+
+      .modal {
+        width: 100%;
+        max-width: 980px;
+        max-height: 92vh;
+        overflow: auto;
+        background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+        border-radius: 28px;
+        box-shadow: 0 30px 90px rgba(15,23,42,0.22);
+        border: 1px solid rgba(255,255,255,0.85);
+      }
+
+      .modal-header {
+        padding: 24px 26px 18px;
+        border-bottom: 1px solid rgba(15,23,42,0.06);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        position: sticky;
+        top: 0;
+        background: rgba(255,255,255,0.94);
+        backdrop-filter: blur(12px);
+        z-index: 5;
+      }
+
+      .modal-header h2 {
+        font-size: 26px;
+        font-weight: 900;
+      }
+
+      .modal-body {
+        padding: 22px 26px 120px;
+      }
+
+      .section-title {
+        margin: 24px 0 12px;
+        font-size: 12px;
+        font-weight: 900;
+        color: #4f46e5;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      .field label {
+        font-size: 12px;
+        font-weight: 800;
+        color: #334155;
+      }
+
+      .field input,
+      .field textarea {
+        width: 100%;
+        border: 1px solid rgba(148,163,184,0.24);
+        background: #ffffff;
+        color: #0f172a;
+        border-radius: 16px;
+        padding: 13px 14px;
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: all 0.18s ease;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.03);
+      }
+
+      .field input:focus,
+      .field textarea:focus {
+        border-color: rgba(37,99,235,0.34);
+        box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
+      }
+
+      .field textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      .modal-footer {
+        position: sticky;
+        bottom: 0;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 18px 26px;
+        border-top: 1px solid rgba(15,23,42,0.06);
+        background: rgba(255,255,255,0.96);
+        backdrop-filter: blur(12px);
+      }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        background: #ffffff;
+        color: #0f172a;
+        padding: 14px 18px;
+        border-radius: 14px;
+        display: none;
+        z-index: 1001;
+        border: 1px solid rgba(15,23,42,0.08);
+        box-shadow: var(--shadow-md);
+      }
+
+   .chart-card {
+    background: rgba(255,255,255,0.92);
+    border: 1px solid rgba(255,255,255,0.8);
+    border-radius: 24px;
+    box-shadow: var(--shadow-lg);
+       padding: 22px;
+        }
+
+  .chart-card h3 {
+    font-size: 20px;
+    font-weight: 900;
+    margin-bottom: 6px;
+    color: #0f172a;
+    }
+
+   .chart-card p {
+       font-size: 13px;
+       color: var(--muted);
+       margin-bottom: 16px;
+     }
+
+      .chart-wrap {
+        height: 320px;
+      }
+
+      @media (max-width: 1250px) {
+        .layout {
+          grid-template-columns: 90px 1fr;
+        }
+
+        .brand h2,
+        .brand p,
+        .nav-item span,
+        .sidebar-section-title,
+        .sidebar-footer {
+          display: none;
+        }
+
+        .brand {
+          justify-content: center;
+        }
+
+        .nav-item {
+          justify-content: center;
+          padding: 12px;
+        }
+      }
+
+      @media (max-width: 1100px) {
+        .stats-grid,
+        .grid {
+          grid-template-columns: repeat(2, minmax(0,1fr));
+        }
+      }
+
+      @media (max-width: 820px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: relative;
+          height: auto;
+          padding: 16px;
+        }
+
+        .brand h2,
+        .brand p,
+        .nav-item span,
+        .sidebar-section-title,
+        .sidebar-footer {
+          display: block;
+        }
+
+        .content {
+          padding: 16px;
+        }
+
+        .stats-grid,
+        .grid,
+        .form-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar-left h1 {
+          font-size: 30px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-badge">K</div>
+          <div>
+            <h2>KPI Suite</h2>
+            <p>Performance workspace</p>
+          </div>
+        </div>
+
+        <div>
+          <div class="sidebar-section-title">Navigation</div>
+          <nav class="nav">
+            <a href="#" class="nav-item active" id="navDashboard" onclick="showDashboard()">
+              <div class="nav-icon">📊</div>
+              <span>Dashboard</span>
+            </a>
+            <a href="#" class="nav-item" id="navMyKpis" onclick="showMyKpis(); return false;">
+              <div class="nav-icon">🎯</div>
+              <span>My KPIs</span>
+            </a>
+            <a href="#" class="nav-item" onclick="openCreateModal(); return false;">
+              <div class="nav-icon">➕</div>
+              <span>Create KPI</span>
+            </a>
+         
+          </nav>
+        </div>
+
+        <div class="sidebar-footer">
+          <h4>Responsible Workspace</h4>
+          <p>
+            Manage KPI definitions, update targets and keep your performance indicators organized in one premium dashboard.
+          </p>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="topbar">
+          <div class="topbar-left">
+            <h1>Responsible KPI Dashboard</h1>
+            <p>Professional KPI workspace for responsible </p>
+          </div>
+
+          <div class="topbar-right">
+            <button class="btn btn-soft" onclick="refreshKpis()">Refresh</button>
+            <button class="btn btn-primary" onclick="openCreateModal()">+ Add New KPI</button>
+          </div>
+        </div>
+      
+        <section id="dashboardSection">
+
+      <div class="hero-panel">
+          <div class="hero-row">
+      <div class="hero-meta">
+       <h3>Executive KPI Management</h3>
+
+      <div style="
+       margin-top:10px;
+       display:inline-flex;
+       align-items:center;
+       gap:8px;
+        background:rgba(37,99,235,0.08);
+        color:#1d4ed8;
+        padding:8px 14px;
+        border-radius:999px;
+        font-weight:800;
+        font-size:14px;
+       ">
+          👤 ${responsibleName}
+         </div>
+
+         <p style="margin-top:10px;">
+          Track, maintain and optimize your KPI portfolio with a cleaner, more professional interface.
+         </p>
+          </div>
+
+            <div class="hero-badge">
+              <span>Responsible</span>
+              <strong>#${responsibleId}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total KPIs</div>
+            <div class="stat-value" id="statTotal">0</div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-label">Monthly KPIs</div>
+            <div class="stat-value" id="statMonthly">0</div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-label">With Target</div>
+            <div class="stat-value" id="statTarget">0</div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-label">Tolerance Rules</div>
+            <div class="stat-value" id="statTolerance">0</div>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-wrap">
+            <input id="search" class="search" placeholder="Search KPI by title, subject, frequency..." />
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div>
+            <h2>KPI Portfolio</h2>
+            <p>Professional overview of all KPIs assigned to this responsible.</p>
+          </div>
+        </div>
+
+        <div id="grid" class="grid"></div>
+        </section>
+        <section id="myKpisSection" style="display:none;">
+      <div class="section-head">
+    <div>
+      <h2>My KPI Analytics</h2>
+      <p>Visual trends of KPI values by week for this responsible.</p>
+      </div>
+     </div>
+
+     <div id="chartsGrid" class="grid"></div>
+     </section>
+      </main>
+    </div>
+
+    <div id="modalBackdrop" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="modalTitle">Edit KPI</h2>
+          <button class="btn btn-soft" onclick="closeModal()">Close</button>
+        </div>
+
+        <div class="modal-body">
+          <input type="hidden" id="kpi_id" />
+
+          <div class="section-title">Identity</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Indicator Title</label>
+              <input id="indicator_title" />
+            </div>
+
+            <div class="field">
+              <label>Indicator Subtitle</label>
+              <input id="indicator_sub_title" />
+            </div>
+
+            <div class="field">
+              <label>Unit</label>
+              <input id="unit" />
+            </div>
+
+            <div class="field">
+              <label>Subject</label>
+              <input id="subject" />
+            </div>
+
+            <div class="field full">
+              <label>Definition</label>
+              <textarea id="definition"></textarea>
+            </div>
+          </div>
+
+          <div class="section-title">Performance Rules</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Frequency</label>
+              <input id="frequency" />
+            </div>
+
+            <div class="field">
+              <label>Target</label>
+              <input id="target" />
+            </div>
+
+            <div class="field">
+              <label>Tolerance Type</label>
+              <input id="tolerance_type" />
+            </div>
+
+            <div class="field">
+              <label>Up Tolerance</label>
+              <input id="up_tolerance" />
+            </div>
+
+            <div class="field">
+              <label>Low Tolerance</label>
+              <input id="low_tolerance" />
+            </div>
+
+            <div class="field">
+              <label>Max</label>
+              <input id="max" />
+            </div>
+
+            <div class="field">
+              <label>Min</label>
+              <input id="min" />
+            </div>
+
+            <div class="field">
+              <label>Calculation On</label>
+              <input id="calculation_on" />
+            </div>
+
+            <div class="field">
+              <label>Target Auto Adjustment</label>
+              <input id="target_auto_adjustment" />
+            </div>
+
+            <div class="field">
+              <label>High Limit</label>
+              <input id="high_limit" type="number" step="any" />
+            </div>
+
+            <div class="field">
+              <label>Low Limit</label>
+              <input id="low_limit" type="number" step="any" />
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-danger" id="deleteBtn" onclick="deleteCurrentKpi()">Delete KPI</button>
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-soft" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+      const responsibleId = "${responsibleId}";
+      let currentRows = [];
+      let chartsLoaded = false;
+      let chartInstances = [];
+
+      function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.textContent = message;
+        toast.style.display = "block";
+        setTimeout(() => {
+          toast.style.display = "none";
+        }, 2400);
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      
+     function setActiveNav(target) {
+      document.getElementById("navDashboard").classList.remove("active");
+      document.getElementById("navMyKpis").classList.remove("active");
+      document.getElementById(target).classList.add("active");
+    }
+
+    function showDashboard() {
+     document.getElementById("dashboardSection").style.display = "block";
+     document.getElementById("myKpisSection").style.display = "none";
+     setActiveNav("navDashboard");
+   }
+
+   async function showMyKpis() {
+    document.getElementById("dashboardSection").style.display = "none";
+     document.getElementById("myKpisSection").style.display = "block";
+     setActiveNav("navMyKpis");
+
+      if (!chartsLoaded) {
+        await loadKpiCharts();
+        chartsLoaded = true;
+       }
+    }
+
+
+      function updateStats(rows) {
+        const total = rows.length;
+        const monthly = rows.filter(r => String(r.frequency || "").toLowerCase().includes("month")).length;
+        const withTarget = rows.filter(r => r.target !== null && r.target !== undefined && String(r.target).trim() !== "").length;
+        const tolerance = rows.filter(r => r.tolerance_type && String(r.tolerance_type).trim() !== "").length;
+
+        document.getElementById("statTotal").textContent = total;
+        document.getElementById("statMonthly").textContent = monthly;
+        document.getElementById("statTarget").textContent = withTarget;
+        document.getElementById("statTolerance").textContent = tolerance;
+      }
+
+      function renderKpis(rows) {
+        currentRows = rows || [];
+        updateStats(currentRows);
+
+        const grid = document.getElementById("grid");
+
+        if (!currentRows.length) {
+          grid.innerHTML = '<div class="empty">No KPI found for this responsible.</div>';
+          return;
+        }
+
+        grid.innerHTML = currentRows.map(row => \`
+          <div class="kpi-card">
+            <div class="kpi-head">
+              <div>
+                <div class="kpi-title">\${escapeHtml(row.indicator_title || "Untitled KPI")}</div>
+                <div class="kpi-subtitle">\${escapeHtml(row.indicator_sub_title || "")}</div>
+              </div>
+              <span class="pill pill-blue">KPI #\${escapeHtml(row.kpi_id)}</span>
+            </div>
+
+            <div class="meta">
+              <div class="meta-box">
+                <div class="label">Subject</div>
+                <div class="value">\${escapeHtml(row.subject || "-")}</div>
+              </div>
+              <div class="meta-box">
+                <div class="label">Unit</div>
+                <div class="value">\${escapeHtml(row.unit || "-")}</div>
+              </div>
+              <div class="meta-box">
+                <div class="label">Frequency</div>
+                <div class="value">\${escapeHtml(row.frequency || "-")}</div>
+              </div>
+              <div class="meta-box">
+                <div class="label">Target</div>
+                <div class="value">\${escapeHtml(row.target || "-")}</div>
+              </div>
+              <div class="meta-box">
+                <div class="label">High Limit</div>
+                <div class="value">\${escapeHtml(row.high_limit ?? "-")}</div>
+              </div>
+              <div class="meta-box">
+                <div class="label">Low Limit</div>
+                <div class="value">\${escapeHtml(row.low_limit ?? "-")}</div>
+              </div>
+            </div>
+
+            <div class="card-actions">
+              <button class="action-btn edit-btn" onclick="openEditModal(\${row.kpi_id})">Edit KPI</button>
+              <button class="action-btn delete-btn" onclick="deleteKpi(\${row.kpi_id})">Delete KPI</button>
+            </div>
+          </div>
+        \`).join("");
+      }
+
+      async function loadKpis(search = "") {
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?search=' + encodeURIComponent(search));
+          const data = await res.json();
+          renderKpis(data);
+        } catch (error) {
+          document.getElementById("grid").innerHTML =
+            '<div class="empty">Failed to load KPIs.</div>';
+        }
+      }
+
+async function loadKpiCharts() {
+  const chartsGrid = document.getElementById("chartsGrid");
+
+  try {
+    const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-history-monthly');
+    if (!res.ok) throw new Error("Failed to load chart data");
+
+    const rows = await res.json();
+
+    if (!rows.length) {
+      chartsGrid.innerHTML = '<div class="empty">No KPI history found for this responsible.</div>';
+      return;
+    }
+
+chartsGrid.innerHTML = rows.map((row, index) =>
+  '<div class="chart-card">' +
+    '<h3>' + escapeHtml(row.indicator_title || "Untitled KPI") + '</h3>' +
+    '<p>' + escapeHtml(row.indicator_sub_title || "Monthly KPI history") + '</p>' +
+
+    '<div class="chart-meta">' +
+      '<div class="chart-chip chart-chip-target">Target: ' + escapeHtml(row.targetValue ?? "-") + '</div>' +
+      '<div class="chart-chip chart-chip-high">High Limit: ' + escapeHtml(row.highLimitValue ?? "-") + '</div>' +
+      '<div class="chart-chip chart-chip-low">Low Limit: ' + escapeHtml(row.lowLimitValue ?? "-") + '</div>' +
+    '</div>' +
+
+    '<div class="chart-wrap">' +
+      '<canvas id="chart_' + index + '"></canvas>' +
+    '</div>' +
+  '</div>'
+).join("");
+
+    chartInstances.forEach(chart => chart.destroy());
+    chartInstances = [];
+
+    rows.forEach((row, index) => {
+      const canvas = document.getElementById('chart_' + index);
+      const ctx = canvas.getContext('2d');
+
+      const chart = new Chart(ctx, {
+        data: {
+          labels: row.labels,
+        datasets: [
+  {
+    type: 'bar',
+    label: 'Actual Value',
+    data: row.values,
+    borderWidth: 0,
+    backgroundColor: 'rgba(34, 197, 94, 0.85)',
+    borderRadius: 6,
+    barThickness: 26
+  },
+  {
+    type: 'line',
+    label: 'Target',
+    data: row.target,
+    borderColor: 'rgba(239, 68, 68, 0.95)',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 2,
+    tension: 0,
+    fill: false,
+    pointRadius: 0,
+    pointHoverRadius: 4,
+    borderDash: [6, 4]
+  }
+  
+      
+        ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              mode: 'index',
+              intersect: false
+            }
+          },
+          interaction: {
+            mode: 'nearest',
+            axis: 'x',
+            intersect: false
+          },
+          scales: {
+            x: {
+              grid: {
+                display: false
+              },
+              ticks: {
+                color: '#64748b'
+              }
+            },
+            y: {
+              beginAtZero: true,
+              ticks: {
+                color: '#64748b'
+              },
+              grid: {
+                color: 'rgba(148,163,184,0.15)'
+              }
+            }
+          }
+        }
+      });
+
+      chartInstances.push(chart);
+    });
+  } catch (error) {
+    console.error(error);
+    chartsGrid.innerHTML = '<div class="empty">Failed to load KPI charts.</div>';
+  }
+}
+    
+      async function refreshKpis() {
+        await loadKpis(document.getElementById("search").value || "");
+        showToast("Dashboard refreshed");
+      }
+
+      function openModal() {
+        document.getElementById("modalBackdrop").classList.add("open");
+      }
+
+      function closeModal() {
+        document.getElementById("modalBackdrop").classList.remove("open");
+      }
+
+      function resetForm() {
+        [
+          "kpi_id",
+          "indicator_title",
+          "indicator_sub_title",
+          "unit",
+          "subject",
+          "definition",
+          "frequency",
+          "target",
+          "tolerance_type",
+          "up_tolerance",
+          "low_tolerance",
+          "max",
+          "min",
+          "calculation_on",
+          "target_auto_adjustment",
+          "high_limit",
+          "low_limit"
+        ].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = "";
+        });
+      }
+
+      function fillForm(data) {
+        [
+          "kpi_id",
+          "indicator_title",
+          "indicator_sub_title",
+          "unit",
+          "subject",
+          "definition",
+          "frequency",
+          "target",
+          "tolerance_type",
+          "up_tolerance",
+          "low_tolerance",
+          "max",
+          "min",
+          "calculation_on",
+          "target_auto_adjustment",
+          "high_limit",
+          "low_limit"
+        ].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = data[id] ?? "";
+        });
+      }
+
+      function openCreateModal() {
+        resetForm();
+        document.getElementById("modalTitle").textContent = "Add New KPI";
+        document.getElementById("deleteBtn").style.display = "none";
+        openModal();
+      }
+
+      async function openEditModal(kpiId) {
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId);
+          if (!res.ok) throw new Error("Failed to load KPI");
+
+          const data = await res.json();
+          fillForm(data);
+          document.getElementById("modalTitle").textContent = "Edit KPI";
+          document.getElementById("deleteBtn").style.display = "inline-flex";
+          openModal();
+        } catch (error) {
+          showToast("Unable to load KPI");
+        }
+      }
+
+      function buildPayload() {
+        return {
+          indicator_title: document.getElementById("indicator_title").value,
+          indicator_sub_title: document.getElementById("indicator_sub_title").value,
+          unit: document.getElementById("unit").value,
+          subject: document.getElementById("subject").value,
+          definition: document.getElementById("definition").value,
+          frequency: document.getElementById("frequency").value,
+          target: document.getElementById("target").value,
+          tolerance_type: document.getElementById("tolerance_type").value,
+          up_tolerance: document.getElementById("up_tolerance").value,
+          low_tolerance: document.getElementById("low_tolerance").value,
+          max: document.getElementById("max").value,
+          min: document.getElementById("min").value,
+          calculation_on: document.getElementById("calculation_on").value,
+          target_auto_adjustment: document.getElementById("target_auto_adjustment").value,
+          high_limit: document.getElementById("high_limit").value || null,
+          low_limit: document.getElementById("low_limit").value || null
+        };
+      }
+
+      async function saveKpi() {
+        const kpiId = document.getElementById("kpi_id").value;
+        const method = kpiId ? "PUT" : "POST";
+        const url = kpiId
+          ? '/api/responsibles/' + responsibleId + '/kpis/' + kpiId
+          : '/api/responsibles/' + responsibleId + '/kpis';
+
+        try {
+          const res = await fetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildPayload())
+          });
+
+          if (!res.ok) {
+            showToast("Save failed");
+            return;
+          }
+
+          closeModal();
+          await loadKpis(document.getElementById("search").value || "");
+          showToast(kpiId ? "KPI updated successfully" : "KPI created successfully");
+        } catch (error) {
+          showToast("Save failed");
+        }
+      }
+
+      async function deleteCurrentKpi() {
+        const kpiId = document.getElementById("kpi_id").value;
+        if (!kpiId) return;
+
+        const ok = confirm("Delete this KPI?");
+        if (!ok) return;
+
+        await deleteKpi(kpiId, true);
+      }
+
+      async function deleteKpi(kpiId, fromModal = false) {
+        const ok = fromModal ? true : confirm("Delete this KPI?");
+        if (!ok) return;
+
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId, {
+            method: "DELETE"
+          });
+
+          if (!res.ok) {
+            showToast("Delete failed");
+            return;
+          }
+
+          if (fromModal) closeModal();
+          await loadKpis(document.getElementById("search").value || "");
+          showToast("KPI deleted");
+        } catch (error) {
+          showToast("Delete failed");
+        }
+      }
+
+      document.getElementById("search").addEventListener("input", (e) => {
+        loadKpis(e.target.value);
+      });
+
+      document.getElementById("modalBackdrop").addEventListener("click", (e) => {
+        if (e.target.id === "modalBackdrop") closeModal();
+      });
+
+      loadKpis();
+    </script>
+  </body>
+  </html>
+  `);
+});
+
+app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
+  const { responsibleId, kpiId } = req.params;
+
+  res.send(`
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Edit KPI</title>
+    <style>
+      body {
+        font-family: Inter, Arial, sans-serif;
+        margin: 0;
+        background: #f6f8fc;
+        padding: 24px;
+      }
+      .card {
+        max-width: 900px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 22px;
+        padding: 24px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+      }
+      h1 { margin-top: 0; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0,1fr));
+        gap: 14px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .full { grid-column: 1 / -1; }
+      label { font-weight: 700; font-size: 13px; }
+      input, textarea {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid #dbe3ee;
+      }
+      textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 20px;
+      }
+      button {
+        border: none;
+        border-radius: 12px;
+        padding: 12px 16px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .primary {
+        background: #2563eb;
+        color: white;
+      }
+      .soft {
+        background: #e2e8f0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Edit KPI</h1>
+
+      <div class="grid">
+        <div class="field">
+          <label>Indicator Title</label>
+          <input id="indicator_title" />
+        </div>
+
+        <div class="field">
+          <label>Indicator Subtitle</label>
+          <input id="indicator_sub_title" />
+        </div>
+
+        <div class="field">
+          <label>Unit</label>
+          <input id="unit" />
+        </div>
+
+        <div class="field">
+          <label>Subject</label>
+          <input id="subject" />
+        </div>
+
+        <div class="field full">
+          <label>Definition</label>
+          <textarea id="definition"></textarea>
+        </div>
+
+        <div class="field">
+          <label>Frequency</label>
+          <input id="frequency" />
+        </div>
+
+        <div class="field">
+          <label>Target</label>
+          <input id="target" />
+        </div>
+
+        <div class="field">
+          <label>Tolerance Type</label>
+          <input id="tolerance_type" />
+        </div>
+
+        <div class="field">
+          <label>Up Tolerance</label>
+          <input id="up_tolerance" />
+        </div>
+
+        <div class="field">
+          <label>Low Tolerance</label>
+          <input id="low_tolerance" />
+        </div>
+
+        <div class="field">
+          <label>Max</label>
+          <input id="max" />
+        </div>
+
+        <div class="field">
+          <label>Min</label>
+          <input id="min" />
+        </div>
+
+        <div class="field">
+          <label>Calculation On</label>
+          <input id="calculation_on" />
+        </div>
+
+        <div class="field">
+          <label>Target Auto Adjustment</label>
+          <input id="target_auto_adjustment" />
+        </div>
+
+        <div class="field">
+          <label>High Limit</label>
+          <input id="high_limit" type="number" step="any" />
+        </div>
+
+        <div class="field">
+          <label>Low Limit</label>
+          <input id="low_limit" type="number" step="any" />
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="soft" onclick="goBack()">Back</button>
+        <button class="primary" onclick="saveKpi()">Save KPI</button>
+      </div>
+    </div>
+
+    <script>
+      const responsibleId = "${responsibleId}";
+      const kpiId = "${kpiId}";
+
+      async function loadKpi() {
+        const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId);
+        const data = await res.json();
+
+        document.getElementById("indicator_title").value = data.indicator_title || "";
+        document.getElementById("indicator_sub_title").value = data.indicator_sub_title || "";
+        document.getElementById("unit").value = data.unit || "";
+        document.getElementById("subject").value = data.subject || "";
+        document.getElementById("definition").value = data.definition || "";
+        document.getElementById("frequency").value = data.frequency || "";
+        document.getElementById("target").value = data.target || "";
+        document.getElementById("tolerance_type").value = data.tolerance_type || "";
+        document.getElementById("up_tolerance").value = data.up_tolerance || "";
+        document.getElementById("low_tolerance").value = data.low_tolerance || "";
+        document.getElementById("max").value = data.max || "";
+        document.getElementById("min").value = data.min || "";
+        document.getElementById("calculation_on").value = data.calculation_on || "";
+        document.getElementById("target_auto_adjustment").value = data.target_auto_adjustment || "";
+        document.getElementById("high_limit").value = data.high_limit || "";
+        document.getElementById("low_limit").value = data.low_limit || "";
+      }
+
+      async function saveKpi() {
+        const payload = {
+          indicator_title: document.getElementById("indicator_title").value,
+          indicator_sub_title: document.getElementById("indicator_sub_title").value,
+          unit: document.getElementById("unit").value,
+          subject: document.getElementById("subject").value,
+          definition: document.getElementById("definition").value,
+          frequency: document.getElementById("frequency").value,
+          target: document.getElementById("target").value,
+          tolerance_type: document.getElementById("tolerance_type").value,
+          up_tolerance: document.getElementById("up_tolerance").value,
+          low_tolerance: document.getElementById("low_tolerance").value,
+          max: document.getElementById("max").value,
+          min: document.getElementById("min").value,
+          calculation_on: document.getElementById("calculation_on").value,
+          target_auto_adjustment: document.getElementById("target_auto_adjustment").value,
+          high_limit: document.getElementById("high_limit").value || null,
+          low_limit: document.getElementById("low_limit").value || null
+        };
+
+        const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (res.ok) {
+          window.location.href = '/responsible/' + responsibleId + '/dashboard';
+        } else {
+          alert("Save failed");
+        }
+      }
+
+      function goBack() {
+        window.location.href = '/responsible/' + responsibleId + '/dashboard';
+      }
+
+      loadKpi();
+    </script>
+  </body>
+  </html>
+  `);
+});
 
 cron.schedule('34 09 * * 1', async () => {
   console.log(`[CRON] Running KPI week update â€” ${new Date().toISOString()}`);
@@ -6572,23 +10099,23 @@ app.get("/dashboard", async (req, res) => {
                   <div class="metric-value ${actualValueClass}">${escapeHtml(formatDashboardMetricValue(currentValue, kpi.unit))}</div>
                 </div>
                 ${targetValue !== null
-                  ? `<div class="metric-card">
+              ? `<div class="metric-card">
                       <div class="metric-label">Target</div>
                       <div class="metric-value good">${escapeHtml(formatDashboardMetricValue(targetValue, kpi.unit))}</div>
                     </div>`
-                  : ""}
+              : ""}
                 ${highLimit !== null
-                  ? `<div class="metric-card">
+              ? `<div class="metric-card">
                       <div class="metric-label">High Limit</div>
                       <div class="metric-value warn">${escapeHtml(formatDashboardMetricValue(highLimit, kpi.unit))}</div>
                     </div>`
-                  : ""}
+              : ""}
                 ${lowLimit !== null
-                  ? `<div class="metric-card">
+              ? `<div class="metric-card">
                       <div class="metric-label">Low Limit</div>
                       <div class="metric-value bad">${escapeHtml(formatDashboardMetricValue(lowLimit, kpi.unit))}</div>
                     </div>`
-                  : ""}
+              : ""}
               </div>
               <div class="kpi-footer">
                 <div>Last updated: ${escapeHtml(formatDashboardTimestamp(kpi.updated_at))}</div>
