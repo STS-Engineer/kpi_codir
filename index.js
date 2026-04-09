@@ -925,11 +925,11 @@ app.get("/kpi-admin", async (req, res) => {
         <div class="section-title">Identity</div>
         <div class="form-grid">
           <div class="field">
-            <label>Indicator Title</label>
+            <label>Category</label>
             <input id="indicator_title" />
           </div>
           <div class="field">
-            <label>Indicator Subtitle</label>
+            <label>KPI</label>
             <input id="indicator_sub_title" />
           </div>
           <div class="field">
@@ -2735,6 +2735,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
          </p>
           </div>
 
+            <div class="hero-badge">
+              <span>Responsible</span>
+              <strong>#${responsibleId}</strong>
+            </div>
           </div>
         </div>
 
@@ -2801,12 +2805,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           <div class="section-title">Identity</div>
           <div class="form-grid">
             <div class="field">
-              <label>Indicator Title</label>
+              <label>Category</label>
               <input id="indicator_title" />
             </div>
 
             <div class="field">
-              <label>Indicator Subtitle</label>
+              <label>KPI</label>
               <input id="indicator_sub_title" />
             </div>
 
@@ -3395,12 +3399,12 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
 
       <div class="grid">
         <div class="field">
-          <label>Indicator Title</label>
+          <label>Category</label>
           <input id="indicator_title" />
         </div>
 
         <div class="field">
-          <label>Indicator Subtitle</label>
+          <label>KPI</label>
           <input id="indicator_sub_title" />
         </div>
 
