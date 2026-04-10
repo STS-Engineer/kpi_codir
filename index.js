@@ -23,6 +23,80 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+const NUMERIC_TEXT_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+
+const createHttpError = (statusCode, message) => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+};
+
+const normalizeOptionalTextInput = (value) => {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text === "" ? null : text;
+};
+
+const normalizeOptionalNumericInput = (value, { allowPercent = false } = {}) => {
+  const text = normalizeOptionalTextInput(value);
+  if (text === null) return null;
+
+  let normalized = text.replace(/\s+/g, "").replace(/,/g, ".");
+  if (allowPercent && normalized.endsWith("%")) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  return NUMERIC_TEXT_PATTERN.test(normalized) ? normalized : null;
+};
+
+const prepareKpiWritePayload = (payload = {}) => {
+  const rawUpTolerance = normalizeOptionalTextInput(payload.up_tolerance);
+  const rawLowTolerance = normalizeOptionalTextInput(payload.low_tolerance);
+  const rawHighLimit = normalizeOptionalTextInput(payload.high_limit);
+  const rawLowLimit = normalizeOptionalTextInput(payload.low_limit);
+
+  const upTolerance = normalizeOptionalNumericInput(rawUpTolerance, { allowPercent: true });
+  const lowTolerance = normalizeOptionalNumericInput(rawLowTolerance, { allowPercent: true });
+  const highLimit = normalizeOptionalNumericInput(rawHighLimit);
+  const lowLimit = normalizeOptionalNumericInput(rawLowLimit);
+
+  if (rawUpTolerance !== null && upTolerance === null) {
+    throw createHttpError(400, 'Up tolerance must be numeric. Use values like "100" or "100%".');
+  }
+
+  if (rawLowTolerance !== null && lowTolerance === null) {
+    throw createHttpError(400, 'Low tolerance must be numeric. Use values like "60" or "60%".');
+  }
+
+  if (rawHighLimit !== null && highLimit === null) {
+    throw createHttpError(400, "High limit must be numeric.");
+  }
+
+  if (rawLowLimit !== null && lowLimit === null) {
+    throw createHttpError(400, "Low limit must be numeric.");
+  }
+
+  return {
+    indicator_title: normalizeOptionalTextInput(payload.indicator_title),
+    indicator_sub_title: normalizeOptionalTextInput(payload.indicator_sub_title),
+    unit: normalizeOptionalTextInput(payload.unit),
+    subject: normalizeOptionalTextInput(payload.subject),
+    definition: normalizeOptionalTextInput(payload.definition),
+    frequency: normalizeOptionalTextInput(payload.frequency),
+    target: normalizeOptionalTextInput(payload.target),
+    target_direction: normalizeOptionalTextInput(payload.target_direction),
+    tolerance_type: normalizeOptionalTextInput(payload.tolerance_type),
+    up_tolerance: upTolerance,
+    low_tolerance: lowTolerance,
+    max: normalizeOptionalTextInput(payload.max),
+    min: normalizeOptionalTextInput(payload.min),
+    calculation_on: normalizeOptionalTextInput(payload.calculation_on),
+    target_auto_adjustment: normalizeOptionalTextInput(payload.target_auto_adjustment),
+    high_limit: highLimit === null ? null : Number(highLimit),
+    low_limit: lowLimit === null ? null : Number(lowLimit)
+  };
+};
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -111,7 +185,7 @@ app.post("/api/kpis", async (req, res) => {
       target_auto_adjustment,
       high_limit,
       low_limit
-    } = req.body;
+    } = prepareKpiWritePayload(req.body);
 
     const result = await pool.query(
       `
@@ -139,29 +213,29 @@ app.post("/api/kpis", async (req, res) => {
       RETURNING *;
       `,
       [
-        indicator_title || null,
-        indicator_sub_title || null,
-        unit || null,
-        subject || null,
-        definition || null,
-        frequency || null,
-        target || null,
-        tolerance_type || null,
-        up_tolerance || null,
-        low_tolerance || null,
-        max || null,
-        min || null,
-        calculation_on || null,
-        target_auto_adjustment || null,
-        high_limit || null,
-        low_limit || null
+        indicator_title,
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        high_limit,
+        low_limit
       ]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error("POST /api/kpis error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : "Failed to create KPI" });
   }
 });
 
@@ -185,7 +259,7 @@ app.put("/api/kpis/:id", async (req, res) => {
       target_auto_adjustment,
       high_limit,
       low_limit
-    } = req.body;
+    } = prepareKpiWritePayload(req.body);
 
     const result = await pool.query(
       `
@@ -211,22 +285,22 @@ app.put("/api/kpis/:id", async (req, res) => {
       RETURNING *;
       `,
       [
-        indicator_title || null,
-        indicator_sub_title || null,
-        unit || null,
-        subject || null,
-        definition || null,
-        frequency || null,
-        target || null,
-        tolerance_type || null,
-        up_tolerance || null,
-        low_tolerance || null,
-        max || null,
-        min || null,
-        calculation_on || null,
-        target_auto_adjustment || null,
-        high_limit || null,
-        low_limit || null,
+        indicator_title,
+        indicator_sub_title,
+        unit,
+        subject,
+        definition,
+        frequency,
+        target,
+        tolerance_type,
+        up_tolerance,
+        low_tolerance,
+        max,
+        min,
+        calculation_on,
+        target_auto_adjustment,
+        high_limit,
+        low_limit,
         req.params.id
       ]
     );
@@ -238,7 +312,7 @@ app.put("/api/kpis/:id", async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     console.error("PUT /api/kpis/:id error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : "Failed to update KPI" });
   }
 });
 
@@ -1235,6 +1309,15 @@ app.get("/kpi-admin", async (req, res) => {
         document.getElementById("drawer").classList.remove("open");
       }
 
+      function formatToleranceForInput(value, toleranceType) {
+        if (value === null || value === undefined || value === "") return "";
+        const text = String(value).trim();
+        if (!text) return "";
+        return String(toleranceType || "").trim().toLowerCase() === "relative" && !text.includes("%")
+          ? text + "%"
+          : text;
+      }
+
       function resetForm() {
         const fields = [
           "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
@@ -1259,6 +1342,9 @@ app.get("/kpi-admin", async (req, res) => {
           const el = document.getElementById(id);
           if (el) el.value = data[id] ?? "";
         });
+
+        document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
+        document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
       }
 
       function openNewDrawer() {
@@ -1316,7 +1402,8 @@ app.get("/kpi-admin", async (req, res) => {
           });
 
           if (!res.ok) {
-            showToast("Save failed");
+            const errorData = await res.json().catch(() => null);
+            showToast(errorData?.error || "Save failed");
             return;
           }
 
@@ -1422,25 +1509,25 @@ app.get("/api/responsibles/:responsibleId/kpi-graphs", async (req, res) => {
     const responsibleName = result1.rows[0]?.name || "Unknown";
 
 
-const grouped = {};
+    const grouped = {};
 
-for (const row of result.rows) {
-  if (!grouped[row.kpi_id]) {
-    grouped[row.kpi_id] = {
-      kpi_id: row.kpi_id,
-      indicator_title: row.indicator_title,
-      indicator_sub_title: row.indicator_sub_title,
-      labels: [],
-      values: [],
-      targetValue: row.target !== null ? Number(row.target) : null,
-      highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
-      lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null
-    };
-  }
+    for (const row of result.rows) {
+      if (!grouped[row.kpi_id]) {
+        grouped[row.kpi_id] = {
+          kpi_id: row.kpi_id,
+          indicator_title: row.indicator_title,
+          indicator_sub_title: row.indicator_sub_title,
+          labels: [],
+          values: [],
+          targetValue: row.target !== null ? Number(row.target) : null,
+          highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
+          lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null
+        };
+      }
 
-  grouped[row.kpi_id].labels.push(row.month_label);
-  grouped[row.kpi_id].values.push(Number(row.new_value_num) || 0);
-}
+      grouped[row.kpi_id].labels.push(row.month_label);
+      grouped[row.kpi_id].values.push(Number(row.new_value_num) || 0);
+    }
 
     res.json(Object.values(grouped));
   } catch (error) {
@@ -1451,55 +1538,56 @@ for (const row of result.rows) {
 
 app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   const { responsibleId } = req.params;
-
-  const {
-    indicator_title,
-    indicator_sub_title,
-    unit,
-    subject,
-    definition,
-    frequency,
-    target,
-    tolerance_type,
-    up_tolerance,
-    low_tolerance,
-    max,
-    min,
-    calculation_on,
-    target_auto_adjustment,
-    high_limit,
-    low_limit
-  } = req.body;
-
-  const client = await pool.connect();
+  let client;
 
   try {
+    const {
+      indicator_title,
+      indicator_sub_title,
+      unit,
+      subject,
+      definition,
+      frequency,
+      target,
+      tolerance_type,
+      up_tolerance,
+      low_tolerance,
+      max,
+      min,
+      calculation_on,
+      target_auto_adjustment,
+      high_limit,
+      low_limit
+    } = prepareKpiWritePayload(req.body);
+
+    client = await pool.connect();
     await client.query("BEGIN");
 
     const insertKpi = await client.query(
       `
-      INSERT INTO public."Kpi" (
-        indicator_sub_title,
-        unit,
-        subject,
-        definition,
-        frequency,
-        target,
-        tolerance_type,
-        up_tolerance,
-        low_tolerance,
-        max,
-        min,
-        calculation_on,
-        target_auto_adjustment,
-        indicator_title,
-        high_limit,
-        low_limit
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, $15, $16
-      )
+  INSERT INTO public."Kpi" (
+  indicator_sub_title,
+  unit,
+  subject,
+  definition,
+  frequency,
+  target,
+  target_direction,
+  tolerance_type,
+  up_tolerance,
+  low_tolerance,
+  max,
+  min,
+  calculation_on,
+  target_auto_adjustment,
+  indicator_title,
+  high_limit,
+  low_limit
+)
+VALUES (
+  $1, $2, $3, $4, $5, $6, $7, $8,
+  $9, $10, $11, $12, $13, $14, $15, $16, $17
+)
       RETURNING *
       `,
       [
@@ -1542,11 +1630,15 @@ app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
 
     res.status(201).json(newKpi);
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (client) {
+      await client.query("ROLLBACK").catch(() => { });
+    }
     console.error(error);
-    res.status(500).json({ error: "Failed to create KPI" });
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "Failed to create KPI" });
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 });
 
@@ -1567,6 +1659,7 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
           k.definition,
           k.frequency,
           k.target,
+          k.target_direction,
           k.tolerance_type,
           k.up_tolerance,
           k.low_tolerance,
@@ -1648,26 +1741,27 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
   const { responsibleId, kpiId } = req.params;
 
-  const {
-    indicator_title,
-    indicator_sub_title,
-    unit,
-    subject,
-    definition,
-    frequency,
-    target,
-    tolerance_type,
-    up_tolerance,
-    low_tolerance,
-    max,
-    min,
-    calculation_on,
-    target_auto_adjustment,
-    high_limit,
-    low_limit
-  } = req.body;
-
   try {
+    const {
+      indicator_title,
+      indicator_sub_title,
+      unit,
+      subject,
+      definition,
+      frequency,
+      target_direction,
+      target,
+      tolerance_type,
+      up_tolerance,
+      low_tolerance,
+      max,
+      min,
+      calculation_on,
+      target_auto_adjustment,
+      high_limit,
+      low_limit
+    } = prepareKpiWritePayload(req.body);
+
     const result = await pool.query(
       `
       UPDATE public."Kpi" k
@@ -1679,19 +1773,20 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
           definition = $5,
           frequency = $6,
           target = $7,
-          tolerance_type = $8,
-          up_tolerance = $9,
-          low_tolerance = $10,
-          max = $11,
-          min = $12,
-          calculation_on = $13,
-          target_auto_adjustment = $14,
-          high_limit = $15,
-          low_limit = $16
+          target_direction = $8,
+          tolerance_type = $9,
+          up_tolerance = $10,
+          low_tolerance = $11,
+          max = $12,
+          min = $13,
+          calculation_on = $14,
+          target_auto_adjustment = $15,
+          high_limit = $16,
+          low_limit = $17
       FROM public.kpi_values kv
       WHERE k.kpi_id = kv.kpi_id
-        AND k.kpi_id = $17
-        AND kv.responsible_id = $18
+        AND k.kpi_id = $18
+        AND kv.responsible_id = $19
       RETURNING k.*
       `,
       [
@@ -1701,6 +1796,7 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
         subject,
         definition,
         frequency,
+        target_direction,
         target,
         tolerance_type,
         up_tolerance,
@@ -1723,7 +1819,7 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Failed to update KPI" });
+    res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "Failed to update KPI" });
   }
 });
 
@@ -1839,12 +1935,12 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
 
 app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   const { responsibleId } = req.params;
-    const responsibleResult = await pool.query(
-      `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
-      [responsibleId]
-    );
+  const responsibleResult = await pool.query(
+    `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
+    [responsibleId]
+  );
 
-    const responsibleName = responsibleResult.rows[0]?.name || "Unknown";
+  const responsibleName = responsibleResult.rows[0]?.name || "Unknown";
   res.send(`
   <!DOCTYPE html>
   <html lang="en">
@@ -2734,6 +2830,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           Track, maintain and optimize your KPI portfolio with a cleaner, more professional interface.
          </p>
           </div>
+
+            <div class="hero-badge">
+              <span>Responsible</span>
+              <strong>#${responsibleId}</strong>
+            </div>
           </div>
         </div>
 
@@ -3177,6 +3278,15 @@ chartsGrid.innerHTML = rows.map((row, index) =>
         });
       }
 
+      function formatToleranceForInput(value, toleranceType) {
+        if (value === null || value === undefined || value === "") return "";
+        const text = String(value).trim();
+        if (!text) return "";
+        return String(toleranceType || "").trim().toLowerCase() === "relative" && !text.includes("%")
+          ? text + "%"
+          : text;
+      }
+
       function fillForm(data) {
         [
           "kpi_id",
@@ -3200,6 +3310,9 @@ chartsGrid.innerHTML = rows.map((row, index) =>
           const el = document.getElementById(id);
           if (el) el.value = data[id] ?? "";
         });
+
+        document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
+        document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
       }
 
       function openCreateModal() {
@@ -3260,7 +3373,8 @@ chartsGrid.innerHTML = rows.map((row, index) =>
           });
 
           if (!res.ok) {
-            showToast("Save failed");
+            const errorData = await res.json().catch(() => null);
+            showToast(errorData?.error || "Save failed");
             return;
           }
 
@@ -3484,6 +3598,15 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
       const responsibleId = "${responsibleId}";
       const kpiId = "${kpiId}";
 
+      function formatToleranceForInput(value, toleranceType) {
+        if (value === null || value === undefined || value === "") return "";
+        const text = String(value).trim();
+        if (!text) return "";
+        return String(toleranceType || "").trim().toLowerCase() === "relative" && !text.includes("%")
+          ? text + "%"
+          : text;
+      }
+
       async function loadKpi() {
         const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId);
         const data = await res.json();
@@ -3496,8 +3619,8 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
         document.getElementById("frequency").value = data.frequency || "";
         document.getElementById("target").value = data.target || "";
         document.getElementById("tolerance_type").value = data.tolerance_type || "";
-        document.getElementById("up_tolerance").value = data.up_tolerance || "";
-        document.getElementById("low_tolerance").value = data.low_tolerance || "";
+        document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
+        document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
         document.getElementById("max").value = data.max || "";
         document.getElementById("min").value = data.min || "";
         document.getElementById("calculation_on").value = data.calculation_on || "";
@@ -3535,7 +3658,8 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
         if (res.ok) {
           window.location.href = '/responsible/' + responsibleId + '/dashboard';
         } else {
-          alert("Save failed");
+          const errorData = await res.json().catch(() => null);
+          alert(errorData?.error || "Save failed");
         }
       }
 
@@ -3650,8 +3774,102 @@ const getKpiBounds = (lowLimit, highLimit) => {
   };
 };
 
+const getReadableThresholdLineValues = (lowLimit, target, highLimit) => {
+  const low = parseMetricNumber(lowLimit);
+  const targetValue = parseMetricNumber(target);
+  const high = parseMetricNumber(highLimit);
+
+  const entries = [
+    low !== null ? { key: "low", value: low, priority: 0 } : null,
+    targetValue !== null ? { key: "target", value: targetValue, priority: 1 } : null,
+    high !== null ? { key: "high", value: high, priority: 2 } : null
+  ].filter(Boolean);
+
+  if (entries.length < 2) {
+    return {
+      low,
+      target: targetValue,
+      high,
+      displayLow: low,
+      displayTarget: targetValue,
+      displayHigh: high,
+      hasTightCluster: false,
+      actualBand: 0,
+      desiredGap: 0
+    };
+  }
+
+  const sortedEntries = [...entries].sort((a, b) =>
+    a.value === b.value ? a.priority - b.priority : a.value - b.value
+  );
+
+  const actualBand =
+    sortedEntries[sortedEntries.length - 1].value - sortedEntries[0].value;
+  const magnitude = Math.max(...sortedEntries.map((entry) => Math.abs(entry.value)), 1);
+  const desiredGap = Number(
+    Math.min(Math.max(0.25, magnitude * 0.04), 6).toFixed(4)
+  );
+  const minGap = sortedEntries.slice(1).reduce((currentMin, entry, index) => {
+    const previous = sortedEntries[index];
+    return Math.min(currentMin, entry.value - previous.value);
+  }, Number.POSITIVE_INFINITY);
+
+  const hasTightCluster =
+    minGap < desiredGap ||
+    actualBand < desiredGap * (sortedEntries.length - 1);
+
+  if (!hasTightCluster) {
+    return {
+      low,
+      target: targetValue,
+      high,
+      displayLow: low,
+      displayTarget: targetValue,
+      displayHigh: high,
+      hasTightCluster: false,
+      actualBand,
+      desiredGap
+    };
+  }
+
+  let displaySorted;
+  const targetIndex = sortedEntries.findIndex((entry) => entry.key === "target");
+
+  if (targetIndex >= 0) {
+    const anchor = sortedEntries[targetIndex].value;
+    displaySorted = sortedEntries.map((entry, index) =>
+      Number((anchor + ((index - targetIndex) * desiredGap)).toFixed(4))
+    );
+  } else {
+    const center =
+      (sortedEntries[0].value + sortedEntries[sortedEntries.length - 1].value) / 2;
+    const start = center - (((sortedEntries.length - 1) * desiredGap) / 2);
+    displaySorted = sortedEntries.map((entry, index) =>
+      Number((start + (index * desiredGap)).toFixed(4))
+    );
+  }
+
+  const displayMap = {};
+  sortedEntries.forEach((entry, index) => {
+    displayMap[entry.key] = displaySorted[index];
+  });
+
+  return {
+    low,
+    target: targetValue,
+    high,
+    displayLow: displayMap.low ?? low,
+    displayTarget: displayMap.target ?? targetValue,
+    displayHigh: displayMap.high ?? high,
+    hasTightCluster: true,
+    actualBand,
+    desiredGap
+  };
+};
+
 const inferKpiDirection = (kpi = {}) => {
   const explicitDirection = normalizeKpiDirection(
+    kpi.target_direction ||
     kpi.good_direction ||
     kpi.goodDirection ||
     kpi.direction ||
@@ -4562,67 +4780,26 @@ const generateKpiAssistantReply = async ({
     knowledgeBaseContext
   });
 
-  if (isFastKpiAssistantRequest({
-    message,
-    selectedKpi,
-    knowledgeBaseContext
-  })) {
-    return fastLocalReply;
-  }
+  // if (isFastKpiAssistantRequest({
+  //   message,
+  //   selectedKpi,
+  //   knowledgeBaseContext
+  // })) {
+  //   return fastLocalReply;
+  // }
 
   const promptKpiContext = selectedKpi ? [selectedKpi] : assistantKpis.slice(0, 8);
   const promptKnowledgeMatches = (knowledgeBaseContext.matches || []).slice(0, 3);
   const promptKnowledgeRelated = (knowledgeBaseContext.related || []).slice(0, 2);
 
   const prompt = `
-You are an AI support assistant for manufacturing teams.
-
-You support two grounded use cases:
-1. KPI form interpretation from the page context.
-2. Estimating and quotation delay diagnosis from the local knowledge base.
-
-RULES
-- Base your answer only on the grounded context below and the user question.
-- If a KPI is selected, your answer must be dedicated to that KPI first. Do not give a generic all-KPI answer.
-- Start from the selected KPI facts: current value, target, threshold position, and corrective-action status if available.
-- Distinguish clearly between confirmed KPI facts and delay-related hypotheses.
-- Only connect knowledge-base nodes that could plausibly influence the selected KPI.
-- If the selected KPI is not itself a quote-delay KPI, explain the causal path briefly, for example "late quote release can reduce business take".
-- Use the KPI-specific relevance notes below when explaining why a node matters for this KPI.
-- If the user asks about RFQ, quotation, costing delay, supplier quotes, rework, priorities, backlog, should-cost, owners, or quote OTD, rely on the knowledge base matches first.
-- Mention node IDs when you use knowledge base entries, for example P003 or S004.
-- Prefer concrete actions, evidence to collect, metrics, owner functions, and linked nodes when helpful.
-- If the knowledge base match is weak or incomplete, say that clearly instead of inventing facts.
-- If data is missing, say that clearly instead of inventing values.
-- Give practical manufacturing-oriented guidance.
-- Keep the answer concise and easy to act on.
-- Ignore unrelated KPI cards unless the user explicitly asks for comparison.
-
-RESPONSE SHAPE
-- If a KPI is selected, structure the answer around that KPI.
-- Prefer this flow: KPI status, likely delay-related drivers from the knowledge base if relevant, recommended actions, owners, metrics.
-- When listing KB nodes, explain each node's KPI-specific impact in one sentence.
-
-DELAY KNOWLEDGE BASE OVERVIEW
-${JSON.stringify(knowledgeBaseContext.overview, null, 2)}
-
-DELAY KNOWLEDGE BASE MATCHES
-${JSON.stringify(promptKnowledgeMatches, null, 2)}
-
-DELAY KNOWLEDGE BASE RELATED NODES
-${JSON.stringify(promptKnowledgeRelated, null, 2)}
-
-KNOWLEDGE BASE SEARCH DIAGNOSTICS
-${JSON.stringify(knowledgeBaseContext.diagnostics, null, 2)}
-
-KNOWLEDGE BASE SEARCH QUERY
-${knowledgeBaseQuery}
-
-PAGE CONTEXT
-- Responsible: ${responsible?.name || "N/A"}
-- Plant: ${responsible?.plant_name || "N/A"}
-- Department: ${responsible?.department_name || "N/A"}
-- Week: ${week || "N/A"}
+CONFIRMED PAGE CONTEXT
+${JSON.stringify({
+    responsible: responsible?.name || null,
+    plant: responsible?.plant_name || null,
+    department: responsible?.department_name || null,
+    week: week || null
+  }, null, 2)}
 
 SELECTED KPI
 ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
@@ -4630,18 +4807,21 @@ ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
 SELECTED KPI SUMMARY
 ${JSON.stringify(selectedKpiSummary, null, 2)}
 
-SELECTED KPI DELAY-KB FOCUS
-${JSON.stringify(selectedKpiDelayFocus, null, 2)}
+MATCHED KNOWLEDGE BASE NODES
+${JSON.stringify(promptKnowledgeMatches, null, 2)}
 
-SELECTED KPI KB PRIORITIES
-${JSON.stringify(knowledgeBaseContext.kpi_specific_focus, null, 2)}
-
-KPI CONTEXT FOR PROMPT
-${JSON.stringify(promptKpiContext, null, 2)}
+RELATED KNOWLEDGE BASE NODES
+${JSON.stringify(promptKnowledgeRelated, null, 2)}
 
 USER QUESTION
 ${message}
-`;
+
+IMPORTANT
+- Use only the nodes above
+- Do not invent causes, actions, owners, metrics, or evidence
+- Do not add sections outside the required format
+- If support is insufficient, say so explicitly
+`.trim();
 
   let openai = null;
   try {
@@ -4655,19 +4835,119 @@ ${message}
   }
 
   try {
+
+    const systemPrompt = `
+You are an AI support assistant that must answer only from the provided knowledge base nodes.
+
+RULES
+- Use only the matched node content.
+- Do not invent extra causes, actions, metrics, owners, links, tags, or explanations.
+- Do not summarize outside the node fields.
+- If one node is selected, format the answer using that node only.
+- Display all available points from the node when they exist.
+- Show each section only if that field exists and is not empty.
+- Keep the answer structured, clear, and easy to scan.
+- Do not output JSON.
+
+WORKFLOW
+- If the user asks for one point such as Description, Symptoms, Key questions, Required data, Root cause hypotheses, Priority actions, Metrics to monitor, Linked nodes, Collaboration, or Tags, answer only that point.
+- If the user asks for Conclusion, generate a full structured final response that includes all of these sections together:
+  1. Description
+  2. Symptoms
+  3. Key questions
+  4. Required data
+  5. Root cause hypotheses
+  6. Priority actions
+  7. Metrics to monitor
+  8. Linked nodes
+  9. Collaboration
+  10. Tags
+- Do not return the suggested analysis points list when the user asks for Conclusion.
+- Do not ask the user to choose another point after Conclusion.
+- Do not add any extra intro or outro text.
+
+POINT-BY-POINT RESPONSE FORMAT
+Description:
+- [description]
+
+Symptoms:
+- [symptoms]
+
+Key questions:
+- [questions]
+
+Required data:
+- [evidence_to_collect]
+
+Root cause hypotheses:
+- [root_cause_hypotheses]
+
+Priority actions:
+- [actions]
+
+Metrics to monitor:
+- [metrics]
+
+Linked nodes:
+- [target_node_id] -> [relation_type] -> [relation_label.en]
+
+Collaboration:
+- Owner function: [collaboration.owner_function]
+- Participants: [collaboration.participants]
+- Decision needed: [collaboration.decision_needed]
+- Workshop prompt: [collaboration.workshop_prompt]
+
+Tags:
+- [tags]
+
+CONCLUSION RESPONSE FORMAT
+Description:
+- [description]
+
+Symptoms:
+- [symptoms]
+
+Key questions:
+- [questions]
+
+Required data:
+- [evidence_to_collect]
+
+Root cause hypotheses:
+- [root_cause_hypotheses]
+
+Priority actions:
+- [actions]
+
+Metrics to monitor:
+- [metrics]
+
+Linked nodes:
+- [target_node_id] -> [relation_type] -> [relation_label.en]
+
+Collaboration:
+- Owner function: [collaboration.owner_function]
+- Participants: [collaboration.participants]
+- Decision needed: [collaboration.decision_needed]
+- Workshop prompt: [collaboration.workshop_prompt]
+
+Tags:
+- [tags]
+`.trim();
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "You are a concise, grounded manufacturing support assistant."
+          content: systemPrompt
         },
         {
           role: "user",
           content: prompt
         }
       ],
-      temperature: 0.2,
+      temperature: 0.1,
       max_tokens: 450
     });
 
@@ -8556,44 +8836,70 @@ function syncDomFromStore(kvId) {
           const assistantForm = document.getElementById("assistantForm");
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
-          const assistantState = { selectedKpiId: null, booted: false, pending: false, greetingKey: null };
+          const assistantState = {
+         selectedKpiId: null,
+         booted: false,
+         pending: false,
+         greetingKey: null,
+         selectedPoints: [],
+         availablePoints: [
+          "Description",
+          "Symptoms",
+          "Key questions",
+          "Required data",
+          "Root cause hypotheses",
+          "Priority actions",
+          "Metrics to monitor",
+          "Linked nodes",
+          "Collaboration",
+          "Tags"
+         ]
+         };
 
-         function addAssistantMessage(role, text) {
-  if (!assistantMessages) return;
-
-  const msg = document.createElement("div");
-  msg.className = "assistant-message " + role;
-  assistantMessages.appendChild(msg);
-  assistantMessages.scrollTop = assistantMessages.scrollHeight;
-
-  const safeText = String(text || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  if (role !== "assistant") {
-    msg.innerHTML = safeText.split("\\n").join("<br>");
-    assistantMessages.scrollTop = assistantMessages.scrollHeight;
-    return;
-  }
-
-  let i = 0;
-  const typingSpeed = 16;
-
-  function typeNext() {
-    const partial = safeText.slice(0, i).split("\\n").join("<br>");
-    msg.innerHTML = partial + '<span class="assistant-cursor">|</span>';
-    assistantMessages.scrollTop = assistantMessages.scrollHeight;
-
-    if (i < safeText.length) {
-      i++;
-      setTimeout(typeNext, typingSpeed);
-    } else {
-      msg.innerHTML = safeText.split("\\n").join("<br>");
+          function addAssistantMessage(role, text) {
+  return new Promise((resolve) => {
+    if (!assistantMessages) {
+      resolve();
+      return;
     }
-  }
 
-  typeNext();
+    const msg = document.createElement("div");
+    msg.className = "assistant-message " + role;
+    assistantMessages.appendChild(msg);
+    assistantMessages.scrollTop = assistantMessages.scrollHeight;
+
+    const safeText = String(text || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    if (role !== "assistant" || safeText.length > 400) {
+      msg.innerHTML = safeText.split("\\n").join("<br>");
+      assistantMessages.scrollTop = assistantMessages.scrollHeight;
+      resolve();
+      return;
+    }
+
+    let i = 0;
+    const typingSpeed = 5;
+
+    function typeNext() {
+      const partial = safeText.slice(0, i).split("\\n").join("<br>");
+      msg.innerHTML = partial + '<span class="assistant-cursor">|</span>';
+      assistantMessages.scrollTop = assistantMessages.scrollHeight;
+
+      if (i < safeText.length) {
+        i++;
+        setTimeout(typeNext, typingSpeed);
+      } else {
+        msg.innerHTML = safeText.split("\\n").join("<br>");
+        assistantMessages.scrollTop = assistantMessages.scrollHeight;
+        resolve();
+      }
+    }
+
+    typeNext();
+  });
 }
           function setAssistantStatus(text) { if (assistantStatus) assistantStatus.textContent = text; }
           function getKpiCardById(kvId) { return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]'); }
@@ -8603,19 +8909,39 @@ function syncDomFromStore(kvId) {
             const subtitle = getTrimmedText(card.querySelector(".kpi-subtitle"));
             return subtitle && title ? (subtitle + " (" + title + ")") : (subtitle || title || "Selected KPI");
           }
-          function resetAssistantConversation() {
-            if (assistantMessages) assistantMessages.innerHTML = "";
-            assistantState.booted = false;
-            assistantState.greetingKey = null;
-          }
-          function buildAssistantGreeting() {
-            if (!assistantState.selectedKpiId) {
-              return "Hello! I can help with KPI context and with quotation or costing delay diagnosis based on the knowledge base. Ask about causes, actions, owners, metrics, or linked issues.";
-            }
-            const card = getKpiCardById(assistantState.selectedKpiId);
-            const kpiName = getAssistantKpiDisplayName(card);
-            return "Hello! I am focused on " + kpiName + ". I will analyze this KPI first and connect it to the estimating-delay knowledge base when relevant. Ask why it is off target, which KB nodes relate, what actions to take, and which owners or metrics to follow.";
-          }
+
+        function resetAssistantConversation() {
+          if (assistantMessages) assistantMessages.innerHTML = "";
+          assistantState.booted = false;
+          assistantState.greetingKey = null;
+          assistantState.selectedPoints = [];
+        }
+      function buildAssistantGreeting() {
+  if (!assistantState.selectedKpiId) {
+    return "Hello! I can help with KPI context and with quotation or costing delay diagnosis based on the knowledge base. Ask about causes, actions, owners, metrics, or linked issues.";
+  }
+
+  const card = getKpiCardById(assistantState.selectedKpiId);
+  const kpiName = getAssistantKpiDisplayName(card);
+
+  return [
+    "Focused on: " + kpiName,
+    "",
+    "Suggested analysis points:",
+    "1. Description",
+    "2. Symptoms",
+    "3. Key questions",
+    "4. Required data",
+    "5. Root cause hypotheses",
+    "6. Priority actions",
+    "7. Metrics to monitor",
+    "8. Linked nodes",
+    "9. Collaboration",
+    "10. Tags",
+    "",
+    "Please choose one point to continue."
+  ].join("\\n");
+}
           function syncAssistantInputPlaceholder() {
             if (!assistantInput) return;
             if (!assistantState.selectedKpiId) {
@@ -8664,38 +8990,85 @@ function syncDomFromStore(kvId) {
             setAssistantStatus("Focused on " + kpiName + ". This AI support is dedicated to this KPI and will use the knowledge base when relevant.");
           }
           window.openAssistantForKpi = openAssistantForKpi;
+          
 
-          async function sendAssistantPrompt(message) {
-            const cleanMessage = String(message || "").trim();
-            if (!cleanMessage || assistantState.pending) return;
-            assistantState.pending = true;
-            if (assistantSend) assistantSend.disabled = true;
-            addAssistantMessage("user", cleanMessage);
-            setAssistantStatus("Thinking...");
-            try {
-              const res = await fetch("/kpi-ai-assistant", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  responsible_id: "${responsible_id}",
-                  week: "${week}",
-                  selected_kpi_id: assistantState.selectedKpiId,
-                  kpis: collectAssistantKpis(),
-                  message: cleanMessage
-                })
-              });
-              const data = await res.json();
-              if (!res.ok) throw new Error(data.error || "Request failed");
-              addAssistantMessage("assistant", data.reply || "I could not generate a response.");
-              setAssistantStatus("AI assistant is ready.");
-            } catch (err) {
-              addAssistantMessage("assistant", "I could not answer right now. Please try again.");
-              setAssistantStatus("AI assistant is unavailable.");
-            } finally {
-              assistantState.pending = false;
-              if (assistantSend) assistantSend.disabled = false;
-            }
-          }
+
+  async function sendAssistantPrompt(message) {
+  let cleanMessage = String(message || "").trim();
+  const normalizedMessage = cleanMessage.toLowerCase();
+  if (
+   normalizedMessage === "conclusion" ||
+   normalizedMessage === "final conclusion" ||
+   normalizedMessage === "summary"
+  ) {
+   cleanMessage = "Conclusion";
+ }
+  if (!cleanMessage || assistantState.pending) return;
+
+  const numericChoice = parseInt(cleanMessage, 10);
+  if (!isNaN(numericChoice) && numericChoice >= 1 && numericChoice <= assistantState.availablePoints.length) {
+    cleanMessage = assistantState.availablePoints[numericChoice - 1];
+  }
+
+  if (!cleanMessage || assistantState.pending) return;
+
+  assistantState.pending = true;
+  if (assistantSend) assistantSend.disabled = true;
+
+  await addAssistantMessage("user", cleanMessage);
+  setAssistantStatus("Thinking...");
+
+  try {
+    const res = await fetch("/kpi-ai-assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        responsible_id: "${responsible_id}",
+        week: "${week}",
+        selected_kpi_id: assistantState.selectedKpiId,
+        kpis: collectAssistantKpis(),
+        message: cleanMessage
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Request failed");
+
+    await addAssistantMessage("assistant", data.reply || "I could not generate a response.");
+
+    if (!assistantState.selectedPoints.includes(cleanMessage)) {
+      assistantState.selectedPoints.push(cleanMessage);
+    }
+
+    const remainingPoints = assistantState.availablePoints.filter(
+      (point) => !assistantState.selectedPoints.includes(point)
+    );
+
+   if (cleanMessage === "Conclusion") {
+   await new Promise((resolve) => setTimeout(resolve, 250));
+
+   await addAssistantMessage(
+    "assistant",
+    "Do you need any other point to verify it?"
+    );
+  } else if (remainingPoints.length) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  await addAssistantMessage(
+    "assistant",
+    "Choose another point or type Conclusion to generate all points."
+    );
+  }
+
+    setAssistantStatus("AI assistant is ready.");
+  } catch (err) {
+    await addAssistantMessage("assistant", "I could not answer right now. Please try again.");
+    setAssistantStatus("AI assistant is unavailable.");
+  } finally {
+    assistantState.pending = false;
+    if (assistantSend) assistantSend.disabled = false;
+  }
+}
 
           if (assistantLauncher) assistantLauncher.addEventListener("click", () => {
             if (assistantShell.classList.contains("open")) {
@@ -10251,6 +10624,10 @@ const generateVerticalBarChart = (chartData) => {
     ? parseFloat(low_limit) : null;
   const cleanTarget = (target && target !== 'None' && target !== '' && !isNaN(parseFloat(target)))
     ? parseFloat(target) : null;
+  const thresholdLineValues = getReadableThresholdLineValues(cleanLow, cleanTarget, cleanHigh);
+  const displayHigh = thresholdLineValues.displayHigh;
+  const displayLow = thresholdLineValues.displayLow;
+  const displayTarget = thresholdLineValues.displayTarget;
 
   if (!data || data.length === 0 || data.every(v => v <= 0)) {
     return `<table border="0" cellpadding="20" cellspacing="0" width="100%"
@@ -10283,26 +10660,14 @@ const generateVerticalBarChart = (chartData) => {
   const pointColors = values.map(v => getDotColor(v, cleanLow, cleanHigh, resolvedDirection));
 
   const allVals = [...validData];
-  if (cleanHigh !== null) allVals.push(cleanHigh);
-  if (cleanLow !== null) allVals.push(cleanLow);
-  if (cleanTarget !== null) allVals.push(cleanTarget);
+  if (displayHigh !== null) allVals.push(displayHigh);
+  if (displayLow !== null) allVals.push(displayLow);
+  if (displayTarget !== null) allVals.push(displayTarget);
 
   const thresholdValues = [cleanLow, cleanTarget, cleanHigh]
     .filter((value) => value !== null)
     .sort((a, b) => a - b);
-  const thresholdBand = thresholdValues.length >= 2
-    ? thresholdValues[thresholdValues.length - 1] - thresholdValues[0]
-    : null;
-  const thresholdTop = thresholdValues.length ? Math.max(...thresholdValues) : null;
-  const tightThresholdCluster = Boolean(
-    thresholdValues.length >= 2 &&
-    thresholdBand !== null &&
-    thresholdTop !== null &&
-    (
-      thresholdBand <= 3 ||
-      (thresholdBand / Math.max(Math.abs(thresholdTop), 1)) <= 0.08
-    )
-  );
+  const tightThresholdCluster = thresholdLineValues.hasTightCluster;
   const chartHeightPx = tightThresholdCluster ? 320 : 260;
 
   const dataMax = Math.max(...allVals, 1);
@@ -10326,8 +10691,8 @@ const generateVerticalBarChart = (chartData) => {
     for (let i = numSteps; i >= 0; i--) {
       const val = i * interval;
       let ind = '';
-      if (cleanHigh !== null && Math.abs(val - cleanHigh) < interval / 2) ind += ' ðŸ”º';
-      if (cleanLow !== null && Math.abs(val - cleanLow) < interval / 2) ind += ' ðŸ”»';
+      if (cleanHigh !== null && Math.abs(val - cleanHigh) < interval / 2) ind += ' H';
+      if (cleanLow !== null && Math.abs(val - cleanLow) < interval / 2) ind += ' L';
       h += `<tr><td height="${segmentHeight}" valign="top" align="right"
               style="font-size:10px;color:#666;padding-right:8px;white-space:nowrap;">
               ${fmt(val)}${ind}</td></tr>`;
@@ -10342,11 +10707,11 @@ const generateVerticalBarChart = (chartData) => {
   const currentStatus = getKpiStatus(currentValue, cleanLow, cleanHigh, resolvedDirection);
   const trendIcon = currentStatus.isGood === false
     ? {
-      icon: resolvedDirection === 'down' ? 'â†‘' : 'â†“',
+      icon: resolvedDirection === 'down' ? '&uarr;' : '&darr;',
       color: '#dc2626'
     }
     : {
-      icon: resolvedDirection === 'down' ? 'â†“' : 'â†‘',
+      icon: resolvedDirection === 'down' ? '&darr;' : '&uarr;',
       color: '#28a745'
     };
 
@@ -10416,7 +10781,7 @@ const generateVerticalBarChart = (chartData) => {
   if (cleanHigh !== null) {
     datasets.push({
       label: `High Limit (${fmt(cleanHigh)})`,
-      data: new Array(values.length).fill(cleanHigh),
+      data: new Array(values.length).fill(displayHigh),
       borderColor: '#ff9800',
       borderWidth: 3,
       borderDash: [12, 5],
@@ -10428,7 +10793,7 @@ const generateVerticalBarChart = (chartData) => {
   if (cleanLow !== null) {
     datasets.push({
       label: `Low Limit (${fmt(cleanLow)})`,
-      data: new Array(values.length).fill(cleanLow),
+      data: new Array(values.length).fill(displayLow),
       borderColor: '#dc3545',
       borderWidth: 3,
       borderDash: [2, 6],
@@ -10440,7 +10805,7 @@ const generateVerticalBarChart = (chartData) => {
   if (cleanTarget !== null) {
     datasets.push({
       label: `Target (${fmt(cleanTarget)})`,
-      data: new Array(values.length).fill(cleanTarget),
+      data: new Array(values.length).fill(displayTarget),
       borderColor: '#16a34a',
       borderWidth: 3.5,
       borderDash: [],
@@ -10481,7 +10846,7 @@ const generateVerticalBarChart = (chartData) => {
 
   const commentsHtml = comments.length > 0 ? `
     <div style="margin-bottom:20px;">
-      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">ðŸ’¬ Comments</h4>
+      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">Comments</h4>
       ${comments.map(c => `
         <div style="margin-bottom:12px;padding:12px;background:#e3f2fd;border-radius:8px;border-left:4px solid #0078D7;">
           <div style="font-size:11px;font-weight:600;color:#0078D7;margin-bottom:6px;">
@@ -10494,7 +10859,7 @@ const generateVerticalBarChart = (chartData) => {
 
   const correctiveActionsHtml = correctiveActions.length > 0 ? `
     <div style="margin-bottom:20px;">
-      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">âš ï¸ Corrective Actions</h4>
+      <h4 style="margin:0 0 15px;color:#333;font-size:16px;">Corrective Actions</h4>
       ${correctiveActions.map(ca => `
         <div style="margin-bottom:15px;padding:15px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;">
        <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
@@ -10503,19 +10868,19 @@ const generateVerticalBarChart = (chartData) => {
           </div>
           ${ca.root_cause ? `
             <div style="margin-bottom:8px;">
-              <div style="font-size:11px;font-weight:700;color:#dc3545;">ðŸ” Root Cause</div>
+              <div style="font-size:11px;font-weight:700;color:#dc3545;">Root Cause</div>
               <div style="font-size:12px;color:#374151;">${ca.root_cause}</div>
             </div>
           ` : ''}
           ${ca.implemented_solution ? `
             <div style="margin-bottom:8px;">
-              <div style="font-size:11px;font-weight:700;color:#d97706;">âš¡ Implemented Solution</div>
+              <div style="font-size:11px;font-weight:700;color:#d97706;">Implemented Solution</div>
               <div style="font-size:12px;color:#374151;">${ca.implemented_solution}</div>
             </div>
           ` : ''}
           ${ca.evidence ? `
             <div>
-              <div style="font-size:11px;font-weight:700;color:#2563eb;">ðŸ“Š Evidence</div>
+              <div style="font-size:11px;font-weight:700;color:#2563eb;">Evidence</div>
               <div style="font-size:12px;color:#374151;">${ca.evidence}</div>
             </div>
           ` : ''}
@@ -10530,7 +10895,7 @@ const generateVerticalBarChart = (chartData) => {
     <table border="0" cellpadding="0" cellspacing="0" width="100%"
            style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
       <tr><td style="padding:15px;">
-        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">ðŸ”º HIGH LIMIT</div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">HIGH LIMIT</div>
         <div style="font-size:28px;font-weight:700;color:#ff9800;">${fmt(cleanHigh)}</div>
         <div style="font-size:11px;color:#999;">${unit || ''}</div>
       </td></tr>
@@ -10541,7 +10906,7 @@ const generateVerticalBarChart = (chartData) => {
     <table border="0" cellpadding="0" cellspacing="0" width="100%"
            style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
       <tr><td style="padding:15px;">
-        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">ðŸŽ¯ TARGET</div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">TARGET</div>
         <div style="font-size:28px;font-weight:700;color:#16a34a;">${fmt(cleanTarget)}</div>
         <div style="font-size:11px;color:#999;">${unit || ''}</div>
       </td></tr>
@@ -10552,7 +10917,7 @@ const generateVerticalBarChart = (chartData) => {
     <table border="0" cellpadding="0" cellspacing="0" width="100%"
            style="background:white;border-radius:12px;border:1px solid #e0e0e0;text-align:center;">
       <tr><td style="padding:15px;">
-        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">ðŸ”» LOW LIMIT</div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase;margin-bottom:5px;">LOW LIMIT</div>
         <div style="font-size:28px;font-weight:700;color:#dc3545;">${fmt(cleanLow)}</div>
         <div style="font-size:11px;color:#999;">${unit || ''}</div>
       </td></tr>
@@ -10568,7 +10933,6 @@ const generateVerticalBarChart = (chartData) => {
       return `
       <div style="margin-top:20px;background:#f8f9fa;border-radius:12px;padding:30px;
                   text-align:center;border:1px dashed #e0e0e0;">
-        <span style="font-size:24px;display:block;margin-bottom:10px;">ðŸ“Š</span>
         <p style="margin:0;color:#999;font-size:13px;">No limits defined</p>
       </div>
     `;
@@ -10599,7 +10963,7 @@ const generateVerticalBarChart = (chartData) => {
         High limit, target, and low limit are tightly grouped between
         <strong>${fmt(thresholdValues[0])}</strong> and
         <strong>${fmt(thresholdValues[thresholdValues.length - 1])}</strong>${unit ? ` ${unit}` : ''}.
-        Exact values are separated below to keep the report easier to read.
+        The chart lines are slightly spaced for readability, and the exact values are shown below.
       </div>
     </div>
   ` : '';
@@ -10615,7 +10979,7 @@ const generateVerticalBarChart = (chartData) => {
         <div style="margin-bottom:20px;">
           <h3 style="margin:0;color:#333;font-size:18px;font-weight:600;">${title}</h3>
           ${subtitle ? `<p style="margin:5px 0 0;color:#666;font-size:14px;">${subtitle}</p>` : ''}
-          ${unit ? `<p style="margin:5px 0 0;color:#888;font-size:12px;">Unit: ${unit} â€¢ Frequency: ${frequency || 'Monthly'}</p>` : ''}
+          ${unit ? `<p style="margin:5px 0 0;color:#888;font-size:12px;">Unit: ${unit} | Frequency: ${frequency || 'Monthly'}</p>` : ''}
         </div>
 
         ${statsBox}
@@ -10659,7 +11023,6 @@ const generateVerticalBarChart = (chartData) => {
               ${comments.length === 0 && correctiveActions.length === 0 ? `
                 <div style="background:#f8f9fa;border-radius:12px;padding:30px;
                             text-align:center;border:1px dashed #e0e0e0;">
-                  <span style="font-size:32px;display:block;margin-bottom:10px;">ðŸ“</span>
                   <p style="margin:0;color:#999;font-size:13px;">No additional data</p>
                 </div>` : ''}
             </td>
@@ -10885,7 +11248,6 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     } else {
       chartsHtml = `
         <div style="text-align:center;padding:60px;background:#f8f9fa;border-radius:12px;">
-          <div style="font-size:48px;color:#adb5bd;margin-bottom:20px;">ðŸ“Š</div>
           <p style="color:#495057;margin:0;font-size:18px;">No KPI Data Available</p>
         </div>`;
     }
@@ -10896,7 +11258,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         <tr><td align="center" style="padding:20px;">
           <table border="0" cellpadding="0" cellspacing="0" width="100%">
             <tr><td style="background:#0078D7;padding:30px;text-align:center;border-radius:8px 8px 0 0;">
-              <h1 style="margin:0;color:white;font-size:24px;">ðŸ“Š KPI Performance Report</h1>
+              <h1 style="margin:0;color:white;font-size:24px;">KPI Performance Report</h1>
               <p style="margin:10px 0 20px;color:rgba(255,255,255,0.9);">
                 ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}
               </p>
@@ -10905,13 +11267,13 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
                   <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    ðŸ“ˆ View KPI Graphics</a>
+                    View KPI Graphics</a>
                 </td>
                 <td style="padding:0 8px;">
                   <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    ðŸ“Š View Dashboard</a>
+                    View Dashboard</a>
                 </td>
               </tr></table>
             </td></tr>
@@ -10919,7 +11281,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
             <tr><td style="padding:20px 30px 0;">
               <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:14px 18px;">
                 <span style="font-size:14px;color:#5f4200;">
-                  ðŸ“Ž <strong>AI Recommendations PDF is attached</strong> â€” open it for root-cause analysis,
+                  <strong>AI Recommendations PDF is attached</strong> - open it for root-cause analysis,
                   action plans and improvement roadmaps for each KPI.
                 </span>
               </div>
@@ -10929,7 +11291,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 
             <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
                             text-align:center;font-size:12px;color:#666;">
-              AVOCarbon KPI System â€¢ Generated ${new Date().toLocaleDateString('en-GB')}
+              AVOCarbon KPI System | Generated ${new Date().toLocaleDateString('en-GB')}
             </td></tr>
           </table>
         </td></tr>
@@ -10959,7 +11321,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     await transporter.sendMail({
       from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
       to: responsible.email,
-      subject: `ðŸ“Š KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
+      subject: `KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
     });
@@ -11042,9 +11404,9 @@ cron.schedule("53 09 * * *", async () => {
       [forcedWeek]
     );
     for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
-    console.log(`âœ… KPI emails sent to ${resps.rows.length} responsibles`);
+    console.log(`KPI emails sent to ${resps.rows.length} responsibles`);
   } catch (err) {
-    console.error("âŒ Scheduled email error:", err.message);
+    console.error("Scheduled email error:", err.message);
   } finally {
     cronRunning = false;
     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
@@ -11054,7 +11416,7 @@ cron.schedule("53 09 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("17 11 * * *", async () => {
+cron.schedule("21 17 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -11085,9 +11447,9 @@ cron.schedule("17 11 * * *", async () => {
         console.error(`Failed for ${resp.name}:`, err.message);
       }
     }
-    console.log(`âœ… Weekly reports sent`);
+    console.log(`Weekly reports sent`);
   } catch (error) {
-    console.error("âŒ Report cron error:", error.message);
+    console.error("Report cron error:", error.message);
   } finally {
     reportCronRunning = false;
     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
@@ -11102,6 +11464,10 @@ const createIndividualKPIChart = (kpi) => {
   const high_limit = kpi.high_limit && kpi.high_limit !== 'None' ? Number(kpi.high_limit) : null;
   const low_limit = kpi.low_limit && kpi.low_limit !== 'None' ? Number(kpi.low_limit) : null;
   const direction = inferKpiDirection(kpi);
+  const thresholdLineValues = getReadableThresholdLineValues(low_limit, target, high_limit);
+  const displayHigh = thresholdLineValues.displayHigh;
+  const displayLow = thresholdLineValues.displayLow;
+  const displayTarget = thresholdLineValues.displayTarget;
 
   const weeklyData = kpi.weeklyData || { weeks: [], values: [] };
   const weeks = weeklyData.weeks.slice(0, 12);
@@ -11111,7 +11477,6 @@ const createIndividualKPIChart = (kpi) => {
     return `<table border="0" cellpadding="15" cellspacing="0" width="100%"
               style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px;">
       <tr><td style="text-align:center;color:#999;font-size:14px;padding:20px;">
-        <div style="font-size:32px;opacity:0.3;">ðŸ“Š</div>
         <div>No data for ${kpi.subtitle || kpi.title}</div>
       </td></tr></table>`;
   }
@@ -11168,8 +11533,17 @@ const createIndividualKPIChart = (kpi) => {
   if (high_limit !== null) {
     datasets.push({
       label: `High Limit (${fmt(high_limit)})`,
-      data: new Array(values.length).fill(high_limit),
+      data: new Array(values.length).fill(displayHigh),
       borderColor: '#f97316', borderWidth: 2, borderDash: [6, 4],
+      lineTension: 0, pointRadius: 0, fill: false
+    });
+  }
+
+  if (target !== null) {
+    datasets.push({
+      label: `Target (${fmt(target)})`,
+      data: new Array(values.length).fill(displayTarget),
+      borderColor: '#16a34a', borderWidth: 2.25,
       lineTension: 0, pointRadius: 0, fill: false
     });
   }
@@ -11177,7 +11551,7 @@ const createIndividualKPIChart = (kpi) => {
   if (low_limit !== null) {
     datasets.push({
       label: `Low Limit (${fmt(low_limit)})`,
-      data: new Array(values.length).fill(low_limit),
+      data: new Array(values.length).fill(displayLow),
       borderColor: '#dc2626', borderWidth: 2, borderDash: [6, 4],
       lineTension: 0, pointRadius: 0, fill: false
     });
@@ -11203,16 +11577,21 @@ const createIndividualKPIChart = (kpi) => {
     <table border="0" cellpadding="5" cellspacing="0" width="100%" style="margin-top:10px;">
       <tr>
         <td align="center" width="33%">${target !== null
-      ? `<div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">ðŸŽ¯ Target: ${target}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">ðŸŽ¯ N/A</div>`}</td>
+      ? `<div style="background:#e8f5e9;color:#2e7d32;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #a5d6a7;display:inline-block;">Target: ${target}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">Target: N/A</div>`}</td>
         <td align="center" width="33%">${high_limit !== null
-      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">ðŸ”º High Limit: ${high_limit}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">ðŸ”º N/A</div>`}</td>
+      ? `<div style="background:#fff3e0;color:#e65100;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ffb74d;display:inline-block;">High Limit: ${high_limit}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">High Limit: N/A</div>`}</td>
         <td align="center" width="33%">${low_limit !== null
-      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">ðŸ”» Low Limit: ${low_limit}</div>`
-      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">ðŸ”» N/A</div>`}</td>
+      ? `<div style="background:#ffebee;color:#c62828;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #ef5350;display:inline-block;">Low Limit: ${low_limit}</div>`
+      : `<div style="background:#f5f5f5;color:#9e9e9e;padding:5px 10px;border-radius:6px;font-size:10px;font-weight:700;border:1px solid #e0e0e0;display:inline-block;">Low Limit: N/A</div>`}</td>
       </tr>
     </table>`;
+  const thresholdReadabilityNote = thresholdLineValues.hasTightCluster ? `
+    <div style="margin-top:8px;text-align:center;font-size:10px;color:#64748b;line-height:1.4;">
+      Threshold lines are slightly spaced in the chart for readability. Exact values are shown above.
+    </div>
+  ` : '';
 
   const hasComments = kpi.comments && kpi.comments.length > 0;
   const hasCA = kpi.correctiveAction && (
@@ -11245,7 +11624,7 @@ const createIndividualKPIChart = (kpi) => {
         <div style="font-size:11px;font-weight:700;color:#0078D7;
                     margin-bottom:10px;padding-bottom:6px;
                     border-bottom:1px solid #bfdbfe;letter-spacing:0.4px;">
-          ðŸ’¬ COMMENTS
+          COMMENTS
         </div>
         ${kpi.comments.map(c => `
           <table border="0" cellpadding="10" cellspacing="0" width="100%"
@@ -11266,7 +11645,7 @@ const createIndividualKPIChart = (kpi) => {
                     margin-bottom:10px;padding-bottom:6px;
                     border-bottom:1px solid #fecaca;letter-spacing:0.4px;
                     display:flex;align-items:center;">
-          âš ï¸ CORRECTIVE ACTION ${caStatusBadge}
+          CORRECTIVE ACTION ${caStatusBadge}
         </div>
 
         ${kpi.correctiveAction.rootCause ? `
@@ -11276,7 +11655,7 @@ const createIndividualKPIChart = (kpi) => {
                          border-left:3px solid #ef4444;">
             <div style="font-size:9px;font-weight:800;color:#dc2626;
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
-              ðŸ” Root Cause
+              Root Cause
             </div>
             <div style="font-size:11px;color:#374151;line-height:1.5;">
               ${kpi.correctiveAction.rootCause}
@@ -11291,7 +11670,7 @@ const createIndividualKPIChart = (kpi) => {
                          border-left:3px solid #f59e0b;">
             <div style="font-size:9px;font-weight:800;color:#d97706;
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
-              âš¡ Implemented Solution
+              Implemented Solution
             </div>
             <div style="font-size:11px;color:#374151;line-height:1.5;">
               ${kpi.correctiveAction.implementedSolution}
@@ -11305,7 +11684,7 @@ const createIndividualKPIChart = (kpi) => {
                          border-left:3px solid #3b82f6;">
             <div style="font-size:9px;font-weight:800;color:#2563eb;
                         text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
-              ðŸ“Š Evidence
+              Evidence
             </div>
             <div style="font-size:11px;color:#374151;line-height:1.5;">
               ${kpi.correctiveAction.evidence}
@@ -11353,6 +11732,7 @@ const createIndividualKPIChart = (kpi) => {
         <td width="${leftWidth}" valign="top"
             style="padding-right:${hasSide ? '20px' : '0'};">
           ${badges}
+          ${thresholdReadabilityNote}
           <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-top:10px;">
             <tr><td align="center">
               <img src="${chartUrl}" width="320" height="170" alt="KPI trend chart"
@@ -11513,14 +11893,13 @@ app.get("/kpi-trends", async (req, res) => {
           min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px;margin:0;">
           <div style="background:rgba(255,255,255,0.95);border-radius:24px;padding:60px 40px;
                       text-align:center;max-width:500px;">
-            <div style="font-size:72px;margin-bottom:30px;">ðŸ“Š</div>
             <h1 style="color:#2c3e50;font-size:28px;">No KPI Trends Available</h1>
             <p style="color:#666;font-size:16px;">Start filling KPI forms to see trend charts.</p>
             <a href="/form?responsible_id=${responsible_id}&week=${getCurrentWeek()}"
                style="display:inline-block;margin-top:20px;padding:15px 30px;
                       background:linear-gradient(135deg,#667eea,#764ba2);color:white;
                       text-decoration:none;border-radius:12px;font-weight:600;">
-              âœï¸ Start Filling KPIs</a>
+              Start Filling KPIs</a>
           </div>
         </body></html>`);
     }
@@ -11629,7 +12008,7 @@ function generateTrendsDashboardHTML(responsible, kpiData) {
 <body>
   <div class="container">
     <header class="dashboard-header">
-      <h1 style="font-size:36px;font-weight:800;color:#fff;margin-bottom:10px;">ðŸ“Š KPI Trends & Analytics</h1>
+      <h1 style="font-size:36px;font-weight:800;color:#fff;margin-bottom:10px;">KPI Trends & Analytics</h1>
       <p style="font-size:18px;opacity:0.9;margin-bottom:25px;">Performance metrics across all production weeks</p>
       <div style="display:flex;gap:30px;flex-wrap:wrap;">
         <div><div style="font-size:12px;opacity:0.6;margin-bottom:5px;">OPERATOR</div>
@@ -11658,7 +12037,7 @@ function generateTrendsDashboardHTML(responsible, kpiData) {
       </div>
     </main>
     <footer class="footer">
-      <p style="color:rgba(255,255,255,0.8);">AVOCarbon Industrial Analytics â€¢ ${new Date().getFullYear()}</p>
+      <p style="color:rgba(255,255,255,0.8);">AVOCarbon Industrial Analytics | ${new Date().getFullYear()}</p>
     </footer>
   </div>
   <script>
@@ -11680,7 +12059,7 @@ function generateKPIChartHTML(kpi, index) {
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${kpi.unit ? `<span style="padding:6px 12px;border-radius:20px;font-size:12px;
-            font-weight:600;background:#f3f4f6;color:#374151;">ðŸ“ ${kpi.unit}</span>` : ''}
+            font-weight:600;background:#f3f4f6;color:#374151;">Unit: ${kpi.unit}</span>` : ''}
           <span style="padding:6px 12px;border-radius:20px;font-size:12px;font-weight:600;
             background:${kpi.trendColor}20;color:${kpi.trendColor};">
             ${kpi.trendIcon} ${Math.abs(kpi.trend).toFixed(1)}%</span>
@@ -11693,7 +12072,7 @@ function generateKPIChartHTML(kpi, index) {
         <!-- Target Box -->
         <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
           <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
-            <span>ðŸŽ¯</span> Target
+            <span>Target</span>
           </div>
           <div style="font-size:24px;font-weight:700;color:#f97316;">
             ${kpi.target !== null ? kpi.target.toFixed(2) : 'N/A'}
@@ -11703,7 +12082,7 @@ function generateKPIChartHTML(kpi, index) {
         <!-- High Limit Box -->
         <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
           <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
-            <span>ðŸ”º</span> High Limit
+            <span>High Limit</span>
           </div>
           <div style="font-size:24px;font-weight:700;color:#f97316;">
             ${kpi.high_limit !== null ? kpi.high_limit.toFixed(2) : 'N/A'}
@@ -11713,7 +12092,7 @@ function generateKPIChartHTML(kpi, index) {
         <!-- Low Limit Box -->
         <div style="background:#f9fafb;border-radius:12px;padding:15px;text-align:center;border:1px solid #e5e7eb;">
           <div style="font-size:12px;color:#6b7280;margin-bottom:5px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:4px;">
-            <span>ðŸ”»</span> Low Limit
+            <span>Low Limit</span>
           </div>
           <div style="font-size:24px;font-weight:700;color:#ef4444;">
             ${kpi.low_limit !== null ? kpi.low_limit.toFixed(2) : 'N/A'}
@@ -11743,7 +12122,7 @@ function generateKPIChartHTML(kpi, index) {
       </div>
       ${kpi.definition ? `
         <div style="margin-top:20px;padding:15px;background:#f8fafc;border-radius:12px;border-left:4px solid #667eea;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">â„¹ï¸ Definition</div>
+          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">Definition</div>
           <div style="font-size:14px;color:#475569;">${kpi.definition}</div>
         </div>` : ''}
     </div>`;
