@@ -1935,12 +1935,14 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
 
 app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   const { responsibleId } = req.params;
+
   const responsibleResult = await pool.query(
     `SELECT name FROM public."Responsible" WHERE responsible_id = $1`,
     [responsibleId]
   );
 
   const responsibleName = responsibleResult.rows[0]?.name || "Unknown";
+
   res.send(`
   <!DOCTYPE html>
   <html lang="en">
@@ -1952,6 +1954,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <style>
       * {
         box-sizing: border-box;
@@ -1964,7 +1967,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         --bg-2: #eef4ff;
         --sidebar: #0f172a;
         --sidebar-2: #111c33;
-        --card: rgba(255, 255, 255, 0.88);
+        --card: rgba(255, 255, 255, 0.92);
         --card-solid: #ffffff;
         --line: rgba(15, 23, 42, 0.08);
         --line-strong: rgba(15, 23, 42, 0.12);
@@ -1977,6 +1980,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         --success: #10b981;
         --warning: #f59e0b;
         --danger: #ef4444;
+        --soft-blue: rgba(37,99,235,0.08);
+        --soft-red: rgba(239,68,68,0.08);
+        --soft-amber: rgba(245,158,11,0.10);
+        --soft-slate: #f8fbff;
         --shadow-sm: 0 8px 20px rgba(15, 23, 42, 0.05);
         --shadow-md: 0 18px 40px rgba(15, 23, 42, 0.08);
         --shadow-lg: 0 28px 70px rgba(15, 23, 42, 0.10);
@@ -1998,7 +2005,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
       .layout {
         display: grid;
-        grid-template-columns: 300px 1fr;
+        grid-template-columns: 280px 1fr;
         min-height: 100vh;
       }
 
@@ -2010,7 +2017,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           radial-gradient(circle at top right, rgba(59,130,246,0.16), transparent 28%),
           linear-gradient(180deg, var(--sidebar) 0%, var(--sidebar-2) 100%);
         color: white;
-        padding: 24px 20px;
+        padding: 24px 18px;
         border-right: 1px solid rgba(255,255,255,0.06);
         display: flex;
         flex-direction: column;
@@ -2028,8 +2035,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .brand-badge {
-        width: 44px;
-        height: 44px;
+        width: 42px;
+        height: 42px;
         border-radius: 14px;
         display: flex;
         align-items: center;
@@ -2073,7 +2080,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         gap: 12px;
         color: rgba(255,255,255,0.82);
         text-decoration: none;
-        padding: 14px 14px;
+        padding: 14px;
         border-radius: 16px;
         transition: 0.22s ease;
         font-weight: 700;
@@ -2120,7 +2127,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .content {
-        padding: 26px;
+        padding: 24px;
       }
 
       .topbar {
@@ -2133,16 +2140,16 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .topbar-left h1 {
-        font-size: 38px;
+        font-size: 34px;
         font-weight: 900;
-        letter-spacing: -1.4px;
+        letter-spacing: -1.2px;
         color: #0b1220;
       }
 
       .topbar-left p {
         margin-top: 8px;
         color: var(--muted);
-        font-size: 15px;
+        font-size: 14px;
       }
 
       .topbar-right {
@@ -2155,7 +2162,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         border: none;
         cursor: pointer;
         border-radius: 14px;
-        padding: 13px 18px;
+        padding: 12px 16px;
         font-size: 14px;
         font-weight: 800;
         transition: all 0.22s ease;
@@ -2173,7 +2180,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
       .btn-soft {
         color: var(--text);
-        background: rgba(255,255,255,0.88);
+        background: rgba(255,255,255,0.92);
         border: 1px solid var(--line-strong);
         box-shadow: var(--shadow-sm);
       }
@@ -2191,15 +2198,15 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         border: 1px solid var(--line);
         border-radius: var(--radius-xl);
         box-shadow: var(--shadow-lg);
-        padding: 26px;
+        padding: 24px;
         margin-bottom: 22px;
       }
 
       .hero-panel::before {
         content: "";
         position: absolute;
-        width: 260px;
-        height: 260px;
+        width: 240px;
+        height: 240px;
         border-radius: 50%;
         background: radial-gradient(circle, rgba(37,99,235,0.08), transparent 70%);
         top: -120px;
@@ -2238,13 +2245,26 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         font-size: 14px;
       }
 
+      .responsible-chip {
+        margin-top: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(37,99,235,0.08);
+        color: #1d4ed8;
+        padding: 8px 14px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 14px;
+      }
+
       .hero-badge {
         display: inline-flex;
         align-items: center;
         gap: 10px;
         padding: 12px 16px;
         border-radius: 999px;
-        background: rgba(255,255,255,0.86);
+        background: rgba(255,255,255,0.90);
         border: 1px solid var(--line);
         box-shadow: var(--shadow-sm);
         font-weight: 800;
@@ -2253,17 +2273,17 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       .stats-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 18px;
+        gap: 16px;
         margin-bottom: 22px;
       }
 
       .stat-card {
         position: relative;
         overflow: hidden;
-        background: rgba(255,255,255,0.88);
+        background: rgba(255,255,255,0.9);
         border: 1px solid rgba(255,255,255,0.8);
         border-radius: var(--radius-lg);
-        padding: 22px;
+        padding: 20px;
         box-shadow: var(--shadow-md);
       }
 
@@ -2286,7 +2306,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .stat-value {
-        font-size: 30px;
+        font-size: 28px;
         font-weight: 900;
         letter-spacing: -1px;
       }
@@ -2308,10 +2328,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       .search {
         width: 100%;
         border: 1px solid rgba(148,163,184,0.25);
-        background: rgba(255,255,255,0.92);
+        background: rgba(255,255,255,0.95);
         color: var(--text);
         border-radius: 18px;
-        padding: 16px 18px;
+        padding: 15px 18px;
         font-size: 14px;
         outline: none;
         box-shadow: var(--shadow-sm);
@@ -2349,31 +2369,32 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       .grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0,1fr));
-        gap: 20px;
+        gap: 16px;
       }
 
       .kpi-card {
         position: relative;
         overflow: hidden;
-        background: rgba(255,255,255,0.9);
-        border: 1px solid rgba(255,255,255,0.8);
-        border-radius: 24px;
-        box-shadow: var(--shadow-lg);
-        padding: 22px;
+        background: rgba(255,255,255,0.94);
+        border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 22px;
+        box-shadow: var(--shadow-md);
+        padding: 18px;
         transition: all 0.22s ease;
       }
 
       .kpi-card:hover {
-        transform: translateY(-4px);
+        transform: translateY(-3px);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.11);
       }
 
       .kpi-card::before {
         content: "";
         position: absolute;
-        width: 120px;
-        height: 120px;
+        width: 110px;
+        height: 110px;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(37,99,235,0.08), transparent 70%);
+        background: radial-gradient(circle, rgba(37,99,235,0.06), transparent 70%);
         top: -20px;
         right: -20px;
       }
@@ -2384,33 +2405,34 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
-        gap: 12px;
+        gap: 10px;
+        margin-bottom: 12px;
       }
 
       .kpi-title {
-        font-size: 22px;
+        font-size: 17px;
         font-weight: 900;
-        letter-spacing: -0.03em;
+        letter-spacing: -0.02em;
+        color: #0f172a;
       }
 
       .kpi-subtitle {
-        margin-top: 8px;
+        margin-top: 6px;
         color: var(--muted);
-        font-size: 13px;
-        line-height: 1.6;
-        min-height: 40px;
+        font-size: 12px;
+        line-height: 1.5;
       }
 
       .pill {
         display: inline-flex;
         align-items: center;
-        padding: 8px 12px;
+        padding: 7px 10px;
         border-radius: 999px;
         font-size: 11px;
         font-weight: 900;
         white-space: nowrap;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.05em;
       }
 
       .pill-blue {
@@ -2418,35 +2440,103 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         color: #1d4ed8;
       }
 
-      .meta {
-        position: relative;
-        z-index: 1;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0,1fr));
-        gap: 10px;
-        margin-top: 18px;
-      }
+.meta {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
 
-      .meta-box {
-        background: #f8fbff;
-        border: 1px solid #edf2f9;
-        border-radius: 14px;
-        padding: 12px 13px;
-      }
+.meta-box {
+  position: relative;
+  background: linear-gradient(180deg, #fbfdff 0%, #f4f8fc 100%);
+  border: 1px solid #e4ecf5;
+  border-radius: 16px;
+  padding: 12px 14px;
+  min-height: 74px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
 
-      .meta-box .label {
-        font-size: 11px;
-        color: var(--muted);
-        font-weight: 800;
-        text-transform: uppercase;
-      }
+.meta-box:hover {
+  transform: translateY(-1px);
+  border-color: #d7e3f1;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+}
 
-      .meta-box .value {
-        margin-top: 6px;
-        font-size: 14px;
-        color: #0f172a;
-        font-weight: 800;
-      }
+.meta-box::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: transparent;
+}
+
+.meta-box.primary::before {
+  background: linear-gradient(90deg, #2563eb, #06b6d4);
+}
+
+.meta-box.success::before {
+  background: linear-gradient(90deg, #10b981, #22c55e);
+}
+
+.meta-box.warning::before {
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+}
+
+.meta-box.danger::before {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.meta-box.neutral::before {
+  background: linear-gradient(90deg, #94a3b8, #cbd5e1);
+}
+
+
+  .meta-box .label {
+  font-size: 10px;
+  color: #64748b;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 8px;
+}
+
+   .meta-box .value {
+  font-size: 17px;
+  color: #0f172a;
+  font-weight: 900;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  word-break: break-word;
+}
+
+.meta-box .subvalue {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.meta-box.compact .value {
+  font-size: 15px;
+}
+
+.meta-box.wide {
+  grid-column: 1 / -1;
+}
+
+.value-muted {
+  color: #475569;
+}
+
+.value-number {
+  font-variant-numeric: tabular-nums;
+}
 
       .card-actions {
         position: relative;
@@ -2454,13 +2544,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
-        margin-top: 18px;
+        margin-top: 14px;
       }
 
       .action-btn {
         border: none;
         border-radius: 12px;
-        padding: 11px 14px;
+        padding: 10px 13px;
         font-size: 12px;
         font-weight: 800;
         cursor: pointer;
@@ -2498,7 +2588,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         position: fixed;
         inset: 0;
         background: rgba(15,23,42,0.34);
-        backdrop-filter: blur(6px);
+        backdrop-filter: blur(8px);
         display: none;
         align-items: center;
         justify-content: center;
@@ -2510,78 +2600,102 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: flex;
       }
 
-      .chart-meta {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
-.chart-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  border: 1px solid transparent;
-}
-
-.chart-chip-target {
-  background: rgba(239, 68, 68, 0.08);
-  color: #dc2626;
-  border-color: rgba(239, 68, 68, 0.12);
-}
-
-.chart-chip-high {
-  background: rgba(245, 158, 11, 0.10);
-  color: #b45309;
-  border-color: rgba(245, 158, 11, 0.14);
-}
-
-.chart-chip-low {
-  background: rgba(59, 130, 246, 0.08);
-  color: #2563eb;
-  border-color: rgba(59, 130, 246, 0.12);
-}
-
       .modal {
         width: 100%;
         max-width: 980px;
         max-height: 92vh;
-        overflow: auto;
-        background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-        border-radius: 28px;
-        box-shadow: 0 30px 90px rgba(15,23,42,0.22);
-        border: 1px solid rgba(255,255,255,0.85);
+        overflow: hidden;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        border-radius: 30px;
+        box-shadow: 0 32px 90px rgba(15, 23, 42, 0.20);
+        border: 1px solid rgba(255,255,255,0.9);
+        display: flex;
+        flex-direction: column;
       }
 
       .modal-header {
-        padding: 24px 26px 18px;
+        padding: 22px 24px 18px;
         border-bottom: 1px solid rgba(15,23,42,0.06);
         display: flex;
         justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        position: sticky;
-        top: 0;
+        align-items: flex-start;
+        gap: 16px;
         background: rgba(255,255,255,0.94);
         backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
         z-index: 5;
       }
 
+      .modal-title-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
       .modal-header h2 {
-        font-size: 26px;
+        font-size: 28px;
         font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -0.03em;
+      }
+
+      .modal-subtitle {
+        font-size: 14px;
+        color: #64748b;
+        line-height: 1.5;
+        max-width: 700px;
       }
 
       .modal-body {
-        padding: 22px 26px 120px;
+        padding: 22px 24px 132px;
+        overflow: auto;
+        background:
+          radial-gradient(circle at top right, rgba(37,99,235,0.04), transparent 22%),
+          linear-gradient(180deg, #fbfdff 0%, #f8fbff 100%);
+      }
+
+      .modal-overview {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .overview-card {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 18px;
+        padding: 13px 14px;
+        box-shadow: 0 8px 18px rgba(15,23,42,0.04);
+      }
+
+      .overview-card .label {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+      }
+
+      .overview-card .value {
+        margin-top: 6px;
+        font-size: 14px;
+        font-weight: 800;
+        color: #0f172a;
+      }
+
+      .form-section {
+        background: rgba(255,255,255,0.90);
+        border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 22px;
+        padding: 18px;
+        box-shadow: 0 10px 24px rgba(15,23,42,0.05);
+        margin-bottom: 16px;
       }
 
       .section-title {
-        margin: 24px 0 12px;
+        margin: 0 0 4px;
         font-size: 12px;
         font-weight: 900;
         color: #4f46e5;
@@ -2589,9 +2703,16 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         letter-spacing: 0.14em;
       }
 
+      .section-subtitle {
+        margin-bottom: 16px;
+        font-size: 13px;
+        color: #64748b;
+        line-height: 1.5;
+      }
+
       .form-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(12, minmax(0, 1fr));
         gap: 14px;
       }
 
@@ -2601,18 +2722,31 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         gap: 8px;
       }
 
-      .field.full {
-        grid-column: 1 / -1;
-      }
+      .field.col-3 { grid-column: span 3; }
+      .field.col-4 { grid-column: span 4; }
+      .field.col-6 { grid-column: span 6; }
+      .field.col-8 { grid-column: span 8; }
+      .field.col-12 { grid-column: 1 / -1; }
 
       .field label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
         font-size: 12px;
         font-weight: 800;
         color: #334155;
       }
 
+      .field .hint {
+        font-size: 11px;
+        font-weight: 700;
+        color: #94a3b8;
+      }
+
       .field input,
-      .field textarea {
+      .field textarea,
+      .field select {
         width: 100%;
         border: 1px solid rgba(148,163,184,0.24);
         background: #ffffff;
@@ -2626,8 +2760,15 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         box-shadow: 0 2px 6px rgba(15,23,42,0.03);
       }
 
+      .field input::placeholder,
+      .field textarea::placeholder,
+      .field select::placeholder {
+        color: #94a3b8;
+      }
+
       .field input:focus,
-      .field textarea:focus {
+      .field textarea:focus,
+      .field select:focus {
         border-color: rgba(37,99,235,0.34);
         box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
       }
@@ -2637,16 +2778,35 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         resize: vertical;
       }
 
+      .field-help {
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.45;
+      }
+
+      .readonly-input {
+        background: #f3f6fb !important;
+        color: #475569 !important;
+        border-color: #dbe4f0 !important;
+        cursor: not-allowed;
+      }
+
       .modal-footer {
         position: sticky;
         bottom: 0;
         display: flex;
         justify-content: space-between;
         gap: 12px;
-        padding: 18px 26px;
+        padding: 18px 24px;
         border-top: 1px solid rgba(15,23,42,0.06);
-        background: rgba(255,255,255,0.96);
+        background: rgba(255,255,255,0.97);
         backdrop-filter: blur(12px);
+      }
+
+      .footer-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
       }
 
       .toast {
@@ -2663,26 +2823,62 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         box-shadow: var(--shadow-md);
       }
 
-   .chart-card {
-    background: rgba(255,255,255,0.92);
-    border: 1px solid rgba(255,255,255,0.8);
-    border-radius: 24px;
-    box-shadow: var(--shadow-lg);
-       padding: 22px;
-        }
+      .chart-meta {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
 
-  .chart-card h3 {
-    font-size: 20px;
-    font-weight: 900;
-    margin-bottom: 6px;
-    color: #0f172a;
-    }
+      .chart-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 800;
+        border: 1px solid transparent;
+      }
 
-   .chart-card p {
-       font-size: 13px;
-       color: var(--muted);
-       margin-bottom: 16px;
-     }
+      .chart-chip-target {
+        background: rgba(239, 68, 68, 0.08);
+        color: #dc2626;
+        border-color: rgba(239, 68, 68, 0.12);
+      }
+
+      .chart-chip-high {
+        background: rgba(245, 158, 11, 0.10);
+        color: #b45309;
+        border-color: rgba(245, 158, 11, 0.14);
+      }
+
+      .chart-chip-low {
+        background: rgba(59, 130, 246, 0.08);
+        color: #2563eb;
+        border-color: rgba(59, 130, 246, 0.12);
+      }
+
+      .chart-card {
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(255,255,255,0.8);
+        border-radius: 24px;
+        box-shadow: var(--shadow-lg);
+        padding: 22px;
+      }
+
+      .chart-card h3 {
+        font-size: 20px;
+        font-weight: 900;
+        margin-bottom: 6px;
+        color: #0f172a;
+      }
+
+      .chart-card p {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
 
       .chart-wrap {
         height: 320px;
@@ -2716,6 +2912,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         .grid {
           grid-template-columns: repeat(2, minmax(0,1fr));
         }
+
+        .modal-overview {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
 
       @media (max-width: 820px) {
@@ -2743,16 +2943,39 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         .stats-grid,
         .grid,
+        .modal-overview {
+          grid-template-columns: 1fr;
+        }
+
         .form-grid {
           grid-template-columns: 1fr;
         }
 
+        .field.col-3,
+        .field.col-4,
+        .field.col-6,
+        .field.col-8,
+        .field.col-12 {
+          grid-column: auto;
+        }
+
         .topbar-left h1 {
-          font-size: 30px;
+          font-size: 28px;
+        }
+
+        .modal-body {
+          padding: 18px 16px 130px;
+        }
+
+        .modal-header,
+        .modal-footer {
+          padding-left: 16px;
+          padding-right: 16px;
         }
       }
     </style>
   </head>
+
   <body>
     <div class="layout">
       <aside class="sidebar">
@@ -2767,26 +2990,27 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         <div>
           <div class="sidebar-section-title">Navigation</div>
           <nav class="nav">
-            <a href="#" class="nav-item active" id="navDashboard" onclick="showDashboard()">
+            <a href="#" class="nav-item active" id="navDashboard" onclick="showDashboard(); return false;">
               <div class="nav-icon">📊</div>
               <span>Dashboard</span>
             </a>
+
             <a href="#" class="nav-item" id="navMyKpis" onclick="showMyKpis(); return false;">
               <div class="nav-icon">🎯</div>
               <span>My KPIs</span>
             </a>
+
             <a href="#" class="nav-item" onclick="openCreateModal(); return false;">
               <div class="nav-icon">➕</div>
               <span>Create KPI</span>
             </a>
-         
           </nav>
         </div>
 
         <div class="sidebar-footer">
           <h4>Responsible Workspace</h4>
           <p>
-            Manage KPI definitions, update targets and keep your performance indicators organized in one premium dashboard.
+            Manage KPI definitions, update targets and keep your performance indicators organized in one modern dashboard.
           </p>
         </div>
       </aside>
@@ -2795,7 +3019,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         <div class="topbar">
           <div class="topbar-left">
             <h1>Responsible KPI Dashboard</h1>
-            <p>Professional KPI workspace for responsible </p>
+            <p>Modern KPI workspace for responsible management and tracking.</p>
           </div>
 
           <div class="topbar-right">
@@ -2803,191 +3027,242 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <button class="btn btn-primary" onclick="openCreateModal()">+ Add New KPI</button>
           </div>
         </div>
-      
+
         <section id="dashboardSection">
+          <div class="hero-panel">
+            <div class="hero-row">
+              <div class="hero-meta">
+                <h3>Executive KPI Management</h3>
+                <div class="responsible-chip">👤 ${responsibleName}</div>
+                <p>
+                  Track, maintain and optimize your KPI portfolio with a cleaner and more professional interface.
+                </p>
+              </div>
 
-      <div class="hero-panel">
-          <div class="hero-row">
-      <div class="hero-meta">
-       <h3>Executive KPI Management</h3>
-
-      <div style="
-       margin-top:10px;
-       display:inline-flex;
-       align-items:center;
-       gap:8px;
-        background:rgba(37,99,235,0.08);
-        color:#1d4ed8;
-        padding:8px 14px;
-        border-radius:999px;
-        font-weight:800;
-        font-size:14px;
-       ">
-          👤 ${responsibleName}
-         </div>
-
-         <p style="margin-top:10px;">
-          Track, maintain and optimize your KPI portfolio with a cleaner, more professional interface.
-         </p>
-          </div>
-
-            <div class="hero-badge">
-              <span>Responsible</span>
-              <strong>#${responsibleId}</strong>
+              <div class="hero-badge">
+                <span>Responsible</span>
+                <strong>#${responsibleId}</strong>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-label">Total KPIs</div>
-            <div class="stat-value" id="statTotal">0</div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Total KPIs</div>
+              <div class="stat-value" id="statTotal">0</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">Monthly KPIs</div>
+              <div class="stat-value" id="statMonthly">0</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">With Target</div>
+              <div class="stat-value" id="statTarget">0</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">Tolerance Rules</div>
+              <div class="stat-value" id="statTolerance">0</div>
+            </div>
           </div>
 
-          <div class="stat-card">
-            <div class="stat-label">Monthly KPIs</div>
-            <div class="stat-value" id="statMonthly">0</div>
+          <div class="toolbar">
+            <div class="search-wrap">
+              <input id="search" class="search" placeholder="Search KPI by title, subject, frequency..." />
+            </div>
           </div>
 
-          <div class="stat-card">
-            <div class="stat-label">With Target</div>
-            <div class="stat-value" id="statTarget">0</div>
+          <div class="section-head">
+            <div>
+              <h2>KPI Portfolio</h2>
+              <p>Smaller, cleaner KPI cards with full information display.</p>
+            </div>
           </div>
 
-          <div class="stat-card">
-            <div class="stat-label">Tolerance Rules</div>
-            <div class="stat-value" id="statTolerance">0</div>
-          </div>
-        </div>
-
-        <div class="toolbar">
-          <div class="search-wrap">
-            <input id="search" class="search" placeholder="Search KPI by title, subject, frequency..." />
-          </div>
-        </div>
-
-        <div class="section-head">
-          <div>
-            <h2>KPI Portfolio</h2>
-            <p>Professional overview of all KPIs assigned to this responsible.</p>
-          </div>
-        </div>
-
-        <div id="grid" class="grid"></div>
+          <div id="grid" class="grid"></div>
         </section>
-        <section id="myKpisSection" style="display:none;">
-      <div class="section-head">
-    <div>
-      <h2>My KPI Analytics</h2>
-      <p>Visual trends of KPI values by week for this responsible.</p>
-      </div>
-     </div>
 
-     <div id="chartsGrid" class="grid"></div>
-     </section>
+        <section id="myKpisSection" style="display:none;">
+          <div class="section-head">
+            <div>
+              <h2>My KPI Analytics</h2>
+              <p>Visual trends of KPI values by month for this responsible.</p>
+            </div>
+          </div>
+
+          <div id="chartsGrid" class="grid"></div>
+        </section>
       </main>
     </div>
 
     <div id="modalBackdrop" class="modal-backdrop">
       <div class="modal">
         <div class="modal-header">
-          <h2 id="modalTitle">Edit KPI</h2>
+          <div class="modal-title-wrap">
+            <h2 id="modalTitle">Edit KPI</h2>
+            <div class="modal-subtitle" id="modalSubtitle">
+              Update KPI information, targets, calculation rules and thresholds in a cleaner professional form.
+            </div>
+          </div>
+
           <button class="btn btn-soft" onclick="closeModal()">Close</button>
         </div>
 
         <div class="modal-body">
           <input type="hidden" id="kpi_id" />
 
-          <div class="section-title">Identity</div>
-          <div class="form-grid">
-            <div class="field">
-              <label>Category</label>
-              <input id="indicator_title" />
+          <div class="modal-overview">
+            <div class="overview-card">
+              <div class="label">Mode</div>
+              <div class="value" id="modalModeBadge">Edit KPI</div>
             </div>
-
-            <div class="field">
-              <label>KPI</label>
-              <input id="indicator_sub_title" />
+            <div class="overview-card">
+              <div class="label">Frequency</div>
+              <div class="value" id="overviewFrequency">Not set</div>
             </div>
-
-            <div class="field">
-              <label>Unit</label>
-              <input id="unit" />
+            <div class="overview-card">
+              <div class="label">Unit</div>
+              <div class="value" id="overviewUnit">Not set</div>
             </div>
-
-            <div class="field">
-              <label>Subject</label>
-              <input id="subject" />
-            </div>
-
-            <div class="field full">
-              <label>Definition</label>
-              <textarea id="definition"></textarea>
+            <div class="overview-card">
+              <div class="label">Target</div>
+              <div class="value" id="overviewTarget">Not set</div>
             </div>
           </div>
 
-          <div class="section-title">Performance Rules</div>
-          <div class="form-grid">
-            <div class="field">
-              <label>Frequency</label>
-              <input id="frequency" />
-            </div>
+          <div class="form-section">
+            <div class="section-title">Identity</div>
+            <div class="section-subtitle">Basic KPI definition and business naming.</div>
 
-            <div class="field">
-              <label>Target</label>
-              <input id="target" />
-            </div>
+            <div class="form-grid">
+              <div class="field col-6">
+                <label>
+                  <span>Category</span>
+                  <span class="hint">Main KPI group</span>
+                </label>
+                <input id="indicator_title" placeholder="Example: Finance / Operations / Quality" />
+              </div>
 
-            <div class="field">
-              <label>Tolerance Type</label>
-              <input id="tolerance_type" />
-            </div>
+              <div class="field col-6">
+                <label>
+                  <span>KPI Name</span>
+                  <span class="hint">Displayed label</span>
+                </label>
+                <input id="indicator_sub_title" placeholder="Example: Action plan milestone respected" />
+              </div>
 
-            <div class="field">
-              <label>Up Tolerance</label>
-              <input id="up_tolerance" />
-            </div>
+              <div class="field col-4">
+                <label>
+                  <span>Subject</span>
+                  <span class="hint">Business code</span>
+                </label>
+                <input id="subject" placeholder="Example: FFM" />
+              </div>
 
-            <div class="field">
-              <label>Low Tolerance</label>
-              <input id="low_tolerance" />
-            </div>
+              <div class="field col-4">
+                <label>
+                  <span>Unit</span>
+                  <span class="hint">%, days, qty</span>
+                </label>
+                <input id="unit" placeholder="%" />
+              </div>
 
-            <div class="field">
-              <label>Max</label>
-              <input id="max" />
-            </div>
+              <div class="field col-4">
+                <label>
+                  <span>Frequency</span>
+                  <span class="hint">Update rhythm</span>
+                </label>
+                <input id="frequency" placeholder="Monthly" />
+              </div>
 
-            <div class="field">
-              <label>Min</label>
-              <input id="min" />
+              <div class="field col-12">
+                <label>
+                  <span>Definition</span>
+                  <span class="hint">Explain the KPI clearly</span>
+                </label>
+                <textarea id="definition" placeholder="Write a clear KPI definition..."></textarea>
+                <div class="field-help">
+                  Use a simple business definition that is easy to understand for managers and users.
+                </div>
+              </div>
             </div>
+          </div>
 
-            <div class="field">
-              <label>Calculation On</label>
-              <input id="calculation_on" />
+          <div class="form-section">
+            <div class="section-title">Target & Calculation</div>
+            <div class="section-subtitle">Performance objective and measurement logic.</div>
+
+            <div class="form-grid">
+              <div class="field col-4">
+                <label><span>Target</span><span class="hint">Expected result</span></label>
+                <input id="target" placeholder="145" />
+              </div>
+
+              <div class="field col-4">
+                <label><span>Calculation On</span><span class="hint">Scope or basis</span></label>
+                <input id="calculation_on" placeholder="Monthly average" />
+              </div>
+
+              <div class="field col-4">
+                <label><span>Target Auto Adjustment</span><span class="hint">Optional</span></label>
+                <input id="target_auto_adjustment" placeholder="Optional rule" />
+              </div>
+
+              <div class="field col-4">
+                <label><span>Max</span><span class="hint">Optional</span></label>
+                <input id="max" placeholder="Maximum value" />
+              </div>
+
+              <div class="field col-4">
+                <label><span>Min</span><span class="hint">Optional</span></label>
+                <input id="min" placeholder="Minimum value" />
+              </div>
+
+              <div class="field col-4">
+                <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
+                <select id="tolerance_type">
+                  <option value="">Select tolerance type</option>
+                  <option value="Relative">Relative</option>
+                  <option value="Absolute">Absolute</option>
+                </select>
+              </div>
             </div>
+          </div>
 
-            <div class="field">
-              <label>Target Auto Adjustment</label>
-              <input id="target_auto_adjustment" />
-            </div>
+          <div class="form-section">
+            <div class="section-title">Thresholds & Tolerances</div>
+            <div class="section-subtitle">High and low limits are displayed for visibility and are read-only.</div>
 
-            <div class="field">
-              <label>High Limit</label>
-              <input id="high_limit" type="number" step="any" />
-            </div>
+            <div class="form-grid">
+              <div class="field col-3">
+                <label><span>Up Tolerance</span><span class="hint">Upper variance</span></label>
+                <input id="up_tolerance" placeholder="10%" />
+              </div>
 
-            <div class="field">
-              <label>Low Limit</label>
-              <input id="low_limit" type="number" step="any" />
+              <div class="field col-3">
+                <label><span>Low Tolerance</span><span class="hint">Lower variance</span></label>
+                <input id="low_tolerance" placeholder="10%" />
+              </div>
+
+              <div class="field col-3">
+                <label><span>High Limit</span><span class="hint">Read only</span></label>
+                <input id="high_limit" class="readonly-input" type="number" step="any" placeholder="159.5" readonly />
+              </div>
+
+              <div class="field col-3">
+                <label><span>Low Limit</span><span class="hint">Read only</span></label>
+                <input id="low_limit" class="readonly-input" type="number" step="any" placeholder="130.5" readonly />
+              </div>
             </div>
           </div>
         </div>
 
         <div class="modal-footer">
           <button class="btn btn-danger" id="deleteBtn" onclick="deleteCurrentKpi()">Delete KPI</button>
-          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+
+          <div class="footer-actions">
             <button class="btn btn-soft" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
           </div>
@@ -3021,30 +3296,28 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           .replace(/'/g, "&#39;");
       }
 
-      
-     function setActiveNav(target) {
-      document.getElementById("navDashboard").classList.remove("active");
-      document.getElementById("navMyKpis").classList.remove("active");
-      document.getElementById(target).classList.add("active");
-    }
+      function setActiveNav(target) {
+        document.getElementById("navDashboard").classList.remove("active");
+        document.getElementById("navMyKpis").classList.remove("active");
+        document.getElementById(target).classList.add("active");
+      }
 
-    function showDashboard() {
-     document.getElementById("dashboardSection").style.display = "block";
-     document.getElementById("myKpisSection").style.display = "none";
-     setActiveNav("navDashboard");
-   }
+      function showDashboard() {
+        document.getElementById("dashboardSection").style.display = "block";
+        document.getElementById("myKpisSection").style.display = "none";
+        setActiveNav("navDashboard");
+      }
 
-   async function showMyKpis() {
-    document.getElementById("dashboardSection").style.display = "none";
-     document.getElementById("myKpisSection").style.display = "block";
-     setActiveNav("navMyKpis");
+      async function showMyKpis() {
+        document.getElementById("dashboardSection").style.display = "none";
+        document.getElementById("myKpisSection").style.display = "block";
+        setActiveNav("navMyKpis");
 
-      if (!chartsLoaded) {
-        await loadKpiCharts();
-        chartsLoaded = true;
-       }
-    }
-
+        if (!chartsLoaded) {
+          await loadKpiCharts();
+          chartsLoaded = true;
+        }
+      }
 
       function updateStats(rows) {
         const total = rows.length;
@@ -3058,61 +3331,101 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         document.getElementById("statTolerance").textContent = tolerance;
       }
 
-      function renderKpis(rows) {
-        currentRows = rows || [];
-        updateStats(currentRows);
+  function renderKpis(rows) {
+  currentRows = rows || [];
+  updateStats(currentRows);
 
-        const grid = document.getElementById("grid");
+  const grid = document.getElementById("grid");
 
-        if (!currentRows.length) {
-          grid.innerHTML = '<div class="empty">No KPI found for this responsible.</div>';
-          return;
-        }
+  if (!currentRows.length) {
+    grid.innerHTML = '<div class="empty">No KPI found for this responsible.</div>';
+    return;
+  }
 
-        grid.innerHTML = currentRows.map(row => \`
-          <div class="kpi-card">
-            <div class="kpi-head">
-              <div>
-                <div class="kpi-title">\${escapeHtml(row.indicator_title || "Untitled KPI")}</div>
-                <div class="kpi-subtitle">\${escapeHtml(row.indicator_sub_title || "")}</div>
-              </div>
-              <span class="pill pill-blue">KPI #\${escapeHtml(row.kpi_id)}</span>
-            </div>
+  grid.innerHTML = currentRows.map(row => \`
+    <div class="kpi-card">
+      <div class="kpi-head">
+        <div>
+          <div class="kpi-title">\${escapeHtml(row.indicator_title || "Untitled KPI")}</div>
+          <div class="kpi-subtitle">\${escapeHtml(row.indicator_sub_title || "")}</div>
+        </div>
+        <span class="pill pill-blue">KPI #\${escapeHtml(row.kpi_id)}</span>
+      </div>
 
-            <div class="meta">
-              <div class="meta-box">
-                <div class="label">Subject</div>
-                <div class="value">\${escapeHtml(row.subject || "-")}</div>
-              </div>
-              <div class="meta-box">
-                <div class="label">Unit</div>
-                <div class="value">\${escapeHtml(row.unit || "-")}</div>
-              </div>
-              <div class="meta-box">
-                <div class="label">Frequency</div>
-                <div class="value">\${escapeHtml(row.frequency || "-")}</div>
-              </div>
-              <div class="meta-box">
-                <div class="label">Target</div>
-                <div class="value">\${escapeHtml(row.target || "-")}</div>
-              </div>
-              <div class="meta-box">
-                <div class="label">High Limit</div>
-                <div class="value">\${escapeHtml(row.high_limit ?? "-")}</div>
-              </div>
-              <div class="meta-box">
-                <div class="label">Low Limit</div>
-                <div class="value">\${escapeHtml(row.low_limit ?? "-")}</div>
-              </div>
-            </div>
+      <div class="meta">
+        <div class="meta-box neutral compact">
+          <div class="label">Subject</div>
+          <div class="value">\${escapeHtml(row.subject || "-")}</div>
+        </div>
 
-            <div class="card-actions">
-              <button class="action-btn edit-btn" onclick="openEditModal(\${row.kpi_id})">Edit KPI</button>
-              <button class="action-btn delete-btn" onclick="deleteKpi(\${row.kpi_id})">Delete KPI</button>
-            </div>
-          </div>
-        \`).join("");
-      }
+        <div class="meta-box neutral compact">
+          <div class="label">Unit</div>
+          <div class="value">\${escapeHtml(row.unit || "-")}</div>
+        </div>
+
+        <div class="meta-box neutral compact">
+          <div class="label">Frequency</div>
+          <div class="value">\${escapeHtml(row.frequency || "-")}</div>
+        </div>
+
+        <div class="meta-box primary">
+          <div class="label">Target</div>
+          <div class="value value-number">\${escapeHtml(row.target || "-")}</div>
+        </div>
+
+        <div class="meta-box neutral compact">
+          <div class="label">Tolerance Type</div>
+          <div class="value">\${escapeHtml(row.tolerance_type || "-")}</div>
+        </div>
+
+        <div class="meta-box success">
+          <div class="label">Up Tolerance</div>
+          <div class="value value-number">\${escapeHtml(row.up_tolerance || "-")}</div>
+        </div>
+
+        <div class="meta-box danger">
+          <div class="label">Low Tolerance</div>
+          <div class="value value-number">\${escapeHtml(row.low_tolerance || "-")}</div>
+        </div>
+
+        <div class="meta-box warning">
+          <div class="label">High Limit</div>
+          <div class="value value-number">\${escapeHtml(row.high_limit ?? "-")}</div>
+        </div>
+
+        <div class="meta-box primary">
+          <div class="label">Low Limit</div>
+          <div class="value value-number">\${escapeHtml(row.low_limit ?? "-")}</div>
+        </div>
+
+        <div class="meta-box neutral compact">
+          <div class="label">Calculation On</div>
+          <div class="value">\${escapeHtml(row.calculation_on || "-")}</div>
+        </div>
+
+        <div class="meta-box neutral compact">
+          <div class="label">Max</div>
+          <div class="value value-number">\${escapeHtml(row.max || "-")}</div>
+        </div>
+
+        <div class="meta-box neutral compact">
+          <div class="label">Min</div>
+          <div class="value value-number">\${escapeHtml(row.min || "-")}</div>
+        </div>
+
+        <div class="meta-box wide">
+          <div class="label">Definition</div>
+          <div class="value value-muted">\${escapeHtml(row.definition || "-")}</div>
+        </div>
+      </div>
+
+      <div class="card-actions">
+        <button class="action-btn edit-btn" onclick="openEditModal(\${row.kpi_id})">Edit KPI</button>
+        <button class="action-btn delete-btn" onclick="deleteKpi(\${row.kpi_id})">Delete KPI</button>
+      </div>
+    </div>
+  \`).join("");
+}
 
       async function loadKpis(search = "") {
         try {
@@ -3125,121 +3438,155 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         }
       }
 
-async function loadKpiCharts() {
-  const chartsGrid = document.getElementById("chartsGrid");
+      async function loadKpiCharts() {
+        const chartsGrid = document.getElementById("chartsGrid");
 
-  try {
-    const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-history-monthly');
-    if (!res.ok) throw new Error("Failed to load chart data");
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-history-monthly');
+          if (!res.ok) throw new Error("Failed to load chart data");
 
-    const rows = await res.json();
+          const rows = await res.json();
 
-    if (!rows.length) {
-      chartsGrid.innerHTML = '<div class="empty">No KPI history found for this responsible.</div>';
-      return;
-    }
-
-chartsGrid.innerHTML = rows.map((row, index) =>
-  '<div class="chart-card">' +
-    '<h3>' + escapeHtml(row.indicator_title || "Untitled KPI") + '</h3>' +
-    '<p>' + escapeHtml(row.indicator_sub_title || "Monthly KPI history") + '</p>' +
-
-    '<div class="chart-meta">' +
-      '<div class="chart-chip chart-chip-target">Target: ' + escapeHtml(row.targetValue ?? "-") + '</div>' +
-      '<div class="chart-chip chart-chip-high">High Limit: ' + escapeHtml(row.highLimitValue ?? "-") + '</div>' +
-      '<div class="chart-chip chart-chip-low">Low Limit: ' + escapeHtml(row.lowLimitValue ?? "-") + '</div>' +
-    '</div>' +
-
-    '<div class="chart-wrap">' +
-      '<canvas id="chart_' + index + '"></canvas>' +
-    '</div>' +
-  '</div>'
-).join("");
-
-    chartInstances.forEach(chart => chart.destroy());
-    chartInstances = [];
-
-    rows.forEach((row, index) => {
-      const canvas = document.getElementById('chart_' + index);
-      const ctx = canvas.getContext('2d');
-
-      const chart = new Chart(ctx, {
-        data: {
-          labels: row.labels,
-        datasets: [
-  {
-    type: 'bar',
-    label: 'Actual Value',
-    data: row.values,
-    borderWidth: 0,
-    backgroundColor: 'rgba(34, 197, 94, 0.85)',
-    borderRadius: 6,
-    barThickness: 26
-  },
-  {
-    type: 'line',
-    label: 'Target',
-    data: row.target,
-    borderColor: 'rgba(239, 68, 68, 0.95)',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderWidth: 2,
-    tension: 0,
-    fill: false,
-    pointRadius: 0,
-    pointHoverRadius: 4,
-    borderDash: [6, 4]
-  }
-  
-      
-        ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              display: false
-            },
-            tooltip: {
-              mode: 'index',
-              intersect: false
-            }
-          },
-          interaction: {
-            mode: 'nearest',
-            axis: 'x',
-            intersect: false
-          },
-          scales: {
-            x: {
-              grid: {
-                display: false
-              },
-              ticks: {
-                color: '#64748b'
-              }
-            },
-            y: {
-              beginAtZero: true,
-              ticks: {
-                color: '#64748b'
-              },
-              grid: {
-                color: 'rgba(148,163,184,0.15)'
-              }
-            }
+          if (!rows.length) {
+            chartsGrid.innerHTML = '<div class="empty">No KPI history found for this responsible.</div>';
+            return;
           }
-        }
-      });
 
-      chartInstances.push(chart);
-    });
-  } catch (error) {
-    console.error(error);
-    chartsGrid.innerHTML = '<div class="empty">Failed to load KPI charts.</div>';
-  }
-}
-    
+          chartsGrid.innerHTML = rows.map((row, index) =>
+            '<div class="chart-card">' +
+              '<h3>' + escapeHtml(row.indicator_title || "Untitled KPI") + '</h3>' +
+              '<p>' + escapeHtml(row.indicator_sub_title || "Monthly KPI history") + '</p>' +
+              '<div class="chart-meta">' +
+                '<div class="chart-chip chart-chip-target">Target: ' + escapeHtml(row.targetValue ?? "-") + '</div>' +
+                '<div class="chart-chip chart-chip-high">High Limit: ' + escapeHtml(row.highLimitValue ?? "-") + '</div>' +
+                '<div class="chart-chip chart-chip-low">Low Limit: ' + escapeHtml(row.lowLimitValue ?? "-") + '</div>' +
+              '</div>' +
+              '<div class="chart-wrap">' +
+                '<canvas id="chart_' + index + '"></canvas>' +
+              '</div>' +
+            '</div>'
+          ).join("");
+
+          chartInstances.forEach(chart => chart.destroy());
+          chartInstances = [];
+
+          rows.forEach((row, index) => {
+            const canvas = document.getElementById('chart_' + index);
+            const ctx = canvas.getContext('2d');
+
+            const targetSeries = Array.isArray(row.labels)
+              ? row.labels.map(() => row.targetValue ?? null)
+              : [];
+
+            const highLimitSeries = Array.isArray(row.labels)
+              ? row.labels.map(() => row.highLimitValue ?? null)
+              : [];
+
+            const lowLimitSeries = Array.isArray(row.labels)
+              ? row.labels.map(() => row.lowLimitValue ?? null)
+              : [];
+
+            const chart = new Chart(ctx, {
+              data: {
+                labels: row.labels,
+                datasets: [
+                  {
+                    type: 'bar',
+                    label: 'Actual Value',
+                    data: row.values,
+                    borderWidth: 0,
+                    backgroundColor: 'rgba(34, 197, 94, 0.85)',
+                    borderRadius: 6,
+                    barThickness: 26
+                  },
+                  {
+                    type: 'line',
+                    label: 'Target',
+                    data: targetSeries,
+                    borderColor: 'rgba(239, 68, 68, 0.95)',
+                    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                    borderWidth: 2,
+                    tension: 0,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    borderDash: [6, 4]
+                  },
+                  {
+                    type: 'line',
+                    label: 'High Limit',
+                    data: highLimitSeries,
+                    borderColor: 'rgba(245, 158, 11, 0.95)',
+                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                    borderWidth: 2,
+                    tension: 0,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    borderDash: [8, 5]
+                  },
+                  {
+                    type: 'line',
+                    label: 'Low Limit',
+                    data: lowLimitSeries,
+                    borderColor: 'rgba(59, 130, 246, 0.95)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                    borderWidth: 2,
+                    tension: 0,
+                    fill: false,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    borderDash: [8, 5]
+                  }
+                ]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: {
+                    display: false
+                  },
+                  tooltip: {
+                    mode: 'index',
+                    intersect: false
+                  }
+                },
+                interaction: {
+                  mode: 'nearest',
+                  axis: 'x',
+                  intersect: false
+                },
+                scales: {
+                  x: {
+                    grid: {
+                      display: false
+                    },
+                    ticks: {
+                      color: '#64748b'
+                    }
+                  },
+                  y: {
+                    beginAtZero: true,
+                    ticks: {
+                      color: '#64748b'
+                    },
+                    grid: {
+                      color: 'rgba(148,163,184,0.15)'
+                    }
+                  }
+                }
+              }
+            });
+
+            chartInstances.push(chart);
+          });
+        } catch (error) {
+          console.error(error);
+          chartsGrid.innerHTML = '<div class="empty">Failed to load KPI charts.</div>';
+        }
+      }
+
       async function refreshKpis() {
         await loadKpis(document.getElementById("search").value || "");
         showToast("Dashboard refreshed");
@@ -3251,6 +3598,26 @@ chartsGrid.innerHTML = rows.map((row, index) =>
 
       function closeModal() {
         document.getElementById("modalBackdrop").classList.remove("open");
+      }
+
+      function updateModalOverview() {
+        const isEdit = !!document.getElementById("kpi_id").value;
+        document.getElementById("modalModeBadge").textContent = isEdit ? "Edit KPI" : "Create KPI";
+        document.getElementById("overviewFrequency").textContent =
+          document.getElementById("frequency").value.trim() || "Not set";
+        document.getElementById("overviewUnit").textContent =
+          document.getElementById("unit").value.trim() || "Not set";
+        document.getElementById("overviewTarget").textContent =
+          document.getElementById("target").value.trim() || "Not set";
+      }
+
+      function bindOverviewListeners() {
+        ["frequency", "unit", "target"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.addEventListener("input", updateModalOverview);
+          }
+        });
       }
 
       function resetForm() {
@@ -3276,6 +3643,9 @@ chartsGrid.innerHTML = rows.map((row, index) =>
           const el = document.getElementById(id);
           if (el) el.value = "";
         });
+
+        document.getElementById("tolerance_type").value = "";
+        updateModalOverview();
       }
 
       function formatToleranceForInput(value, toleranceType) {
@@ -3297,9 +3667,6 @@ chartsGrid.innerHTML = rows.map((row, index) =>
           "definition",
           "frequency",
           "target",
-          "tolerance_type",
-          "up_tolerance",
-          "low_tolerance",
           "max",
           "min",
           "calculation_on",
@@ -3311,14 +3678,20 @@ chartsGrid.innerHTML = rows.map((row, index) =>
           if (el) el.value = data[id] ?? "";
         });
 
+        document.getElementById("tolerance_type").value = data.tolerance_type || "";
         document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
         document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
+
+        updateModalOverview();
       }
 
       function openCreateModal() {
         resetForm();
         document.getElementById("modalTitle").textContent = "Add New KPI";
+        document.getElementById("modalSubtitle").textContent =
+          "Create a new KPI with clear identity, target logic and threshold visibility.";
         document.getElementById("deleteBtn").style.display = "none";
+        updateModalOverview();
         openModal();
       }
 
@@ -3329,8 +3702,13 @@ chartsGrid.innerHTML = rows.map((row, index) =>
 
           const data = await res.json();
           fillForm(data);
+
           document.getElementById("modalTitle").textContent = "Edit KPI";
+          document.getElementById("modalSubtitle").textContent =
+            "Review and update KPI details, targets, rules and displayed thresholds.";
           document.getElementById("deleteBtn").style.display = "inline-flex";
+
+          updateModalOverview();
           openModal();
         } catch (error) {
           showToast("Unable to load KPI");
@@ -3426,6 +3804,7 @@ chartsGrid.innerHTML = rows.map((row, index) =>
         if (e.target.id === "modalBackdrop") closeModal();
       });
 
+      bindOverviewListeners();
       loadKpis();
     </script>
   </body>
@@ -3993,7 +4372,9 @@ const getOpenAIClient = () => {
   }
 
   const OpenAI = require("openai");
-  return new OpenAI({ apiKey: process.env.SECRET_KEY });
+  return new OpenAI({
+  apiKey: process.env.SECRET_KEY,
+});
 };
 
 const formatInputDate = (dateValue) => {
@@ -4636,27 +5017,6 @@ const buildKpiAssistantFallbackReply = ({
   return lines.filter(Boolean).join(" ");
 };
 
-const isFastKpiAssistantRequest = ({
-  message,
-  selectedKpi,
-  knowledgeBaseContext
-}) => {
-  if (!selectedKpi) return false;
-
-  const normalizedMessage = String(message || "").trim().toLowerCase();
-  if (!normalizedMessage) return true;
-
-  if (normalizedMessage.length <= 80) return true;
-
-  if (
-    /\b(analy[sz]e|analysis|why|cause|causes|driver|drivers|action|actions|owner|owners|metric|metrics|what happened|what should|next step|next steps|kb|knowledge base|delay|quotation|quote|rfq|costing)\b/.test(normalizedMessage)
-  ) {
-    return true;
-  }
-
-  return Boolean(knowledgeBaseContext?.diagnostics?.has_strong_match);
-};
-
 const buildFastKpiAssistantReply = ({
   selectedKpiSummary,
   selectedKpiDelayFocus,
@@ -4792,14 +5152,14 @@ const generateKpiAssistantReply = async ({
   const promptKnowledgeMatches = (knowledgeBaseContext.matches || []).slice(0, 3);
   const promptKnowledgeRelated = (knowledgeBaseContext.related || []).slice(0, 2);
 
-  const prompt = `
+const prompt = `
 CONFIRMED PAGE CONTEXT
 ${JSON.stringify({
-    responsible: responsible?.name || null,
-    plant: responsible?.plant_name || null,
-    department: responsible?.department_name || null,
-    week: week || null
-  }, null, 2)}
+  responsible: responsible?.name || null,
+  plant: responsible?.plant_name || null,
+  department: responsible?.department_name || null,
+  week: week || null
+}, null, 2)}
 
 SELECTED KPI
 ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
@@ -4813,14 +5173,18 @@ ${JSON.stringify(promptKnowledgeMatches, null, 2)}
 RELATED KNOWLEDGE BASE NODES
 ${JSON.stringify(promptKnowledgeRelated, null, 2)}
 
-USER QUESTION
+USER MESSAGE
 ${message}
 
 IMPORTANT
-- Use only the nodes above
-- Do not invent causes, actions, owners, metrics, or evidence
-- Do not add sections outside the required format
-- If support is insufficient, say so explicitly
+- Follow the system prompt exactly.
+- Use conversation data first, then the provided knowledge base nodes, then general knowledge only if really necessary.
+- Use confirmed page/KPI context as part of the conversation evidence.
+- Use the knowledge base to support diagnosis.
+- Do not invent causes, actions, owners, deadlines, metrics, or evidence.
+- During diagnosis, prioritize asking one short question over giving explanations.
+- If support is insufficient, ask the next best short diagnostic question.
+- If a user proposes a shortcut or estimate, evaluate whether it is reasonable before accepting it.
 `.trim();
 
   let openai = null;
@@ -4836,103 +5200,289 @@ IMPORTANT
 
   try {
 
-    const systemPrompt = `
-You are an AI support assistant that must answer only from the provided knowledge base nodes.
+   const systemPrompt = `
+You are an intelligent assistant designed to capture, structure, analyze, and refine user information through natural conversation in order to identify:
 
-RULES
-- Use only the matched node content.
-- Do not invent extra causes, actions, metrics, owners, links, tags, or explanations.
-- Do not summarize outside the node fields.
-- If one node is selected, format the answer using that node only.
-- Display all available points from the node when they exist.
-- Show each section only if that field exists and is not empty.
-- Keep the answer structured, clear, and easy to scan.
-- Do not output JSON.
+- a root cause
+- an action
+- an owner
+- a reasonable deadline
 
-WORKFLOW
-- If the user asks for one point such as Description, Symptoms, Key questions, Required data, Root cause hypotheses, Priority actions, Metrics to monitor, Linked nodes, Collaboration, or Tags, answer only that point.
-- If the user asks for Conclusion, generate a full structured final response that includes all of these sections together:
-  1. Description
-  2. Symptoms
-  3. Key questions
-  4. Required data
-  5. Root cause hypotheses
-  6. Priority actions
-  7. Metrics to monitor
-  8. Linked nodes
-  9. Collaboration
-  10. Tags
-- Do not return the suggested analysis points list when the user asks for Conclusion.
-- Do not ask the user to choose another point after Conclusion.
-- Do not add any extra intro or outro text.
+Your behavior follows these core principles:
 
-POINT-BY-POINT RESPONSE FORMAT
-Description:
-- [description]
+### 1. Memory and Context
+- You remember all previously provided user inputs.
+- You NEVER ask a question if the answer has already been provided.
+- You continuously update an internal structured dataset when a schema or JSON target exists.
+- This dataset is STRICTLY internal and must NEVER be shown, printed, summarized as a structure, or referenced explicitly.
+- You reuse past answers when logically valid.
+- You may infer missing links from prior answers, but never invent facts.
 
-Symptoms:
-- [symptoms]
+### 2. Main Objective
+Your goal is to guide the user efficiently toward a usable diagnosis and decision by identifying:
+- the real problem
+- the root cause
+- the practical corrective action
+- who should own it
+- a realistic deadline
 
-Key questions:
-- [questions]
+You must keep moving toward these five outputs unless the user changes the topic.
 
-Required data:
-- [evidence_to_collect]
+### 3. Reasoning: Cause and Effect
+- You analyze relationships between answers.
+- You detect cause-effect links across the conversation.
+- You distinguish between:
+  - symptom
+  - cause
+  - root cause
+  - effect
+  - action
+  - owner
+  - deadline
+- You refine future questions based on previous answers.
+- If an answer implies another field:
+  - populate it internally if confidence is high, or
+  - ask for confirmation if uncertainty remains.
+- You must not confuse a complaint, an assumption, and a validated root cause.
 
-Root cause hypotheses:
-- [root_cause_hypotheses]
+### 4. Detecting User-Proposed Solutions
+- At any step, if the user proposes an action, shortcut, workaround, decision, operating rule, estimate, bypass, or organizational change, treat it as a potential solution.
+- You must detect such proposals directly from the user’s wording, even if they are implicit.
+- Examples of user-proposed solutions include:
+  - “we should estimate”
+  - “let’s not wait for supplier quotes”
+  - “sales can launch with assumptions”
+  - “engineering should fill the gaps later”
+  - “we should add a checklist”
+  - “we should block the file”
+- When a proposed solution appears, do NOT accept it automatically.
+- First evaluate whether it is reasonable.
 
-Priority actions:
-- [actions]
+### 5. Reasonableness Test for Proposed Solutions
+Whenever the user suggests a solution, test it using these criteria:
 
-Metrics to monitor:
-- [metrics]
+1. Does it reduce the delay or problem in a real way?
+2. Does it create a bigger downstream risk?
+3. Is it acceptable for quality, profitability, customer credibility, and execution?
+4. Is it based on controlled assumptions or on guesswork?
+5. Can it be framed with clear conditions of use?
+6. Does it require validation, containment, or boundaries?
+7. Is it a root-cause solution or just a speed shortcut?
 
-Linked nodes:
-- [target_node_id] -> [relation_type] -> [relation_label.en]
+If the solution seems reasonable:
+- accept it provisionally
+- refine it
+- add the conditions that make it safe and professional
 
-Collaboration:
-- Owner function: [collaboration.owner_function]
-- Participants: [collaboration.participants]
-- Decision needed: [collaboration.decision_needed]
-- Workshop prompt: [collaboration.workshop_prompt]
+If the solution seems only partly reasonable:
+- keep the useful part
+- challenge the risky part
+- reformulate it into a controlled version
 
-Tags:
-- [tags]
+If the solution is not reasonable:
+- explain briefly why
+- redirect toward a safer alternative
+- continue the questioning
 
-CONCLUSION RESPONSE FORMAT
-Description:
-- [description]
+### 6. Controlled Acceptance of Estimation and Assumptions
+If the user proposes estimating costs, using assumptions, or not waiting for missing data:
+- do not reject automatically
+- assess whether a controlled estimate is acceptable
+- distinguish between:
+  - professional hypothesis
+  - market benchmark
+  - should-cost logic
+  - historical comparable
+  - blind guess
+- Controlled estimation may be acceptable only if:
+  - the missing data are clearly identified
+  - the uncertainty is visible
+  - the impact is limited or understood
+  - the estimate is temporary
+  - someone owns the follow-up
+  - the quote can later be corrected or confirmed if needed
+- If estimation would expose the business to serious pricing error, margin loss, technical mismatch, or customer credibility damage, you must challenge it.
 
-Symptoms:
-- [symptoms]
+### 7. Question Strategy
+- Ask only one question at a time by default.
+- Questions must be clear, direct, and useful.
+- Keep them short.
+- Prefer questions that help discriminate between causes.
+- Prefer structured answer options when useful.
 
-Key questions:
-- [questions]
+#### Format for guided questions
+Use inline numbered options:
 
-Required data:
-- [evidence_to_collect]
+"Question? (1 option A, 2 option B, 3 option C)"
 
-Root cause hypotheses:
-- [root_cause_hypotheses]
+Example:
 
-Priority actions:
-- [actions]
+"Where is the biggest delay? (1 internal missing data, 2 supplier response, 3 validation, 4 priorities changing)"
 
-Metrics to monitor:
-- [metrics]
+### 8. Smart Grouping
+- When useful, you may group 3 to 4 related elements in one question.
+- Use grouping especially when:
+  - no active deep discussion is underway
+  - several fields are missing
+  - the user appears comfortable progressing faster
+- Keep grouped questions easy to answer.
+- Do not overload the user.
 
-Linked nodes:
-- [target_node_id] -> [relation_type] -> [relation_label.en]
+Example:
 
-Collaboration:
-- Owner function: [collaboration.owner_function]
-- Participants: [collaboration.participants]
-- Decision needed: [collaboration.decision_needed]
-- Workshop prompt: [collaboration.workshop_prompt]
+"What is mainly happening? (1 sales launches too early, 2 suppliers are too slow, 3 approvals are too slow, 4 priorities keep changing)"
 
-Tags:
-- [tags]
+### 9. Answer Autocomplete
+- If you already have enough information:
+  - do not ask the question
+  - fill the field internally
+- Ask for confirmation only when uncertainty matters.
+- Never pretend certainty when evidence is weak.
+
+### 10. Internal Field Handling
+If a target schema or JSON structure exists:
+- use it internally as the target schema
+- progressively fill it
+- never invent missing values
+- only populate fields when confidence is sufficient
+- never display the internal schema
+- never expose internal updates
+
+### 11. Tone and Interaction Style
+- Always communicate adult-to-adult.
+- Be neutral, concise, and respectful.
+- Never be condescending.
+- Never be overly enthusiastic.
+- Do not overwhelm the user with long explanations.
+- Let the user think and answer independently.
+- Be direct when the user’s proposed solution is risky.
+
+### 12. Truth and Reliability
+- Never lie.
+- Never invent data.
+- Never assume facts without enough evidence.
+- If unsure:
+  - ask, or
+  - leave the field unfilled
+- If using general knowledge, keep it separate from conversation-derived facts.
+- Never validate a root cause without enough support from the conversation.
+
+### 13. Knowledge Priority
+Use knowledge in this order:
+1. conversation data
+2. provided files or knowledge base
+3. general knowledge only when necessary
+
+Always distinguish between what the user said and what you infer.
+
+### 14. Response Discipline
+- Keep responses short and purposeful.
+- Ask or act, not both unless necessary.
+- Avoid repeating known information unless needed for precision.
+- Do not produce long summaries during the diagnosis phase.
+- Move the discussion forward.
+
+### 15. Diagnostic Logic
+At each step, you must internally determine whether the user is expressing:
+- a symptom
+- a suspected cause
+- a proposed solution
+- a constraint
+- a decision
+- an owner
+- a deadline
+
+Then decide whether to:
+- store it
+- challenge it
+- refine it
+- ask the next best question
+
+### 16. Root Cause Discipline
+Do not stop at the first plausible cause.
+
+Try to separate:
+- what is happening
+- why it happens
+- why that is allowed to happen
+- what system rule, behavior, or gap creates recurrence
+
+A root cause should explain why the problem repeats or survives.
+
+### 17. Action Quality
+An action is acceptable only if it is:
+- specific
+- practical
+- owned
+- time-bound
+- likely to reduce the problem
+
+Do not accept vague actions like:
+- “communicate better”
+- “be faster”
+- “follow up more”
+
+Refine them into operational actions.
+
+### 18. Owner Quality
+If the user mentions a team, function, or role that clearly owns the issue, capture it internally.
+If ownership is unclear, ask.
+Prefer a real accountable owner rather than a vague collective when possible.
+
+### 19. Deadline Quality
+If the user proposes a deadline, test whether it is realistic.
+
+A reasonable deadline should fit:
+- urgency
+- implementation complexity
+- required coordination
+- business impact
+
+If the deadline is unrealistic, challenge it briefly and ask for a more credible one.
+
+### 20. Execution Loop
+At each step:
+
+1. Analyze known data from the conversation and internal dataset.
+2. Detect any missing or uncertain fields among:
+   - problem
+   - root cause
+   - action
+   - owner
+   - deadline
+3. Detect whether the user has already proposed a solution.
+4. If yes, test whether it is reasonable.
+5. Decide whether to:
+   - fill automatically if confidence is high
+   - ask one targeted question
+   - challenge and refine a risky proposed solution
+6. Prefer grouping when it clearly improves efficiency.
+7. Continue until the diagnosis is good enough or the user stops.
+
+### 21. Expected Interaction Pattern
+When the user gives a statement such as:
+
+“Sales are pushing hard without all the data. It is possible to go faster by estimating some cost and making professional hypotheses. At the same time our suppliers are too long to quote so we should just estimate.”
+
+You must recognize that the user has already provided:
+- symptoms
+- possible causes
+- at least one proposed solution
+
+You must then test that solution rather than simply accept it.
+
+A good next step would be a question like:
+
+“What is the biggest risk if you estimate instead of waiting? (1 pricing too low, 2 technical mismatch, 3 customer credibility, 4 limited risk if assumptions are controlled)”
+
+### 22. Final Goal
+Efficient, natural, structured diagnosis with:
+- minimal friction
+- no redundancy
+- strong reasoning
+- detection of user-proposed solutions
+- validation of whether those solutions are reasonable
+- zero leakage of internal data structures
 `.trim();
 
     const completion = await openai.chat.completions.create({
@@ -4948,7 +5498,7 @@ Tags:
         }
       ],
       temperature: 0.1,
-      max_tokens: 450
+      max_tokens: 220
     });
 
     return (
@@ -4969,10 +5519,6 @@ Tags:
     });
   }
 };
-
-
-
-
 
 // ============================================================
 // getResponsibleWithKPIs â€” now also fetches existing corrective
@@ -5244,51 +5790,37 @@ const generateCASuggestions = async (kpi) => {
     const gapToTarget = !isNaN(targetVal) ? (targetVal - currentVal).toFixed(2) : "N/A";
     const gapToLow = !isNaN(lowLimit) ? (lowLimit - currentVal).toFixed(2) : "N/A";
 
-    const prompt = `
-You are a senior industrial performance manager in manufacturing.
+const prompt = `
+CONFIRMED PAGE CONTEXT
+${JSON.stringify({
+  responsible: responsible?.name || null,
+  plant: responsible?.plant_name || null,
+  department: responsible?.department_name || null,
+  week: week || null
+}, null, 2)}
 
-Your task is to write 2 highly practical corrective action suggestions for a KPI that is underperforming.
+SELECTED KPI
+${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
 
-KPI CONTEXT
-- KPI: ${kpi.subject || "N/A"}
-- Subtitle: ${kpi.indicator_sub_title || "N/A"}
-- Definition: ${kpi.definition || "N/A"}
-- Calculation basis: ${kpi.calculation_on || "N/A"}
-- Frequency: ${kpi.frequency || "N/A"}
-- Unit: ${kpi.unit || "N/A"}
-- Current value: ${currentVal}
-- Target: ${targetVal || "N/A"}
-- Low limit: ${kpi.low_limit || "N/A"}
-- High limit: ${kpi.high_limit || "N/A"}
-- Good direction: ${goodDirection === "down" ? "Down (lower is better)" : "Up (higher is better)"}
-- Gap to target: ${gapToTarget}
-- Gap to low limit: ${gapToLow}
+SELECTED KPI SUMMARY
+${JSON.stringify(selectedKpiSummary, null, 2)}
 
-INSTRUCTIONS
-- Give exactly 2 different hypotheses.
-- Be specific to the KPI context.
-- Use direct operational language.
-- Avoid generic phrases like "improve monitoring" or "optimize process" unless you say exactly how.
-- The immediate action must be executable by a plant/department responsible.
-- Evidence must be measurable and concrete.
-- Mention exact checks, exact actions, and exact proof.
-- Keep each field short but precise.
-- Write like an industrial manager, not like a consultant.
+MATCHED KNOWLEDGE BASE NODES
+${JSON.stringify(promptKnowledgeMatches, null, 2)}
 
-Return ONLY valid JSON with this format:
-{
-  "suggestion_1": {
-    "root_cause": "...",
-    "immediate_action": "...",
-    "evidence": "..."
-  },
-  "suggestion_2": {
-    "root_cause": "...",
-    "immediate_action": "...",
-    "evidence": "..."
-  }
-}
-`;
+RELATED KNOWLEDGE BASE NODES
+${JSON.stringify(promptKnowledgeRelated, null, 2)}
+
+USER MESSAGE
+${message}
+
+IMPORTANT
+- Follow the system prompt exactly.
+- Use conversation data first.
+- Use the provided knowledge base nodes as diagnostic support.
+- Use confirmed page/KPI context as supporting evidence.
+- Do not invent causes, actions, owners, deadlines, metrics, or evidence.
+`.trim();
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -8837,31 +9369,18 @@ function syncDomFromStore(kvId) {
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
           const assistantState = {
-         selectedKpiId: null,
-         booted: false,
-         pending: false,
-         greetingKey: null,
-         selectedPoints: [],
-         availablePoints: [
-          "Description",
-          "Symptoms",
-          "Key questions",
-          "Required data",
-          "Root cause hypotheses",
-          "Priority actions",
-          "Metrics to monitor",
-          "Linked nodes",
-          "Collaboration",
-          "Tags"
-         ]
-         };
+          selectedKpiId: null,
+          booted: false,
+          pending: false,
+          greetingKey: null
+          };
 
           function addAssistantMessage(role, text) {
-  return new Promise((resolve) => {
-    if (!assistantMessages) {
-      resolve();
-      return;
-    }
+          return new Promise((resolve) => {
+        if (!assistantMessages) {
+         resolve();
+         return;
+         }
 
     const msg = document.createElement("div");
     msg.className = "assistant-message " + role;
@@ -8910,38 +9429,24 @@ function syncDomFromStore(kvId) {
             return subtitle && title ? (subtitle + " (" + title + ")") : (subtitle || title || "Selected KPI");
           }
 
-        function resetAssistantConversation() {
-          if (assistantMessages) assistantMessages.innerHTML = "";
-          assistantState.booted = false;
-          assistantState.greetingKey = null;
-          assistantState.selectedPoints = [];
-        }
-      function buildAssistantGreeting() {
-  if (!assistantState.selectedKpiId) {
-    return "Hello! I can help with KPI context and with quotation or costing delay diagnosis based on the knowledge base. Ask about causes, actions, owners, metrics, or linked issues.";
-  }
+          function resetAssistantConversation() {
+           if (assistantMessages) assistantMessages.innerHTML = "";
+           assistantState.booted = false;
+           assistantState.greetingKey = null;
+          }
+  
+          function buildAssistantGreeting() {
+          if (!assistantState.selectedKpiId) {
+           return "Hello. Describe the issue you want to diagnose. I will help identify the root cause, action, owner, and deadline using the available knowledge base.";
+           }
 
-  const card = getKpiCardById(assistantState.selectedKpiId);
-  const kpiName = getAssistantKpiDisplayName(card);
+           const card = getKpiCardById(assistantState.selectedKpiId);
+           const kpiName = getAssistantKpiDisplayName(card);
 
-  return [
-    "Focused on: " + kpiName,
-    "",
-    "Suggested analysis points:",
-    "1. Description",
-    "2. Symptoms",
-    "3. Key questions",
-    "4. Required data",
-    "5. Root cause hypotheses",
-    "6. Priority actions",
-    "7. Metrics to monitor",
-    "8. Linked nodes",
-    "9. Collaboration",
-    "10. Tags",
-    "",
-    "Please choose one point to continue."
-  ].join("\\n");
-}
+           return "Focused on: " + kpiName + "\\n\\nDescribe the issue, delay, or risk you want to diagnose.";
+          } 
+
+
           function syncAssistantInputPlaceholder() {
             if (!assistantInput) return;
             if (!assistantState.selectedKpiId) {
@@ -8992,24 +9497,8 @@ function syncDomFromStore(kvId) {
           window.openAssistantForKpi = openAssistantForKpi;
           
 
-
-  async function sendAssistantPrompt(message) {
-  let cleanMessage = String(message || "").trim();
-  const normalizedMessage = cleanMessage.toLowerCase();
-  if (
-   normalizedMessage === "conclusion" ||
-   normalizedMessage === "final conclusion" ||
-   normalizedMessage === "summary"
-  ) {
-   cleanMessage = "Conclusion";
- }
-  if (!cleanMessage || assistantState.pending) return;
-
-  const numericChoice = parseInt(cleanMessage, 10);
-  if (!isNaN(numericChoice) && numericChoice >= 1 && numericChoice <= assistantState.availablePoints.length) {
-    cleanMessage = assistantState.availablePoints[numericChoice - 1];
-  }
-
+async function sendAssistantPrompt(message) {
+  const cleanMessage = String(message || "").trim();
   if (!cleanMessage || assistantState.pending) return;
 
   assistantState.pending = true;
@@ -9034,35 +9523,17 @@ function syncDomFromStore(kvId) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Request failed");
 
-    await addAssistantMessage("assistant", data.reply || "I could not generate a response.");
-
-    if (!assistantState.selectedPoints.includes(cleanMessage)) {
-      assistantState.selectedPoints.push(cleanMessage);
-    }
-
-    const remainingPoints = assistantState.availablePoints.filter(
-      (point) => !assistantState.selectedPoints.includes(point)
+    await addAssistantMessage(
+      "assistant",
+      data.reply || "I could not generate a response."
     );
-
-   if (cleanMessage === "Conclusion") {
-   await new Promise((resolve) => setTimeout(resolve, 250));
-
-   await addAssistantMessage(
-    "assistant",
-    "Do you need any other point to verify it?"
-    );
-  } else if (remainingPoints.length) {
-  await new Promise((resolve) => setTimeout(resolve, 250));
-
-  await addAssistantMessage(
-    "assistant",
-    "Choose another point or type Conclusion to generate all points."
-    );
-  }
 
     setAssistantStatus("AI assistant is ready.");
   } catch (err) {
-    await addAssistantMessage("assistant", "I could not answer right now. Please try again.");
+    await addAssistantMessage(
+      "assistant",
+      "I could not answer right now. Please try again."
+    );
     setAssistantStatus("AI assistant is unavailable.");
   } finally {
     assistantState.pending = false;
