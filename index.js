@@ -4919,13 +4919,56 @@ const applySelectedKpiKnowledgeBaseFocus = (knowledgeBaseContext, selectedKpiDel
   };
 };
 
+const MAX_ASSISTANT_HISTORY_MESSAGES = 14;
+
+const normalizeAssistantConversationHistory = (history = []) =>
+  (Array.isArray(history) ? history : [])
+    .map((entry) => {
+      const role = entry?.role === "assistant" ? "assistant" : entry?.role === "user" ? "user" : null;
+      const content = normalizeText(entry?.content ?? entry?.contextText ?? entry?.text ?? entry?.message);
+      if (!role || !content) return null;
+      return { role, content };
+    })
+    .filter(Boolean)
+    .slice(-MAX_ASSISTANT_HISTORY_MESSAGES);
+
+const buildAssistantConversationMemory = (history = []) => {
+  const normalizedHistory = normalizeAssistantConversationHistory(history);
+  const recentUserInputs = normalizedHistory
+    .filter((entry) => entry.role === "user")
+    .map((entry) => entry.content)
+    .slice(-6);
+  const recentAssistantQuestions = normalizedHistory
+    .filter((entry) => entry.role === "assistant")
+    .map((entry) => entry.content)
+    .filter((content) => content.includes("?") || /\n\s*1\.\s+/m.test(content))
+    .slice(-4);
+
+  return {
+    history_available: normalizedHistory.length > 0,
+    recent_user_inputs: recentUserInputs,
+    recent_assistant_questions: recentAssistantQuestions,
+    last_user_input: recentUserInputs.length ? recentUserInputs[recentUserInputs.length - 1] : null,
+    completed_turns: Math.floor(normalizedHistory.length / 2)
+  };
+};
+
 const buildKpiScopedKnowledgeBaseQuery = ({
   message,
+  conversationHistory,
   selectedKpi,
   selectedKpiSummary,
   selectedKpiDelayFocus
 }) => {
   const queryParts = [String(message || "").trim()];
+  const recentConversationInputs = normalizeAssistantConversationHistory(conversationHistory)
+    .filter((entry) => entry.role === "user")
+    .map((entry) => entry.content)
+    .slice(-4);
+
+  if (recentConversationInputs.length) {
+    queryParts.push(`Recent conversation context: ${recentConversationInputs.join(" | ")}`);
+  }
 
   if (selectedKpiSummary?.display_name) {
     queryParts.push(
@@ -5110,9 +5153,12 @@ const generateKpiAssistantReply = async ({
   week,
   selectedKpiId,
   kpis,
-  message
+  message,
+  conversationHistory
 }) => {
   const assistantKpis = buildAssistantKpiContext(kpis);
+  const normalizedConversationHistory = normalizeAssistantConversationHistory(conversationHistory);
+  const conversationMemory = buildAssistantConversationMemory(normalizedConversationHistory);
   const selectedKpi = assistantKpis.find((kpi) =>
     String(kpi.kpi_id) === String(selectedKpiId) ||
     String(kpi.kpi_values_id) === String(selectedKpiId)
@@ -5121,6 +5167,7 @@ const generateKpiAssistantReply = async ({
   const selectedKpiDelayFocus = buildSelectedKpiDelayFocus(selectedKpi);
   const knowledgeBaseQuery = buildKpiScopedKnowledgeBaseQuery({
     message,
+    conversationHistory: normalizedConversationHistory,
     selectedKpi,
     selectedKpiSummary,
     selectedKpiDelayFocus
@@ -5152,7 +5199,7 @@ const generateKpiAssistantReply = async ({
   const promptKnowledgeMatches = (knowledgeBaseContext.matches || []).slice(0, 3);
   const promptKnowledgeRelated = (knowledgeBaseContext.related || []).slice(0, 2);
 
-const prompt = `
+const contextPrompt = `
 CONFIRMED PAGE CONTEXT
 ${JSON.stringify({
   responsible: responsible?.name || null,
@@ -5160,6 +5207,12 @@ ${JSON.stringify({
   department: responsible?.department_name || null,
   week: week || null
 }, null, 2)}
+
+KNOWN CONVERSATION MEMORY
+${JSON.stringify(conversationMemory, null, 2)}
+
+RECENT KPI CONTEXT
+${JSON.stringify(promptKpiContext, null, 2)}
 
 SELECTED KPI
 ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
@@ -5178,6 +5231,10 @@ ${message}
 
 IMPORTANT
 - Follow the system prompt exactly.
+- Treat the conversation history as the active memory for this diagnosis.
+- Use the available memory before asking any follow-up question.
+- Do not repeat a question if the answer is already present or strongly implied in the history.
+- If the user's latest reply is short, resolve it using the immediately preceding assistant question and options.
 - Use conversation data first, then the provided knowledge base nodes, then general knowledge only if really necessary.
 - Use confirmed page/KPI context as part of the conversation evidence.
 - Use the knowledge base to support diagnosis.
@@ -5498,6 +5555,13 @@ Efficient, natural, structured diagnosis with:
 - detection of user-proposed solutions
 - validation of whether those solutions are reasonable
 - zero leakage of internal data structures
+
+### 23. Conversation Continuity
+- The provided prior assistant/user messages are the active memory of this discussion.
+- Never restart the diagnosis unless the user clearly changes topic.
+- Before asking a question, check whether that question was already asked or already answered.
+- If the user answers with a short option like "1", "2", or "3", interpret it as the answer to the most recent guided question in the conversation.
+- Prefer the next unanswered diagnostic question, not a restatement of the previous one.
 `.trim();
 
     const completion = await openai.chat.completions.create({
@@ -5508,8 +5572,16 @@ Efficient, natural, structured diagnosis with:
           content: systemPrompt
         },
         {
+          role: "system",
+          content: contextPrompt
+        },
+        ...normalizedConversationHistory.map((entry) => ({
+          role: entry.role,
+          content: entry.content
+        })),
+        {
           role: "user",
-          content: prompt
+          content: message
         }
       ],
       temperature: 0.1,
@@ -5908,7 +5980,8 @@ app.post("/kpi-ai-assistant", async (req, res) => {
       week,
       selected_kpi_id,
       message,
-      kpis
+      kpis,
+      conversation_history
     } = req.body || {};
 
     const cleanMessage = String(message || "").trim();
@@ -5935,7 +6008,8 @@ app.post("/kpi-ai-assistant", async (req, res) => {
       week,
       selectedKpiId: selected_kpi_id,
       kpis: Array.isArray(kpis) ? kpis : [],
-      message: cleanMessage
+      message: cleanMessage,
+      conversationHistory: Array.isArray(conversation_history) ? conversation_history : []
     });
 
     res.json({ reply });
@@ -9383,12 +9457,120 @@ function syncDomFromStore(kvId) {
           const assistantForm = document.getElementById("assistantForm");
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
+          const assistantStorageKey = "kpi-assistant:${responsible_id}:${week}";
           const assistantState = {
-          selectedKpiId: null,
-          booted: false,
-          pending: false,
-          greetingKey: null
+            selectedKpiId: null,
+            pending: false,
+            threads: loadAssistantThreads()
           };
+
+          function normalizeAssistantThreadMessage(entry) {
+            const role = entry && (entry.role === "assistant" || entry.role === "user") ? entry.role : null;
+            const text = String(entry?.text ?? "").trim();
+            const contextText = String(entry?.contextText ?? entry?.content ?? text).trim();
+            if (!role || !text || !contextText) return null;
+            return {
+              role,
+              text,
+              contextText,
+              ts: Number(entry?.ts) || Date.now()
+            };
+          }
+
+          function loadAssistantThreads() {
+            try {
+              const raw = window.localStorage ? window.localStorage.getItem(assistantStorageKey) : null;
+              if (!raw) return {};
+              const parsed = JSON.parse(raw);
+              const normalized = {};
+              Object.keys(parsed || {}).forEach((key) => {
+                const threadMessages = Array.isArray(parsed[key]?.messages)
+                  ? parsed[key].messages.map(normalizeAssistantThreadMessage).filter(Boolean).slice(-18)
+                  : [];
+                normalized[key] = { messages: threadMessages };
+              });
+              return normalized;
+            } catch (err) {
+              return {};
+            }
+          }
+
+          function persistAssistantThreads() {
+            try {
+              if (!window.localStorage) return;
+              window.localStorage.setItem(assistantStorageKey, JSON.stringify(assistantState.threads));
+            } catch (err) {
+              // Ignore storage errors so the assistant remains usable.
+            }
+          }
+
+          function getAssistantThreadKey(kvId) {
+            const resolvedKpiId = kvId === undefined ? assistantState.selectedKpiId : kvId;
+            return resolvedKpiId === null || resolvedKpiId === undefined || resolvedKpiId === ""
+              ? "all"
+              : "kpi:" + String(resolvedKpiId);
+          }
+
+          function ensureAssistantThread(threadKey) {
+            const key = threadKey || getAssistantThreadKey();
+            if (!assistantState.threads[key] || !Array.isArray(assistantState.threads[key].messages)) {
+              assistantState.threads[key] = { messages: [] };
+            }
+            return assistantState.threads[key];
+          }
+
+          function getCurrentAssistantThread() {
+            return ensureAssistantThread();
+          }
+
+          function pushAssistantThreadMessage(role, text, contextText) {
+            const cleanText = String(text || "").trim();
+            const cleanContextText = String(contextText || text || "").trim();
+            if (!cleanText || !cleanContextText) return;
+            const thread = getCurrentAssistantThread();
+            thread.messages.push({
+              role,
+              text: cleanText,
+              contextText: cleanContextText,
+              ts: Date.now()
+            });
+            if (thread.messages.length > 18) {
+              thread.messages = thread.messages.slice(-18);
+            }
+            persistAssistantThreads();
+          }
+
+          function getAssistantRequestHistory(latestContextText) {
+            const thread = getCurrentAssistantThread();
+            const history = thread.messages.map((entry) => ({
+              role: entry.role,
+              content: entry.contextText || entry.text
+            }));
+            const last = history[history.length - 1];
+            if (
+              latestContextText &&
+              last &&
+              last.role === "user" &&
+              String(last.content || "").trim() === String(latestContextText || "").trim()
+            ) {
+              history.pop();
+            }
+            return history.slice(-14);
+          }
+
+          function appendAssistantMessageInstant(role, text) {
+            if (!assistantMessages) return;
+            const msg = document.createElement("div");
+            msg.className = "assistant-message " + role;
+            msg.innerHTML = String(text || "")
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .split("\\n")
+              .join("<br>");
+            assistantMessages.appendChild(msg);
+            assistantMessages.scrollTop = assistantMessages.scrollHeight;
+          }
 
           function addAssistantMessage(role, text) {
           return new Promise((resolve) => {
@@ -9444,12 +9626,6 @@ function syncDomFromStore(kvId) {
             return subtitle && title ? (subtitle + " (" + title + ")") : (subtitle || title || "Selected KPI");
           }
 
-          function resetAssistantConversation() {
-           if (assistantMessages) assistantMessages.innerHTML = "";
-           assistantState.booted = false;
-           assistantState.greetingKey = null;
-          }
-  
           function buildAssistantGreeting() {
           if (!assistantState.selectedKpiId) {
            return "Hello. Describe the issue you want to diagnose. I will help identify the root cause, action, owner, and deadline using the available knowledge base.";
@@ -9461,6 +9637,90 @@ function syncDomFromStore(kvId) {
            return "Focused on: " + kpiName + "\\n\\nDescribe the issue, delay, or risk you want to diagnose.";
           } 
 
+          function ensureAssistantGreeting() {
+            const thread = getCurrentAssistantThread();
+            if (!thread.messages.length) {
+              const greeting = buildAssistantGreeting();
+              pushAssistantThreadMessage("assistant", greeting, greeting);
+            }
+          }
+
+          function renderAssistantConversation() {
+            if (!assistantMessages) return;
+            ensureAssistantGreeting();
+            assistantMessages.innerHTML = "";
+            getCurrentAssistantThread().messages.forEach((entry) => {
+              appendAssistantMessageInstant(entry.role, entry.text);
+            });
+          }
+
+          function extractGuidedQuestionOptions(text) {
+            const lines = String(text || "")
+              .replaceAll("\\r", "")
+              .split("\\n")
+              .map((line) => line.trim())
+              .filter(Boolean);
+            const options = {};
+
+            lines.forEach((line) => {
+              const separatorIndex = line.indexOf(". ");
+              if (separatorIndex <= 0) return;
+              const optionNumber = line.slice(0, separatorIndex).trim();
+              const optionText = line.slice(separatorIndex + 2).trim();
+              if (optionNumber.length === 1 && optionNumber >= "1" && optionNumber <= "9" && optionText) {
+                options[optionNumber] = optionText;
+              }
+            });
+
+            if (!Object.keys(options).length) return null;
+
+            const questionLine = lines.find((line) => {
+              const separatorIndex = line.indexOf(". ");
+              if (separatorIndex <= 0) return true;
+              const optionNumber = line.slice(0, separatorIndex).trim();
+              return !(optionNumber.length === 1 && optionNumber >= "1" && optionNumber <= "9");
+            }) || "Previous guided question";
+            return {
+              question: questionLine.endsWith(":")
+                ? questionLine.slice(0, -1).trim()
+                : questionLine,
+              options
+            };
+          }
+
+          function resolveAssistantUserMessage(rawMessage) {
+            const text = String(rawMessage || "").trim();
+            if (!text) return "";
+
+            const lastAssistantMessage = [...getCurrentAssistantThread().messages]
+              .reverse()
+              .find((entry) => entry.role === "assistant");
+            const guidedQuestion = extractGuidedQuestionOptions(lastAssistantMessage?.text || "");
+            if (!guidedQuestion) return text;
+
+            const tokens = text.split(" ").filter(Boolean);
+            if (!tokens.length) return text;
+
+            const startsWithOptionWord = tokens[0].toLowerCase() === "option";
+            const rawOptionToken = startsWithOptionWord ? tokens[1] : tokens[0];
+            if (!rawOptionToken) return text;
+
+            let optionNumber = rawOptionToken.trim();
+            if (optionNumber.endsWith(".") || optionNumber.endsWith(")")) {
+              optionNumber = optionNumber.slice(0, -1);
+            }
+            if (!(optionNumber.length === 1 && optionNumber >= "1" && optionNumber <= "9")) {
+              return text;
+            }
+
+            const optionLabel = guidedQuestion.options[optionNumber];
+            if (!optionLabel) return text;
+
+            const additionalDetail = (startsWithOptionWord ? tokens.slice(2) : tokens.slice(1)).join(" ").trim();
+            return additionalDetail
+              ? 'Answer to the previous question "' + guidedQuestion.question + '": ' + optionNumber + '. ' + optionLabel + '. Additional detail: ' + additionalDetail
+              : 'Answer to the previous question "' + guidedQuestion.question + '": ' + optionNumber + '. ' + optionLabel;
+          }
 
           function syncAssistantInputPlaceholder() {
             if (!assistantInput) return;
@@ -9486,12 +9746,7 @@ function syncDomFromStore(kvId) {
               }
             }
             syncAssistantInputPlaceholder();
-            const greetingKey = assistantState.selectedKpiId || "all";
-            if (!assistantState.booted || assistantState.greetingKey !== greetingKey) {
-              addAssistantMessage("assistant", buildAssistantGreeting());
-              assistantState.booted = true;
-              assistantState.greetingKey = greetingKey;
-            }
+            renderAssistantConversation();
             if (assistantInput) assistantInput.focus();
           }
           function closeAssistant() {
@@ -9500,9 +9755,6 @@ function syncDomFromStore(kvId) {
             if (assistantLauncher) assistantLauncher.innerHTML = "&#129302;";
           }
           function openAssistantForKpi(kvId) {
-            if (assistantState.selectedKpiId !== kvId) {
-              resetAssistantConversation();
-            }
             assistantState.selectedKpiId = kvId;
             openAssistant();
             const card = getKpiCardById(kvId);
@@ -9516,9 +9768,12 @@ async function sendAssistantPrompt(message) {
   const cleanMessage = String(message || "").trim();
   if (!cleanMessage || assistantState.pending) return;
 
+  const resolvedMessage = resolveAssistantUserMessage(cleanMessage);
+
   assistantState.pending = true;
   if (assistantSend) assistantSend.disabled = true;
 
+  pushAssistantThreadMessage("user", cleanMessage, resolvedMessage);
   await addAssistantMessage("user", cleanMessage);
   setAssistantStatus("Thinking...");
 
@@ -9531,23 +9786,29 @@ async function sendAssistantPrompt(message) {
         week: "${week}",
         selected_kpi_id: assistantState.selectedKpiId,
         kpis: collectAssistantKpis(),
-        message: cleanMessage
+        message: resolvedMessage,
+        conversation_history: getAssistantRequestHistory(resolvedMessage)
       })
     });
 
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Request failed");
 
+    const assistantReply = data.reply || "I could not generate a response.";
+    pushAssistantThreadMessage("assistant", assistantReply, assistantReply);
+
     await addAssistantMessage(
       "assistant",
-      data.reply || "I could not generate a response."
+      assistantReply
     );
 
     setAssistantStatus("AI assistant is ready.");
   } catch (err) {
+    const fallbackReply = "I could not answer right now. Please try again.";
+    pushAssistantThreadMessage("assistant", fallbackReply, fallbackReply);
     await addAssistantMessage(
       "assistant",
-      "I could not answer right now. Please try again."
+      fallbackReply
     );
     setAssistantStatus("AI assistant is unavailable.");
   } finally {
@@ -9560,9 +9821,6 @@ async function sendAssistantPrompt(message) {
             if (assistantShell.classList.contains("open")) {
               closeAssistant();
               return;
-            }
-            if (assistantState.selectedKpiId !== null) {
-              resetAssistantConversation();
             }
             assistantState.selectedKpiId = null;
             openAssistant();
@@ -12977,4 +13235,3 @@ cron.schedule("06 10 * * *", async () => {
 registerRecommendationRoutes(app, pool, createTransporter);
 // ---------- Start server ----------
 app.listen(port, () => console.log(`ðŸš€ Server running on port ${port}`));
-
