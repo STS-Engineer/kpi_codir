@@ -1551,6 +1551,7 @@ app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
       definition,
       frequency,
       target,
+      target_direction,
       tolerance_type,
       up_tolerance,
       low_tolerance,
@@ -1599,6 +1600,7 @@ VALUES (
         definition,
         frequency,
         target,
+        target_direction,
         tolerance_type,
         up_tolerance,
         low_tolerance,
@@ -1798,8 +1800,8 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
         subject,
         definition,
         frequency,
-        target_direction,
         target,
+        target_direction,
         tolerance_type,
         up_tolerance,
         low_tolerance,
@@ -8846,6 +8848,9 @@ app.get("/form", async (req, res) => {
           .assistant-avatar{width:42px;height:42px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:#eef6ff;color:#0f6cbd;font-size:22px;border:1px solid #c6def5;}
           .assistant-title{font-size:16px;font-weight:800;color:#0f6cbd;}
           .assistant-focus{margin-top:4px;font-size:12px;color:#5b6b7b;}
+          .assistant-header-actions{display:flex;align-items:center;gap:8px;}
+          .assistant-reset{border:1px solid #d7e2ee;background:white;color:#5b6b7b;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;line-height:1;}
+          .assistant-reset:hover{background:#f8fbff;color:#0f6cbd;}
           .assistant-close{border:none;background:transparent;color:#5b6b7b;font-size:24px;cursor:pointer;line-height:1;}
           .assistant-messages{flex:1;padding:18px;overflow:auto;background:linear-gradient(180deg,#ffffff,#f8fbff 55%,#ffffff);display:flex;flex-direction:column;gap:14px;}
           .assistant-message{max-width:85%;padding:14px 16px;border-radius:20px;line-height:1.55;font-size:14px;white-space:pre-wrap;}
@@ -9050,7 +9055,10 @@ app.get("/form", async (req, res) => {
                   <div class="assistant-focus" id="assistantFocus">All KPIs on this form</div>
                 </div>
               </div>
-              <button type="button" class="assistant-close" id="assistantClose" aria-label="Close">&times;</button>
+              <div class="assistant-header-actions">
+                <button type="button" class="assistant-reset" id="assistantReset">Reset</button>
+                <button type="button" class="assistant-close" id="assistantClose" aria-label="Close">&times;</button>
+              </div>
             </div>
             <div class="assistant-messages" id="assistantMessages"></div>
             <div class="assistant-composer">
@@ -9459,6 +9467,7 @@ function syncDomFromStore(kvId) {
           const assistantForm = document.getElementById("assistantForm");
           const assistantInput = document.getElementById("assistantInput");
           const assistantSend = document.getElementById("assistantSend");
+          const assistantReset = document.getElementById("assistantReset");
           const assistantStorageKey = "kpi-assistant:${responsible_id}:${week}";
           const assistantState = {
             selectedKpiId: null,
@@ -9503,6 +9512,17 @@ function syncDomFromStore(kvId) {
               window.localStorage.setItem(assistantStorageKey, JSON.stringify(assistantState.threads));
             } catch (err) {
               // Ignore storage errors so the assistant remains usable.
+            }
+          }
+
+          function clearAssistantThreads() {
+            assistantState.threads = {};
+            try {
+              if (window.localStorage) {
+                window.localStorage.removeItem(assistantStorageKey);
+              }
+            } catch (err) {
+              // Ignore storage errors so reset still clears in-memory state.
             }
           }
 
@@ -9756,6 +9776,15 @@ function syncDomFromStore(kvId) {
             assistantShell.classList.remove("open");
             if (assistantLauncher) assistantLauncher.innerHTML = "&#129302;";
           }
+
+          function resetAssistantForTesting() {
+            clearAssistantThreads();
+            renderAssistantConversation();
+            setAssistantStatus("Assistant reset. Start the workflow again.");
+            if (assistantInput) assistantInput.focus();
+          }
+          window.resetAssistantForTesting = resetAssistantForTesting;
+
           function openAssistantForKpi(kvId) {
             assistantState.selectedKpiId = kvId;
             openAssistant();
@@ -9828,6 +9857,7 @@ async function sendAssistantPrompt(message) {
             openAssistant();
           });
           if (assistantClose) assistantClose.addEventListener("click", closeAssistant);
+          if (assistantReset) assistantReset.addEventListener("click", resetAssistantForTesting);
           if (assistantInput) {
             assistantInput.addEventListener("input", () => {
               assistantInput.style.height = "auto";
