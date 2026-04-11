@@ -5200,7 +5200,7 @@ IMPORTANT
 
   try {
 
-      const systemPrompt = `
+   const systemPrompt = `
 You are an intelligent assistant designed to capture, structure, analyze, and refine user information through natural conversation in order to identify:
 
 - a root cause
