@@ -4057,17 +4057,17 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
   `);
 });
 
-cron.schedule('34 09 * * 1', async () => {
-  console.log(`[CRON] Running KPI week update â€” ${new Date().toISOString()}`);
-  try {
-    await pool.query('SELECT public.update_kpi_week()');
-    console.log('[CRON] âœ… kpi_values.week updated successfully');
-  } catch (err) {
-    console.error('[CRON] âŒ Failed to update kpi_values.week:', err.message);
-  }
-}, {
-  timezone: 'Africa/Tunis'   // â† ensures 14:00 Tunis local time
-});
+// cron.schedule('34 09 * * 1', async () => {
+//   console.log(`[CRON] Running KPI week update â€” ${new Date().toISOString()}`);
+//   try {
+//     await pool.query('SELECT public.update_kpi_week()');
+//     console.log('[CRON] âœ… kpi_values.week updated successfully');
+//   } catch (err) {
+//     console.error('[CRON] âŒ Failed to update kpi_values.week:', err.message);
+//   }
+// }, {
+//   timezone: 'Africa/Tunis'   // â† ensures 14:00 Tunis local time
+// });
 
 // ============================================================
 // KPI DIRECTION + STATUS HELPERS
