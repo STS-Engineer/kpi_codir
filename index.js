@@ -4057,7 +4057,7 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
   `);
 });
 
-// cron.schedule('34 09 * * 1', async () => {
+// cron.schedule('34 20 * * 1', async () => {
 //   console.log(`[CRON] Running KPI week update â€” ${new Date().toISOString()}`);
 //   try {
 //     await pool.query('SELECT public.update_kpi_week()');
