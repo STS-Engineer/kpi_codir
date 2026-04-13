@@ -5868,7 +5868,7 @@ const checkAndTriggerCorrectiveActions = async (responsibleId, kpiId, week, newV
         [kpiId, responsibleId, week, String(numValue)]
       );
 
-      console.log(`âœ… Pending target queued â€” KPI ${kpiId}: ${currentTarget} â†’ ${numValue}`);
+      console.log(`Pending target queued â€” KPI ${kpiId}: ${currentTarget} â†’ ${numValue}`);
 
       return {
         targetUpdated: true,
@@ -7059,7 +7059,7 @@ app.get("/corrective-actions-bulk", async (req, res) => {
     if (actions.length === 0) {
       return res.send(`
         <div style="text-align:center;padding:60px;font-family:'Segoe UI',sans-serif;">
-          <h2 style="color:#4caf50;">âœ… No Open Corrective Actions</h2>
+          <h2 style="color:#4caf50;">No Open Corrective Actions</h2>
           <p>All corrective actions for week ${week} have been completed.</p>
           <a href="/dashboard?responsible_id=${responsible_id}"
              style="display:inline-block;padding:12px 25px;background:#0078D7;color:white;
@@ -7470,7 +7470,7 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
         text-decoration:none;border-radius:6px;font-weight:bold;margin:5px;}
       a:hover{background:#005ea6;}</style></head>
       <body><div class="sc">
-        <h1>âœ… All Corrective Actions Submitted!</h1>
+        <h1>All Corrective Actions Submitted!</h1>
         <div class="count">${completedCount}</div>
         <p>You have successfully submitted all corrective actions for week ${week}.<br>
            The quality team will review your submissions.</p>
@@ -7606,7 +7606,7 @@ app.post("/redirect", async (req, res) => {
       .btn{display:inline-block;padding:12px 25px;background:#0078D7;color:white;
            text-decoration:none;border-radius:6px;font-weight:bold;margin:5px;}</style></head>
       <body><div class="sc">
-        <h1 style="color:#28a745;">âœ… KPI Submitted Successfully!</h1>
+        <h1 style="color:#28a745;">KPI Submitted Successfully!</h1>
         <p>Your KPI values for ${week} have been saved.</p>
         <div style="background:#f8f9fa;padding:20px;border-radius:8px;margin:20px 0;">
           ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">ðŸ“Œ</span><span>${n}</span></div>`).join('')}
@@ -9262,7 +9262,7 @@ function getCaModalActions(kvId) {
         caModalStore[kvId].push({
         id: actionId,
         root_cause: rootCause,
-       implemented_solution: implSolution, // âœ… FIXED
+       implemented_solution: implSolution, //FIXED
        due_date: dueDate,
        responsible: responsible,
        status: "Open"
@@ -9379,7 +9379,7 @@ function caModalSaveForm() {
   const entry = {
    id: "",
    root_cause: rootCause,
-   implemented_solution: solution, // âœ… FIXED
+   implemented_solution: solution, // FIXED
    due_date: dueDate,
    responsible: responsible,
    status: "Open"
@@ -11553,7 +11553,7 @@ const sendKPIEmail = async (responsibleId, week) => {
       subject: `KPI Form for ${responsible.name} - ${week}`,
       html,
     });
-    console.log(`âœ… Email sent to ${responsible.email}`);
+    console.log(`Email sent to ${responsible.email}`);
   } catch (err) {
     console.error(`âŒ Failed to send email to responsible ID ${responsibleId}:`, err.message);
   }
@@ -11856,7 +11856,7 @@ const generateVerticalBarChart = (chartData) => {
     </div>
   ` : '';
 
-  // âœ… EMAIL-SAFE LIMITS (High + Low side-by-side using table)
+  // EMAIL-SAFE LIMITS (High + Low side-by-side using table)
   const limitsRowHtml = (() => {
     const highBox = cleanHigh !== null ? `
     <table border="0" cellpadding="0" cellspacing="0" width="100%"
@@ -11979,7 +11979,7 @@ const generateVerticalBarChart = (chartData) => {
                 </tr>
               </table>
 
-              <!-- âœ… High/Low limits beside each other -->
+              <!--High/Low limits beside each other -->
               ${postChartLimitsHtml}
             </td>
 
@@ -12292,7 +12292,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
     });
-    console.log(`âœ… Email sent to ${responsible.email}`);
+    console.log(`Email sent to ${responsible.email}`);
 
     // â”€â”€ NOW apply all pending target updates for this responsible â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Email is already sent â€” safe to update Kpi.target and hist26.target
@@ -12340,7 +12340,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         );
       }
 
-      console.log(`âœ… All pending target updates applied for ${responsible.name}`);
+      console.log(`All pending target updates applied for ${responsible.name}`);
 
     } catch (applyErr) {
       console.error(`âŒ Failed to apply pending target updates for ${responsible.name}:`, applyErr.message);
@@ -13415,7 +13415,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
       attachments: pdfAttachment ? [pdfAttachment] : [],
     });
 
-    console.log(`âœ… KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${reportData.plant.manager_email}`);
+    console.log(`KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${reportData.plant.manager_email}`);
   } catch (error) {
     console.error(`âŒ Failed to send report for plant ${plantId}:`, error.message);
   }
@@ -13449,13 +13449,13 @@ cron.schedule("06 10 * * *", async () => {
     for (const plant of plantsRes.rows) {
       try {
         await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-        console.log(`  âœ… Report sent for plant: ${plant.name}`);
+        console.log(`Report sent for plant: ${plant.name}`);
         await new Promise(resolve => setTimeout(resolve, 1500));
       } catch (err) {
         console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
       }
     }
-    console.log(`âœ… [Manager Report] All plant reports sent`);
+    console.log(`[Manager Report] All plant reports sent`);
   } catch (error) {
     console.error("âŒ [Manager Report] Cron error:", error.message);
   } finally {
