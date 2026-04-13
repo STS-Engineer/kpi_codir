@@ -7608,9 +7608,6 @@ app.post("/redirect", async (req, res) => {
       <body><div class="sc">
         <h1 style="color:#28a745;">KPI Submitted Successfully!</h1>
         <p>Your KPI values for ${week} have been saved.</p>
-        <div style="background:#f8f9fa;padding:20px;border-radius:8px;margin:20px 0;">
-          ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">ðŸ“Œ</span><span>${n}</span></div>`).join('')}
-        </div>
         <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
       </div></body></html>`);
   } catch (err) {
