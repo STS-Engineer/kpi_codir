@@ -4495,6 +4495,24 @@ const normalizeText = (value) => {
   return text ? text : null;
 };
 
+const CORRECTIVE_ACTION_STATUS_OPTIONS = [
+  "Open",
+  "Waiting for validation",
+  "Completed",
+  "Closed"
+];
+
+const normalizeCorrectiveActionStatus = (value, fallback = null) => {
+  const text = normalizeText(value);
+  if (!text) return fallback;
+
+  const matchedStatus = CORRECTIVE_ACTION_STATUS_OPTIONS.find(
+    (option) => option.toLowerCase() === text.toLowerCase()
+  );
+
+  return matchedStatus || fallback;
+};
+
 const escapeHtml = (value) =>
   String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -4593,7 +4611,7 @@ const buildCorrectiveActionEntryHtml = ({
   const implementedSolution = action.implemented_solution ?? action.implementedSolution ?? "";
   const dueDate = formatInputDate(action.due_date ?? action.dueDate);
   const responsibleName = action.responsible ?? action.responsibleName ?? defaultResponsibleName ?? "";
-  const statusText = "Open";
+  const statusText = normalizeCorrectiveActionStatus(action.status, "Open");
   const safeStatusClass = String(statusText || "")
     .toLowerCase()
     .replace(/\s+/g, "-");
@@ -5900,9 +5918,9 @@ const upsertCorrectiveAction = async (
       implementedSolution: normalizeText(implementedSolution),
       dueDate: normalizeText(dueDate),
       responsibleName: normalizeText(responsibleName),
-      status: "Open"
+      status: normalizeCorrectiveActionStatus(status)
     };
-    let resolvedStatus = getCorrectiveActionStatusValue(normalizedPayload);
+    let resolvedStatus = normalizedPayload.status || "Open";
 
     if (normalizeText(correctiveActionId) && !normalizedPayload.status) {
       const existingStatusRes = await pool.query(
@@ -5932,7 +5950,7 @@ const upsertCorrectiveAction = async (
           normalizedPayload.implementedSolution,
           normalizedPayload.dueDate,
           normalizedPayload.responsibleName,
-          normalizedPayload.status
+          resolvedStatus
         ]
       );
 
@@ -5959,7 +5977,7 @@ const upsertCorrectiveAction = async (
         normalizedPayload.implementedSolution,
         normalizedPayload.dueDate,
         normalizedPayload.responsibleName,
-        normalizedPayload.status
+        resolvedStatus
       ]
     );
 
@@ -7011,7 +7029,7 @@ app.post("/submit-corrective-action", async (req, res) => {
       implementedSolution: normalizeText(implemented_solution),
       dueDate: due_date || null,
       responsibleName: normalizeText(responsible),
-      status: "Open"
+      status: normalizeCorrectiveActionStatus(req.body?.status)
     });
 
     if (!saved) {
@@ -7022,6 +7040,42 @@ app.post("/submit-corrective-action", async (req, res) => {
   } catch (err) {
     console.error("Error submitting corrective action:", err);
     res.status(500).send(`<p style="color:red;">Error: ${err.message}</p>`);
+  }
+});
+
+app.post("/api/corrective-actions/:correctiveActionId/status", async (req, res) => {
+  try {
+    const correctiveActionId = normalizeText(req.params.correctiveActionId);
+    const nextStatus = normalizeCorrectiveActionStatus(req.body?.status);
+
+    if (!correctiveActionId) {
+      return res.status(400).json({ error: "Missing corrective action id" });
+    }
+
+    if (!nextStatus) {
+      return res.status(400).json({ error: "Invalid corrective action status" });
+    }
+
+    const result = await pool.query(
+      `UPDATE public.corrective_actions
+       SET status = $2::text,
+           updated_date = NOW()
+       WHERE corrective_action_id = $1
+       RETURNING corrective_action_id, status`,
+      [correctiveActionId, nextStatus]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Corrective action not found" });
+    }
+
+    res.json({
+      corrective_action_id: result.rows[0].corrective_action_id,
+      status: result.rows[0].status
+    });
+  } catch (err) {
+    console.error("Error updating corrective action status:", err);
+    res.status(500).json({ error: "Failed to update corrective action status" });
   }
 });
 
@@ -7608,6 +7662,9 @@ app.post("/redirect", async (req, res) => {
       <body><div class="sc">
         <h1 style="color:#28a745;">KPI Submitted Successfully!</h1>
         <p>Your KPI values for ${week} have been saved.</p>
+        <div style="background:#f8f9fa;padding:20px;border-radius:8px;margin:20px 0;">
+          ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">ðŸ“Œ</span><span>${n}</span></div>`).join('')}
+        </div>
         <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
       </div></body></html>`);
   } catch (err) {
@@ -8888,6 +8945,32 @@ app.get("/form", async (req, res) => {
           .history-chip.status-open{background:#fef2f2;color:#b91c1c;}
           .history-chip.status-waiting-for-validation{background:#fff7ed;color:#c2410c;}
           .history-chip.status-completed,.history-chip.status-closed{background:#ecfdf5;color:#047857;}
+          .history-status-select{
+            min-width:170px;
+            padding:9px 36px 9px 12px;
+            border-radius:999px;
+            border:1px solid #cbd5e1;
+            font-size:12px;
+            font-weight:800;
+            font-family:inherit;
+            background-color:#ffffff;
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2364758b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 8 5 5 5-5'/%3E%3C/svg%3E");
+            background-position:right 12px center;
+            background-repeat:no-repeat;
+            background-size:14px;
+            appearance:none;
+            cursor:pointer;
+            transition:border-color .2s ease, box-shadow .2s ease, background-color .2s ease;
+          }
+          .history-status-select:focus{
+            outline:none;
+            border-color:#93c5fd;
+            box-shadow:0 0 0 4px rgba(59,130,246,0.12);
+          }
+          .history-status-select:disabled{opacity:0.72;cursor:wait;}
+          .history-status-select.status-open{background-color:#fef2f2;color:#b91c1c;border-color:#fecaca;}
+          .history-status-select.status-waiting-for-validation{background-color:#fff7ed;color:#c2410c;border-color:#fed7aa;}
+          .history-status-select.status-completed,.history-status-select.status-closed{background-color:#ecfdf5;color:#047857;border-color:#a7f3d0;}
           .history-section{background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;box-shadow:0 8px 22px rgba(15,23,42,0.05);}
           .history-section+.history-section{margin-top:16px;}
           .history-section-title{margin:0 0 14px;font-size:14px;font-weight:900;color:#111827;display:flex;align-items:center;gap:8px;}
@@ -9254,6 +9337,9 @@ function getCaModalActions(kvId) {
       const actionId = getTrimmedValue(
         card.querySelector('input[name="ca_action_id_' + kvId + '[]"]')
       );
+      const status = getTrimmedValue(
+        card.querySelector('input[name="ca_status_' + kvId + '[]"]')
+      );
 
       if (rootCause || implSolution || dueDate || responsible || actionId) {
         caModalStore[kvId].push({
@@ -9262,7 +9348,7 @@ function getCaModalActions(kvId) {
        implemented_solution: implSolution, //FIXED
        due_date: dueDate,
        responsible: responsible,
-       status: "Open"
+       status: getCanonicalCorrectiveActionStatus(status)
       });
       }
     });
@@ -9279,6 +9365,36 @@ function getCaModalActions(kvId) {
 
           function statusClass(s) {
             return String(s || "").trim().toLowerCase().replace(/\s+/g, "-");
+          }
+
+          const HISTORY_STATUS_OPTIONS = ["Open", "Waiting for validation", "Completed", "Closed"];
+
+          function getCanonicalCorrectiveActionStatus(status) {
+            const normalized = String(status || "").trim().toLowerCase();
+            const matched = HISTORY_STATUS_OPTIONS.find(option => option.toLowerCase() === normalized);
+            return matched || "Open";
+          }
+
+          function setCorrectiveActionBadgeState(badge, status) {
+            if (!badge) return;
+            const canonicalStatus = getCanonicalCorrectiveActionStatus(status);
+            badge.textContent = canonicalStatus;
+            badge.className = "ca-status-badge ca-status-" + statusClass(canonicalStatus);
+          }
+
+          function updateCorrectiveActionStatusInStore(kvId, actionIndex, status) {
+            const actions = getCaModalActions(kvId);
+            if (!actions[actionIndex]) return null;
+
+            const canonicalStatus = getCanonicalCorrectiveActionStatus(status);
+            actions[actionIndex].status = canonicalStatus;
+            syncDomFromStore(kvId);
+
+            if (caModalKvId === kvId) {
+              renderCaModalTable(kvId);
+            }
+
+            return canonicalStatus;
           }
 
           function truncate(str, n) {
@@ -9372,14 +9488,18 @@ function caModalSaveForm() {
   }
 
   const actions = getCaModalActions(caModalKvId);
+  const existingAction =
+    editIndex !== "" && !isNaN(parseInt(editIndex, 10))
+      ? actions[parseInt(editIndex, 10)] || null
+      : null;
 
   const entry = {
    id: "",
    root_cause: rootCause,
-   implemented_solution: solution, // FIXED
-   due_date: dueDate,
-   responsible: responsible,
-   status: "Open"
+    implemented_solution: solution, // FIXED
+    due_date: dueDate,
+    responsible: responsible,
+    status: getCanonicalCorrectiveActionStatus(existingAction && existingAction.status)
   };
 
   if (editIndex !== "" && !isNaN(parseInt(editIndex, 10))) {
@@ -9428,7 +9548,7 @@ function syncDomFromStore(kvId) {
     if (idInput) idInput.value = action.id || "";
 
     const statusInput = newCard.querySelector('input[name="ca_status_' + kvId + '[]"]');
-    if (statusInput) statusInput.value = "Open";
+    if (statusInput) statusInput.value = getCanonicalCorrectiveActionStatus(action.status);
 
     const dueDateField = getCorrectiveActionField(newCard, "due_date");
     const responsibleField = getCorrectiveActionField(newCard, "responsible");
@@ -9442,8 +9562,7 @@ function syncDomFromStore(kvId) {
 
     const badge = newCard.querySelector(".ca-status-badge");
     if (badge) {
-      badge.textContent = "Open";
-      badge.className = "ca-status-badge ca-status-open";
+      setCorrectiveActionBadgeState(badge, action.status);
     }
 
     const removeBtn = newCard.querySelector(".ca-remove-btn");
@@ -10426,6 +10545,99 @@ function getFallbackCurrentMonthLabel(card, labels) {
           function formatHistoryWeek(w) { const m=String(w||"").match(/^(\\d{4})-Week(\\d{1,2})$/); return m?"Week "+parseInt(m[2],10):escapeHistoryHtml(w||""); }
           function getHistoryStatusClass(s) { return "status-"+String(s||"Open").trim().toLowerCase().replace(/\s+/g,"-"); }
 
+          function renderHistoryStatusContent(action, options) {
+            const canonicalStatus = getCanonicalCorrectiveActionStatus(action.status);
+
+            if (!options || !options.editableStatus) {
+              return canonicalStatus
+                ? '<span class="history-chip ' + getHistoryStatusClass(canonicalStatus) + '">' + escapeHistoryHtml(canonicalStatus) + '</span>'
+                : '&mdash;';
+            }
+
+            const actionIndex = Number.isInteger(action._storeIndex) ? String(action._storeIndex) : "";
+            const actionId = String(action.id || action.corrective_action_id || "").trim();
+
+            return '' +
+              '<select class="history-status-select ' + getHistoryStatusClass(canonicalStatus) + '"' +
+                ' data-kpi-values-id="' + escapeHistoryHtml(options.kvId || "") + '"' +
+                ' data-action-index="' + escapeHistoryHtml(actionIndex) + '"' +
+                ' data-action-id="' + escapeHistoryHtml(actionId) + '"' +
+                ' data-previous-status="' + escapeHistoryHtml(canonicalStatus) + '"' +
+              '>' +
+                HISTORY_STATUS_OPTIONS.map(function(option) {
+                  return '<option value="' + escapeHistoryHtml(option) + '"' +
+                    (option === canonicalStatus ? ' selected' : '') +
+                    '>' + escapeHistoryHtml(option) + '</option>';
+                }).join("") +
+              '</select>';
+          }
+
+          function applyHistoryStatusSelectState(selectEl, status) {
+            if (!selectEl) return;
+            const canonicalStatus = getCanonicalCorrectiveActionStatus(status);
+            selectEl.value = canonicalStatus;
+            selectEl.className = "history-status-select " + getHistoryStatusClass(canonicalStatus);
+          }
+
+          async function handleHistoryStatusChange(selectEl) {
+            if (!selectEl) return;
+
+            const kvId = String(selectEl.dataset.kpiValuesId || "").trim();
+            const actionIndex = parseInt(selectEl.dataset.actionIndex || "", 10);
+
+            if (!kvId || Number.isNaN(actionIndex)) {
+              applyHistoryStatusSelectState(selectEl, selectEl.dataset.previousStatus || "Open");
+              return;
+            }
+
+            const previousStatus = getCanonicalCorrectiveActionStatus(selectEl.dataset.previousStatus || "Open");
+            const nextStatus = getCanonicalCorrectiveActionStatus(selectEl.value);
+
+            applyHistoryStatusSelectState(selectEl, nextStatus);
+            updateCorrectiveActionStatusInStore(kvId, actionIndex, nextStatus);
+
+            const actionId = String(selectEl.dataset.actionId || "").trim();
+            if (!actionId) {
+              selectEl.dataset.previousStatus = nextStatus;
+              return;
+            }
+
+            selectEl.disabled = true;
+
+            try {
+              const response = await fetch('/api/corrective-actions/' + encodeURIComponent(actionId) + '/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: nextStatus })
+              });
+
+              const payload = await response.json().catch(function() { return {}; });
+              if (!response.ok) {
+                throw new Error(payload.error || 'Could not update corrective action status.');
+              }
+
+              const savedStatus = getCanonicalCorrectiveActionStatus(payload.status || nextStatus);
+              updateCorrectiveActionStatusInStore(kvId, actionIndex, savedStatus);
+              applyHistoryStatusSelectState(selectEl, savedStatus);
+              selectEl.dataset.previousStatus = savedStatus;
+            } catch (error) {
+              updateCorrectiveActionStatusInStore(kvId, actionIndex, previousStatus);
+              applyHistoryStatusSelectState(selectEl, previousStatus);
+              alert(error.message || 'Could not update corrective action status.');
+            } finally {
+              selectEl.disabled = false;
+            }
+          }
+
+          function bindHistoryStatusControls() {
+            document.querySelectorAll(".history-status-select").forEach(function(selectEl) {
+              applyHistoryStatusSelectState(selectEl, selectEl.value);
+              selectEl.onchange = function() {
+                handleHistoryStatusChange(this);
+              };
+            });
+          }
+
           function closeHistoryModal() {
             const historyModal = document.getElementById("historyModal");
             if (!historyModal) return;
@@ -10446,7 +10658,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
             );
           }
 
-          function renderHistoryActionsTable(actions, emptyMessage) {
+          function renderHistoryActionsTable(actions, emptyMessage, options) {
             if (!actions.length) {
               return '<div class="history-empty">' + escapeHistoryHtml(emptyMessage) + '</div>';
             }
@@ -10475,11 +10687,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
                           '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
                           '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
                           '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
-                          '<td>' +
-                            (action.status
-                              ? '<span class="history-chip ' + getHistoryStatusClass(action.status) + '">' + escapeHistoryHtml(action.status) + '</span>'
-                              : '&mdash;') +
-                          '</td>' +
+                          '<td>' + renderHistoryStatusContent(action, options) + '</td>' +
                         '</tr>';
                     }).join("") +
                   '</tbody>' +
@@ -10500,9 +10708,11 @@ function getFallbackCurrentMonthLabel(card, labels) {
   const subtitleText = getTrimmedText(card.querySelector(".kpi-subtitle"));
   const currentMonthLabel = card.dataset.currentMonthLabel || "Current month";
   const prevLabel = card.dataset.prevMonthLabel || "";
-  const liveActions = getCaModalActions(kvId).filter(hasCorrectiveActionContent).map(function(action) {
-    return Object.assign({ week: currentMonthLabel, status: action.status || "Open" }, action);
-  });
+  const liveActions = getCaModalActions(kvId)
+    .map(function(action, actionIndex) {
+      return Object.assign({ week: currentMonthLabel, status: action.status || "Open", _storeIndex: actionIndex }, action);
+    })
+    .filter(hasCorrectiveActionContent);
   const prevActions = decodeModalPayload(card.dataset.prevMonthActions, []);
   const prevComments = decodeModalPayload(card.dataset.prevMonthComments, []);
   const comments = Array.isArray(prevComments) ? prevComments : [];
@@ -10519,7 +10729,11 @@ function getFallbackCurrentMonthLabel(card, labels) {
   sections.push(
     '<div class="history-section">' +
       '<h4 class="history-section-title">Current Corrective Actions</h4>' +
-      renderHistoryActionsTable(liveActions, 'No corrective actions saved yet for this KPI in the current month.') +
+      renderHistoryActionsTable(
+        liveActions,
+        'No corrective actions saved yet for this KPI in the current month.',
+        { editableStatus: true, kvId: kvId }
+      ) +
     '</div>'
   );
 
@@ -10552,6 +10766,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
   }
 
   historyModalContent.innerHTML = sections.join('');
+  bindHistoryStatusControls();
   historyModal.classList.add("active");
   historyModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("chart-modal-open");
@@ -12350,7 +12565,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
-cron.schedule("24 11 * * *", async () => {
+cron.schedule("50 11 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
