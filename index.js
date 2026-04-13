@@ -1197,6 +1197,32 @@ app.get("/kpi-admin", async (req, res) => {
     rows.forEach((row, index) => {
       const canvas = document.getElementById('chart_' + index);
       const ctx = canvas.getContext('2d');
+      const axisValues = [
+        ...(Array.isArray(row.values) ? row.values : []),
+        ...(Array.isArray(row.target) ? row.target : []),
+        ...(Array.isArray(row.highLimits) ? row.highLimits : []),
+        ...(Array.isArray(row.lowLimits) ? row.lowLimits : [])
+      ]
+        .filter((value) => value !== null && value !== undefined && value !== '')
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+      const axisSourceMin = axisValues.length ? Math.min(...axisValues) : 0;
+      const axisSourceMax = axisValues.length ? Math.max(...axisValues) : 100;
+      let axisMin = axisSourceMin > 0
+        ? axisSourceMin * 0.8
+        : axisSourceMin < 0
+          ? axisSourceMin * 1.2
+          : 0;
+      let axisMax = axisSourceMax > 0
+        ? axisSourceMax * 1.2
+        : axisSourceMax < 0
+          ? axisSourceMax * 0.8
+          : 0;
+      if (axisSourceMin === axisSourceMax) {
+        const pad = Math.max(Math.abs(axisSourceMax || axisSourceMin || 1) * 0.2, 1);
+        axisMin = axisSourceMin - pad;
+        axisMax = axisSourceMax + pad;
+      }
 
     const chart = new Chart(ctx, {
   data: {
@@ -1279,7 +1305,9 @@ app.get("/kpi-admin", async (req, res) => {
         }
       },
       y: {
-        beginAtZero: true,
+        beginAtZero: false,
+        min: axisMin,
+        max: axisMax,
         ticks: {
           color: '#64748b'
         },
@@ -3489,6 +3517,32 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             const lowLimitSeries = Array.isArray(row.labels)
               ? row.labels.map(() => row.lowLimitValue ?? null)
               : [];
+            const axisValues = [
+              ...(Array.isArray(row.values) ? row.values : []),
+              ...targetSeries,
+              ...highLimitSeries,
+              ...lowLimitSeries
+            ]
+              .filter((value) => value !== null && value !== undefined && value !== '')
+              .map((value) => Number(value))
+              .filter((value) => Number.isFinite(value));
+            const axisSourceMin = axisValues.length ? Math.min(...axisValues) : 0;
+            const axisSourceMax = axisValues.length ? Math.max(...axisValues) : 100;
+            let axisMin = axisSourceMin > 0
+              ? axisSourceMin * 0.8
+              : axisSourceMin < 0
+                ? axisSourceMin * 1.2
+                : 0;
+            let axisMax = axisSourceMax > 0
+              ? axisSourceMax * 1.2
+              : axisSourceMax < 0
+                ? axisSourceMax * 0.8
+                : 0;
+            if (axisSourceMin === axisSourceMax) {
+              const pad = Math.max(Math.abs(axisSourceMax || axisSourceMin || 1) * 0.2, 1);
+              axisMin = axisSourceMin - pad;
+              axisMax = axisSourceMax + pad;
+            }
 
             const chart = new Chart(ctx, {
               data: {
@@ -3571,7 +3625,9 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                     }
                   },
                   y: {
-                    beginAtZero: true,
+                    beginAtZero: false,
+                    min: axisMin,
+                    max: axisMax,
                     ticks: {
                       color: '#64748b'
                     },
@@ -4057,17 +4113,7 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
   `);
 });
 
-// cron.schedule('34 20 * * 1', async () => {
-//   console.log(`[CRON] Running KPI week update â€” ${new Date().toISOString()}`);
-//   try {
-//     await pool.query('SELECT public.update_kpi_week()');
-//     console.log('[CRON] âœ… kpi_values.week updated successfully');
-//   } catch (err) {
-//     console.error('[CRON] âŒ Failed to update kpi_values.week:', err.message);
-//   }
-// }, {
-//   timezone: 'Africa/Tunis'   // â† ensures 14:00 Tunis local time
-// });
+
 
 // ============================================================
 // KPI DIRECTION + STATUS HELPERS
@@ -4250,6 +4296,62 @@ const getReadableThresholdLineValues = (lowLimit, target, highLimit) => {
   };
 };
 
+const getAutoChartAxisRange = (
+  values = [],
+  lowLimit = null,
+  target = null,
+  highLimit = null,
+  marginRatio = 0.2
+) => {
+  const numericValues = [];
+  const pushIfNumeric = (value) => {
+    const parsed = parseMetricNumber(value);
+    if (parsed !== null) {
+      numericValues.push(parsed);
+    }
+  };
+
+  (Array.isArray(values) ? values : [values]).forEach(pushIfNumeric);
+  pushIfNumeric(lowLimit);
+  pushIfNumeric(target);
+  pushIfNumeric(highLimit);
+
+  if (!numericValues.length) {
+    return { min: 0, max: 100, sourceMin: 0, sourceMax: 100 };
+  }
+
+  const safeMargin = Number.isFinite(marginRatio) && marginRatio >= 0
+    ? marginRatio
+    : 0.2;
+  const sourceMin = Math.min(...numericValues);
+  const sourceMax = Math.max(...numericValues);
+
+  let min = sourceMin > 0
+    ? sourceMin * (1 - safeMargin)
+    : sourceMin < 0
+      ? sourceMin * (1 + safeMargin)
+      : 0;
+
+  let max = sourceMax > 0
+    ? sourceMax * (1 + safeMargin)
+    : sourceMax < 0
+      ? sourceMax * (1 - safeMargin)
+      : 0;
+
+  if (min === max) {
+    const pad = Math.max(Math.abs(sourceMax || sourceMin || 1) * safeMargin, 1);
+    min = sourceMin - pad;
+    max = sourceMax + pad;
+  }
+
+  return {
+    min: Number(min.toFixed(6)),
+    max: Number(max.toFixed(6)),
+    sourceMin,
+    sourceMax
+  };
+};
+
 const inferKpiDirection = (kpi = {}) => {
   const explicitDirection = normalizeKpiDirection(
     kpi.target_direction ||
@@ -4421,17 +4523,19 @@ const getCorrectiveActionSortTime = (action = {}) => {
 
 const sortCorrectiveActions = (actions = []) =>
   [...actions].sort((a, b) => {
-    const timeDiff = getCorrectiveActionSortTime(a) - getCorrectiveActionSortTime(b);
+    const timeDiff = getCorrectiveActionSortTime(b) - getCorrectiveActionSortTime(a);
     if (timeDiff !== 0) return timeDiff;
 
-    const idA = parseInt(a.corrective_action_id ?? a.correctiveActionId ?? 0, 10);
-    const idB = parseInt(b.corrective_action_id ?? b.correctiveActionId ?? 0, 10);
-    return idA - idB;
+    const parsedIdA = parseInt(a.corrective_action_id ?? a.correctiveActionId ?? a.id ?? 0, 10);
+    const parsedIdB = parseInt(b.corrective_action_id ?? b.correctiveActionId ?? b.id ?? 0, 10);
+    const idA = Number.isFinite(parsedIdA) ? parsedIdA : 0;
+    const idB = Number.isFinite(parsedIdB) ? parsedIdB : 0;
+    return idB - idA;
   });
 
 const getLatestCorrectiveAction = (actions = []) => {
   const sorted = sortCorrectiveActions(actions);
-  return sorted.length ? sorted[sorted.length - 1] : null;
+  return sorted.length ? sorted[0] : null;
 };
 
 const hasMeaningfulCorrectiveActionInput = (action = {}) =>
@@ -5656,8 +5760,8 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
             status, created_date, updated_date, due_date, responsible
      FROM public.corrective_actions
      WHERE responsible_id = $1 AND week = $2
-     ORDER BY kpi_id ASC, COALESCE(updated_date, created_date) ASC, corrective_action_id ASC`,
-    [responsibleId, week]
+     ORDER BY kpi_id ASC, COALESCE(updated_date, created_date) DESC, corrective_action_id DESC`,
+     [responsibleId, week]
   );
 
   const actionsByKpiId = {};
@@ -6070,19 +6174,14 @@ app.get("/corrective-actions-list", async (req, res) => {
         AND kv.responsible_id = ca.responsible_id
         AND kv.week = ca.week
        WHERE ca.responsible_id = $1
-       ORDER BY
-         CASE
-           WHEN ca.due_date IS NULL THEN 1
-           WHEN ca.due_date < CURRENT_DATE
-                AND ca.status NOT IN ('Closed', 'Completed') THEN 0
-           ELSE 1
-         END,
-         ca.due_date ASC NULLS LAST,
-         ca.created_date DESC`,
+        ORDER BY
+          COALESCE(ca.updated_date, ca.created_date) DESC NULLS LAST,
+          ca.corrective_action_id DESC`,
       [responsible_id]
     );
 
     const actions = actionsRes.rows;
+    const latestSubmittedActionId = actions[0]?.corrective_action_id ?? null;
 
     const formatDate = (dateValue) => {
       if (!dateValue) return "â€”";
@@ -6140,12 +6239,19 @@ app.get("/corrective-actions-list", async (req, res) => {
           .toLowerCase()
           .replace(/\s+/g, "-");
 
+        const isLatestSubmitted =
+          latestSubmittedActionId !== null &&
+          String(a.corrective_action_id) === String(latestSubmittedActionId);
+
         return `
-            <div class="ca-card ${isOverdue ? "overdue" : ""}">
+            <div class="ca-card ${isOverdue ? "overdue" : ""} ${isLatestSubmitted ? "latest-submitted" : ""}">
               <div class="ca-card-top">
                 <div>
                   <div class="ca-kpi-title">${escapeHtml(a.indicator_title)}</div>
-                  <div class="ca-kpi-subtitle">Action ${escapeHtml(a.action_number || 1)}</div>
+                  <div class="ca-kpi-subtitle-row">
+                    <div class="ca-kpi-subtitle">Action ${escapeHtml(a.action_number || 1)}</div>
+                    ${isLatestSubmitted ? `<span class="latest-submitted-badge">Latest Submitted</span>` : ""}
+                  </div>
                   ${a.indicator_sub_title
             ? `<div class="ca-kpi-subtitle">${escapeHtml(a.indicator_sub_title)}</div>`
             : ""}
@@ -6269,6 +6375,11 @@ app.get("/corrective-actions-list", async (req, res) => {
             border:1px solid #ef4444;
             box-shadow:0 10px 28px rgba(239,68,68,0.12);
           }
+          .ca-card.latest-submitted{
+            border:1px solid #93c5fd;
+            box-shadow:0 12px 30px rgba(37,99,235,0.14);
+            grid-column:1 / -1;
+          }
           .ca-card-top{
             display:flex;
             justify-content:space-between;
@@ -6286,6 +6397,28 @@ app.get("/corrective-actions-list", async (req, res) => {
             margin-top:6px;
             font-size:13px;
             color:#6b7280;
+          }
+          .ca-kpi-subtitle-row{
+            display:flex;
+            align-items:center;
+            gap:10px;
+            flex-wrap:wrap;
+            margin-top:6px;
+          }
+          .ca-kpi-subtitle-row .ca-kpi-subtitle{
+            margin-top:0;
+          }
+          .latest-submitted-badge{
+            display:inline-flex;
+            align-items:center;
+            padding:5px 10px;
+            border-radius:999px;
+            background:#dbeafe;
+            color:#1d4ed8;
+            font-size:11px;
+            font-weight:800;
+            letter-spacing:.3px;
+            text-transform:uppercase;
           }
           .status-pill{
             display:inline-flex;
@@ -8008,15 +8141,42 @@ app.get("/form", async (req, res) => {
           }
           .form-section{padding:30px;}
           .info-section{
-            background:#f8f9fa;
+            display:grid;
+            grid-template-columns:repeat(4,minmax(0,1fr));
+            gap:16px;
+            background:linear-gradient(135deg,#f8fbff 0%,#eef6ff 100%);
             padding:20px;
-            border-radius:6px;
+            border-radius:18px;
             margin-bottom:25px;
-            border-left:4px solid #0078D7;
+            border:1px solid #cfe3fb;
+            box-shadow:inset 0 1px 0 rgba(255,255,255,0.85);
           }
-          .info-row{display:flex;margin-bottom:15px;align-items:center;}
-          .info-label{font-weight:600;color:#333;width:120px;font-size:14px;}
-          .info-value{flex:1;padding:8px 12px;background:white;border:1px solid #ddd;border-radius:4px;}
+          .info-row{
+            display:flex;
+            flex-direction:column;
+            gap:8px;
+            align-items:stretch;
+            min-width:0;
+            margin-bottom:0;
+          }
+          .info-label{
+            font-weight:800;
+            color:#1d4ed8;
+            font-size:12px;
+            letter-spacing:.8px;
+            text-transform:uppercase;
+          }
+          .info-value{
+            min-width:0;
+            padding:12px 14px;
+            background:white;
+            border:1px solid #d8e3f0;
+            border-radius:12px;
+            box-shadow:0 4px 12px rgba(15,23,42,0.04);
+            font-size:15px;
+            font-weight:700;
+            color:#0f172a;
+          }
 
           /* â”€â”€ KPI Card â”€â”€ */
           .kpi-card{
@@ -8116,8 +8276,8 @@ app.get("/form", async (req, res) => {
           }
         
           .kpi-history-panel{
-           width:100%;
-           margin:0;
+           width:calc(100% - 12px);
+           margin:0 0 0 auto;
            padding:14px 0 0;   /* â¬…ï¸ remove side padding */
            border:none;        /* â¬…ï¸ remove border */
            background:transparent; /* â¬…ï¸ remove background */
@@ -8126,6 +8286,7 @@ app.get("/form", async (req, res) => {
            gap:14px;
            position:relative;
            z-index:32;
+           box-sizing:border-box;
             }
           .kpi-history-panel.history-empty{border-color:#e2e8f0;background:linear-gradient(180deg,#fbfdff 0%,#f8fafc 100%);}
           .kpi-history-copy{display:flex;flex-direction:column;gap:6px;}
@@ -8865,6 +9026,7 @@ app.get("/form", async (req, res) => {
 
           /* â”€â”€ Responsive â”€â”€ */
           @media(max-width:900px){
+            .info-section{grid-template-columns:repeat(2,minmax(0,1fr));}
             .kpi-split-layout{grid-template-columns:1fr;}
             .chart-modal-overlay{padding:14px;}
             .chart-modal-box{width:100%;height:min(90vh,900px);}
@@ -8883,10 +9045,12 @@ app.get("/form", async (req, res) => {
           @media(max-width:700px){
             .ca-dates-grid{grid-template-columns:1fr;}
             .ca-modal-form-row{grid-template-columns:1fr;}
+            .kpi-history-panel{width:calc(100% - 8px);}
             .kpi-card-actions{flex-direction:column;align-items:stretch;}
             .kpi-card-actions-right{justify-content:flex-end;}
           }
           @media(max-width:600px){
+            .info-section{grid-template-columns:1fr;}
             .ca-ai-row{grid-template-columns:1fr;}
             .assistant-shell{right:16px;bottom:16px;}
             .assistant-panel{height:min(76vh,620px);}
@@ -9226,9 +9390,10 @@ function caModalSaveForm() {
     if (actions[idx] && actions[idx].id) {
       entry.id = actions[idx].id;
     }
-    actions[idx] = entry;
+    actions.splice(idx, 1);
+    actions.unshift(entry);
   } else {
-    actions.push(entry);
+    actions.unshift(entry);
   }
 
   renderCaModalTable(caModalKvId);
@@ -9350,7 +9515,7 @@ function syncDomFromStore(kvId) {
           }
           function getLatestCorrectiveActionCard(kvId) {
             const cards = getCorrectiveActionCards(kvId);
-            return cards.length ? cards[cards.length - 1] : null;
+            return cards.length ? cards[0] : null;
           }
           function getCorrectiveActionField(actionCard, fieldName) {
             return actionCard ? actionCard.querySelector('[data-ca-field="' + fieldName + '"]') : null;
@@ -9430,7 +9595,7 @@ function syncDomFromStore(kvId) {
                 due_date: getInputValue(getCorrectiveActionField(ac, "due_date")),
                 responsible: getTrimmedValue(getCorrectiveActionField(ac, "responsible"))
               }));
-              const latestAction = correctiveActions.length ? correctiveActions[correctiveActions.length - 1] : {};
+              const latestAction = correctiveActions.length ? correctiveActions[0] : {};
               return {
                 kpi_id: card.dataset.kpiId,
                 kpi_values_id: kvId,
@@ -10039,15 +10204,35 @@ async function sendAssistantPrompt(message) {
           }
 
           function computeBounds(values, lowLimit, target, highLimit) {
-            const all = values.filter(v => !isNaN(v) && v !== null);
+            const all = (Array.isArray(values) ? values : [])
+              .filter(v => v !== null && v !== undefined && v !== "")
+              .map(v => Number(v))
+              .filter(v => Number.isFinite(v));
             if (!isNaN(lowLimit)) all.push(lowLimit);
             if (!isNaN(target)) all.push(target);
             if (!isNaN(highLimit)) all.push(highLimit);
-            const mn = all.length ? Math.min(...all) : 0;
-            const mx = all.length ? Math.max(...all) : 100;
-            const spread = Math.max(mx - mn, 1);
-            const pad = Math.max(spread * 0.15, 10);
-            return { min: mn - pad, max: mx + pad };
+            if (!all.length) return { min: 0, max: 100 };
+
+            const sourceMin = Math.min(...all);
+            const sourceMax = Math.max(...all);
+            let min = sourceMin > 0
+              ? sourceMin * 0.8
+              : sourceMin < 0
+                ? sourceMin * 1.2
+                : 0;
+            let max = sourceMax > 0
+              ? sourceMax * 1.2
+              : sourceMax < 0
+                ? sourceMax * 0.8
+                : 0;
+
+            if (min === max) {
+              const pad = Math.max(Math.abs(sourceMax || sourceMin || 1) * 0.2, 1);
+              min = sourceMin - pad;
+              max = sourceMax + pad;
+            }
+
+            return { min, max };
           }
 
           function buildKpiChart(kvId) {
@@ -11417,6 +11602,7 @@ const generateVerticalBarChart = (chartData) => {
 
   const validData = data.filter(v => v > 0 && !isNaN(v));
   const values = data.slice(0, 12);
+  const axisRange = getAutoChartAxisRange(values, displayLow, displayTarget, displayHigh);
 
   const labels =
     (weekLabels || data.map((_, i) => `W${i + 1}`))
@@ -11609,7 +11795,12 @@ const generateVerticalBarChart = (chartData) => {
           gridLines: { color: 'rgba(0,0,0,0.05)' }
         }],
         yAxes: [{
-          ticks: { fontSize: 10, beginAtZero: false },
+          ticks: {
+            fontSize: 10,
+            beginAtZero: false,
+            min: axisRange.min,
+            max: axisRange.max
+          },
           gridLines: { color: 'rgba(0,0,0,0.05)' }
         }]
       }
@@ -12305,6 +12496,7 @@ const createIndividualKPIChart = (kpi) => {
       fill: false
     }
   ];
+  const axisRange = getAutoChartAxisRange(values, displayLow, displayTarget, displayHigh);
 
   if (high_limit !== null) {
     datasets.push({
@@ -12340,7 +12532,15 @@ const createIndividualKPIChart = (kpi) => {
       legend: { display: false },
       scales: {
         xAxes: [{ ticks: { fontSize: 10 }, gridLines: { color: 'rgba(0,0,0,0.05)' } }],
-        yAxes: [{ ticks: { fontSize: 10, beginAtZero: false }, gridLines: { color: 'rgba(0,0,0,0.05)' } }]
+        yAxes: [{
+          ticks: {
+            fontSize: 10,
+            beginAtZero: false,
+            min: axisRange.min,
+            max: axisRange.max
+          },
+          gridLines: { color: 'rgba(0,0,0,0.05)' }
+        }]
       }
     }
   };
@@ -12912,6 +13112,7 @@ function initializeChartJS(kpi, index) {
   const lowLimit = kpi.low_limit != null ? parseFloat(kpi.low_limit) : null;
   const highLimit = kpi.high_limit != null ? parseFloat(kpi.high_limit) : null;
   const direction = kpi.direction === 'down' ? 'down' : 'up';
+  const axisRange = getAutoChartAxisRange(kpi.values, lowLimit, null, highLimit);
 
   const pointColors = JSON.stringify(kpi.values.map((v) => {
     const status = getKpiStatus(v, lowLimit, highLimit, direction);
@@ -12984,9 +13185,9 @@ function initializeChartJS(kpi, index) {
         },
         scales: {
           x: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 11 } } },
-          y: { beginAtZero: false, grid: { color: 'rgba(0,0,0,0.05)' },
+          y: { beginAtZero: false, min: ${axisRange.min}, max: ${axisRange.max}, grid: { color: 'rgba(0,0,0,0.05)' },
                ticks: { font: { size: 11 },
-                 callback: function(v){ return v + '${kpi.unit ? ' ' + kpi.unit : ''}'; } } }
+                  callback: function(v){ return v + '${kpi.unit ? ' ' + kpi.unit : ''}'; } } }
         },
         interaction: { intersect: false, mode: 'index' }
       }
