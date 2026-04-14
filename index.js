@@ -3254,7 +3254,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
               <div class="field col-4">
                 <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
-                <select id="tolerance_type" onchange="recalculateLimits(this)" oninput="recalculateLimits(this)">
+                <select id="tolerance_type" onchange="handleToleranceTypeChange(this)" oninput="handleToleranceTypeChange(this)">
                   <option value="">Select tolerance type</option>
                   <option value="Relative">Relative</option>
                   <option value="Absolute">Absolute</option>
@@ -3270,12 +3270,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <div class="form-grid">
               <div class="field col-3">
                 <label><span>Up Tolerance</span><span class="hint">Upper variance</span></label>
-                <input id="up_tolerance" placeholder="10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
+                <input id="up_tolerance" placeholder="10% or 10" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
               </div>
 
               <div class="field col-3">
                 <label><span>Low Tolerance</span><span class="hint">Lower variance</span></label>
-                <input id="low_tolerance" placeholder="10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
+                <input id="low_tolerance" placeholder="-10% or -10" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
               </div>
 
               <div class="field col-3">
@@ -3412,12 +3412,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         <div class="meta-box success">
           <div class="label">Up Tolerance</div>
-          <div class="value value-number">\${escapeHtml(row.up_tolerance || "-")}</div>
+          <div class="value value-number">\${escapeHtml(formatToleranceForDisplay(row.up_tolerance, row.tolerance_type, "up") || "-")}</div>
         </div>
 
         <div class="meta-box danger">
           <div class="label">Low Tolerance</div>
-          <div class="value value-number">\${escapeHtml(row.low_tolerance || "-")}</div>
+          <div class="value value-number">\${escapeHtml(formatToleranceForDisplay(row.low_tolerance, row.tolerance_type, "low") || "-")}</div>
         </div>
 
         <div class="meta-box warning">
@@ -3676,12 +3676,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         let normalized = String(value).trim();
         if (!normalized) return null;
 
-        normalized = normalized.replace(/\s+/g, "").replace(/,/g, ".");
+        normalized = normalized.replace(/\\s+/g, "").replace(/,/g, ".");
         if (allowPercent && normalized.endsWith("%")) {
           normalized = normalized.slice(0, -1);
         }
 
-        return /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(normalized) ? normalized : null;
+        return /^[+-]?(?:\\d+\\.?\\d*|\\.\\d+)$/.test(normalized) ? normalized : null;
       }
 
       function parseLimitNumber(value, allowPercent = false) {
@@ -3691,7 +3691,81 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
       function formatCalculatedLimit(value) {
         if (!Number.isFinite(value)) return "";
-        return value.toFixed(10).replace(/\.?0+$/, "");
+        return value.toFixed(10).replace(/\\.?0+$/, "");
+      }
+
+      function isRelativeToleranceType(toleranceType) {
+        return String(toleranceType || "").trim().toLowerCase() === "relative";
+      }
+
+      function parseToleranceInputValue(value) {
+        if (value === null || value === undefined) {
+          return { text: "", numeric: null, hasPercent: false };
+        }
+
+        const text = String(value).trim();
+        if (!text) {
+          return { text: "", numeric: null, hasPercent: false };
+        }
+
+        const normalized = normalizeLimitInput(text, true);
+        return {
+          text,
+          numeric: normalized === null ? null : Number(normalized),
+          hasPercent: text.includes("%")
+        };
+      }
+
+      function parseToleranceDelta(value, toleranceType, direction = "up") {
+        const { numeric, hasPercent } = parseToleranceInputValue(value);
+        if (!Number.isFinite(numeric)) return null;
+
+        let delta = numeric;
+
+        if (isRelativeToleranceType(toleranceType)) {
+          delta = hasPercent || Math.abs(delta) > 1 ? delta / 100 : delta;
+        }
+
+        if (direction === "up") {
+          return Math.abs(delta);
+        }
+
+        return delta > 0 ? -delta : delta;
+      }
+
+      function formatToleranceForInput(value, toleranceType, direction = "up") {
+        const parsed = parseToleranceInputValue(value);
+        if (!parsed.text) return "";
+        if (!Number.isFinite(parsed.numeric)) return parsed.text;
+
+        let displayValue = parsed.numeric;
+
+        if (isRelativeToleranceType(toleranceType)) {
+          displayValue = parsed.hasPercent || Math.abs(displayValue) > 1
+            ? displayValue
+            : displayValue * 100;
+        }
+
+        if (direction === "up") {
+          displayValue = Math.abs(displayValue);
+        } else if (displayValue > 0) {
+          displayValue = -displayValue;
+        }
+
+        const suffix = isRelativeToleranceType(toleranceType) ? "%" : "";
+        return formatCalculatedLimit(displayValue) + suffix;
+      }
+
+      function formatToleranceForDisplay(value, toleranceType, direction = "up") {
+        return formatToleranceForInput(value, toleranceType, direction);
+      }
+
+      function serializeToleranceForPayload(value, toleranceType, direction = "up") {
+        const parsed = parseToleranceInputValue(value);
+        if (!parsed.text) return "";
+
+        const delta = parseToleranceDelta(value, toleranceType, direction);
+        return Number.isFinite(delta) ? formatCalculatedLimit(delta) : parsed.text;
       }
 
       function getLimitFields(source = null) {
@@ -3707,6 +3781,36 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           highLimitInput: root.querySelector("#high_limit") || document.getElementById("high_limit"),
           lowLimitInput: root.querySelector("#low_limit") || document.getElementById("low_limit")
         };
+      }
+
+      function syncToleranceInputs(source = null) {
+        const {
+          toleranceTypeInput,
+          upToleranceInput,
+          lowToleranceInput
+        } = getLimitFields(source);
+
+        if (!toleranceTypeInput || !upToleranceInput || !lowToleranceInput) return;
+
+        const toleranceType = toleranceTypeInput.value;
+        const isRelative = isRelativeToleranceType(toleranceType);
+        const hasType = !!String(toleranceType || "").trim();
+
+        upToleranceInput.placeholder = isRelative ? "10%" : hasType ? "10" : "10% or 10";
+        lowToleranceInput.placeholder = isRelative ? "-10%" : hasType ? "-10" : "-10% or -10";
+
+        if (String(upToleranceInput.value || "").trim()) {
+          upToleranceInput.value = formatToleranceForInput(upToleranceInput.value, toleranceType, "up");
+        }
+
+        if (String(lowToleranceInput.value || "").trim()) {
+          lowToleranceInput.value = formatToleranceForInput(lowToleranceInput.value, toleranceType, "low");
+        }
+      }
+
+      function handleToleranceTypeChange(source) {
+        syncToleranceInputs(source);
+        recalculateLimits(source);
       }
 
       function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
@@ -3731,8 +3835,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         const toleranceType = String(toleranceTypeInput?.value || "").trim().toLowerCase();
         const targetValue = parseLimitNumber(targetInput?.value);
-        const upToleranceValue = parseLimitNumber(upToleranceInput?.value, true);
-        const lowToleranceValue = parseLimitNumber(lowToleranceInput?.value, true);
+        const upToleranceValue = parseToleranceDelta(upToleranceInput?.value, toleranceType, "up");
+        const lowToleranceValue = parseToleranceDelta(lowToleranceInput?.value, toleranceType, "low");
 
         if (
           !toleranceType ||
@@ -3755,7 +3859,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           lowLimit = targetValue * (1 + lowToleranceValue);
         } else if (toleranceType === "absolute") {
           highLimit = targetValue + upToleranceValue;
-          lowLimit = targetValue - lowToleranceValue;
+          lowLimit = targetValue + lowToleranceValue;
         } else if (clearOnInvalid) {
           highLimitInput.value = "";
           lowLimitInput.value = "";
@@ -3787,7 +3891,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         const toleranceType = document.getElementById("tolerance_type");
         if (toleranceType) {
-          toleranceType.addEventListener("change", (event) => recalculateLimits(event.target));
+          toleranceType.addEventListener("change", (event) => handleToleranceTypeChange(event.target));
         }
       }
 
@@ -3817,16 +3921,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         document.getElementById("tolerance_type").value = "";
         updateModalOverview();
+        syncToleranceInputs();
         recalculateLimits();
-      }
-
-      function formatToleranceForInput(value, toleranceType) {
-        if (value === null || value === undefined || value === "") return "";
-        const text = String(value).trim();
-        if (!text) return "";
-        return String(toleranceType || "").trim().toLowerCase() === "relative" && !text.includes("%")
-          ? text + "%"
-          : text;
       }
 
       function fillForm(data) {
@@ -3851,10 +3947,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         });
 
         document.getElementById("tolerance_type").value = data.tolerance_type || "";
-        document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
-        document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
+        document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type, "up");
+        document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type, "low");
 
         updateModalOverview();
+        syncToleranceInputs();
         recalculateLimits({ clearOnInvalid: false });
       }
 
@@ -3889,6 +3986,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       function buildPayload() {
+        const toleranceType = document.getElementById("tolerance_type").value;
         return {
           indicator_title: document.getElementById("indicator_title").value,
           indicator_sub_title: document.getElementById("indicator_sub_title").value,
@@ -3897,9 +3995,9 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           definition: document.getElementById("definition").value,
           frequency: document.getElementById("frequency").value,
           target: document.getElementById("target").value,
-          tolerance_type: document.getElementById("tolerance_type").value,
-          up_tolerance: document.getElementById("up_tolerance").value,
-          low_tolerance: document.getElementById("low_tolerance").value,
+          tolerance_type: toleranceType,
+          up_tolerance: serializeToleranceForPayload(document.getElementById("up_tolerance").value, toleranceType, "up"),
+          low_tolerance: serializeToleranceForPayload(document.getElementById("low_tolerance").value, toleranceType, "low"),
           max: document.getElementById("max").value,
           min: document.getElementById("min").value,
           calculation_on: document.getElementById("calculation_on").value,
@@ -13897,47 +13995,47 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 };
 
 // ---------- Cron: weekly manager/plant report ----------
-// let managerCronRunning = false;
-// cron.schedule("18 17 * * *", async () => {
-//   const lockId = "department_report_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (managerCronRunning) return;
-//     managerCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const currentWeek = `${year}-Week${weekNumber}`;
-//     console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
-//     const plantsRes = await pool.query(
-//       `SELECT plant_id, name, manager_email FROM public."Plant"
-//        WHERE manager_email IS NOT NULL AND manager_email != ''`
-//     );
-//     console.log(`ðŸ“‹ Found ${plantsRes.rows.length} plants with manager emails`);
-//     for (const plant of plantsRes.rows) {
-//       try {
-//         await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-//         console.log(`Report sent for plant: ${plant.name}`);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
-//       } catch (err) {
-//         console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
-//       }
-//     }
-//     console.log(`[Manager Report] All plant reports sent`);
-//   } catch (error) {
-//     console.error("âŒ [Manager Report] Cron error:", error.message);
-//   } finally {
-//     managerCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let managerCronRunning = false;
+cron.schedule("18 17 * * *", async () => {
+  const lockId = "department_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (managerCronRunning) return;
+    managerCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const currentWeek = `${year}-Week${weekNumber}`;
+    console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
+    const plantsRes = await pool.query(
+      `SELECT plant_id, name, manager_email FROM public."Plant"
+       WHERE manager_email IS NOT NULL AND manager_email != ''`
+    );
+    console.log(`ðŸ“‹ Found ${plantsRes.rows.length} plants with manager emails`);
+    for (const plant of plantsRes.rows) {
+      try {
+        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+        console.log(`Report sent for plant: ${plant.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
+      }
+    }
+    console.log(`[Manager Report] All plant reports sent`);
+  } catch (error) {
+    console.error("âŒ [Manager Report] Cron error:", error.message);
+  } finally {
+    managerCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
