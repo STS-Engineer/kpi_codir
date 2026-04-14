@@ -3229,7 +3229,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <div class="form-grid">
               <div class="field col-4">
                 <label><span>Target</span><span class="hint">Expected result</span></label>
-                <input id="target" placeholder="145" />
+                <input id="target" placeholder="145" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
               </div>
 
               <div class="field col-4">
@@ -3254,7 +3254,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
               <div class="field col-4">
                 <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
-                <select id="tolerance_type">
+                <select id="tolerance_type" onchange="recalculateLimits(this)" oninput="recalculateLimits(this)">
                   <option value="">Select tolerance type</option>
                   <option value="Relative">Relative</option>
                   <option value="Absolute">Absolute</option>
@@ -3270,12 +3270,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <div class="form-grid">
               <div class="field col-3">
                 <label><span>Up Tolerance</span><span class="hint">Upper variance</span></label>
-                <input id="up_tolerance" placeholder="10%" />
+                <input id="up_tolerance" placeholder="10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
               </div>
 
               <div class="field col-3">
                 <label><span>Low Tolerance</span><span class="hint">Lower variance</span></label>
-                <input id="low_tolerance" placeholder="10%" />
+                <input id="low_tolerance" placeholder="10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
               </div>
 
               <div class="field col-3">
@@ -3671,6 +3671,103 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           document.getElementById("target").value.trim() || "Not set";
       }
 
+      function normalizeLimitInput(value, allowPercent = false) {
+        if (value === null || value === undefined) return null;
+        let normalized = String(value).trim();
+        if (!normalized) return null;
+
+        normalized = normalized.replace(/\s+/g, "").replace(/,/g, ".");
+        if (allowPercent && normalized.endsWith("%")) {
+          normalized = normalized.slice(0, -1);
+        }
+
+        return /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(normalized) ? normalized : null;
+      }
+
+      function parseLimitNumber(value, allowPercent = false) {
+        const normalized = normalizeLimitInput(value, allowPercent);
+        return normalized === null ? null : Number(normalized);
+      }
+
+      function formatCalculatedLimit(value) {
+        if (!Number.isFinite(value)) return "";
+        return value.toFixed(10).replace(/\.?0+$/, "");
+      }
+
+      function getLimitFields(source = null) {
+        const root = source && typeof source.closest === "function"
+          ? source.closest("#modalBackdrop") || source.closest(".modal") || document
+          : document;
+
+        return {
+          targetInput: root.querySelector("#target") || document.getElementById("target"),
+          toleranceTypeInput: root.querySelector("#tolerance_type") || document.getElementById("tolerance_type"),
+          upToleranceInput: root.querySelector("#up_tolerance") || document.getElementById("up_tolerance"),
+          lowToleranceInput: root.querySelector("#low_tolerance") || document.getElementById("low_tolerance"),
+          highLimitInput: root.querySelector("#high_limit") || document.getElementById("high_limit"),
+          lowLimitInput: root.querySelector("#low_limit") || document.getElementById("low_limit")
+        };
+      }
+
+      function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
+        const source = sourceOrOptions && typeof sourceOrOptions.closest === "function"
+          ? sourceOrOptions
+          : null;
+        const options = source
+          ? maybeOptions
+          : sourceOrOptions;
+        const { clearOnInvalid = true } = options || {};
+
+        const {
+          targetInput,
+          toleranceTypeInput,
+          upToleranceInput,
+          lowToleranceInput,
+          highLimitInput,
+          lowLimitInput
+        } = getLimitFields(source);
+
+        if (!highLimitInput || !lowLimitInput) return;
+
+        const toleranceType = String(toleranceTypeInput?.value || "").trim().toLowerCase();
+        const targetValue = parseLimitNumber(targetInput?.value);
+        const upToleranceValue = parseLimitNumber(upToleranceInput?.value, true);
+        const lowToleranceValue = parseLimitNumber(lowToleranceInput?.value, true);
+
+        if (
+          !toleranceType ||
+          !Number.isFinite(targetValue) ||
+          !Number.isFinite(upToleranceValue) ||
+          !Number.isFinite(lowToleranceValue)
+        ) {
+          if (clearOnInvalid) {
+            highLimitInput.value = "";
+            lowLimitInput.value = "";
+          }
+          return;
+        }
+
+        let highLimit = null;
+        let lowLimit = null;
+
+        if (toleranceType === "relative") {
+          highLimit = targetValue * (1 + upToleranceValue);
+          lowLimit = targetValue * (1 + lowToleranceValue);
+        } else if (toleranceType === "absolute") {
+          highLimit = targetValue + upToleranceValue;
+          lowLimit = targetValue - lowToleranceValue;
+        } else if (clearOnInvalid) {
+          highLimitInput.value = "";
+          lowLimitInput.value = "";
+          return;
+        } else {
+          return;
+        }
+
+        highLimitInput.value = formatCalculatedLimit(highLimit);
+        lowLimitInput.value = formatCalculatedLimit(lowLimit);
+      }
+
       function bindOverviewListeners() {
         ["frequency", "unit", "target"].forEach(id => {
           const el = document.getElementById(id);
@@ -3678,6 +3775,20 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             el.addEventListener("input", updateModalOverview);
           }
         });
+      }
+
+      function bindLimitListeners() {
+        ["target", "up_tolerance", "low_tolerance"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.addEventListener("input", (event) => recalculateLimits(event.target));
+          }
+        });
+
+        const toleranceType = document.getElementById("tolerance_type");
+        if (toleranceType) {
+          toleranceType.addEventListener("change", (event) => recalculateLimits(event.target));
+        }
       }
 
       function resetForm() {
@@ -3706,6 +3817,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         document.getElementById("tolerance_type").value = "";
         updateModalOverview();
+        recalculateLimits();
       }
 
       function formatToleranceForInput(value, toleranceType) {
@@ -3743,6 +3855,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
 
         updateModalOverview();
+        recalculateLimits({ clearOnInvalid: false });
       }
 
       function openCreateModal() {
@@ -3865,6 +3978,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       });
 
       bindOverviewListeners();
+      bindLimitListeners();
       loadKpis();
     </script>
   </body>
