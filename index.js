@@ -4393,6 +4393,34 @@ const inferKpiDirection = (kpi = {}) => {
   return 'up';
 };
 
+const getKpiGoodDirectionMeta = (direction) => {
+  const resolvedDirection = normalizeKpiDirection(direction) || 'up';
+
+  if (resolvedDirection === 'down') {
+    return {
+      value: 'down',
+      label: 'Down',
+      summary: 'Lower is better',
+      examples: 'Scrap, accidents, customer claims',
+      accent: '#dc2626',
+      background: '#fff5f5',
+      border: '#fecaca',
+      icon: '&darr;'
+    };
+  }
+
+  return {
+    value: 'up',
+    label: 'Up',
+    summary: 'Higher is better',
+    examples: 'Sales, OTD',
+    accent: '#16a34a',
+    background: '#f0fdf4',
+    border: '#bbf7d0',
+    icon: '&uarr;'
+  };
+};
+
 const getKpiStatus = (value, lowLimit, highLimit, direction = 'up') => {
   const val = parseMetricNumber(value);
   const resolvedDirection = normalizeKpiDirection(direction) || 'up';
@@ -7650,7 +7678,7 @@ app.post("/redirect", async (req, res) => {
       notifications.push(`ðŸŽ¯ <strong>${targetUpdates.length} KPI target${targetUpdates.length > 1 ? 's' : ''} updated</strong>`);
     if (correctiveActionsCount > 0)
       notifications.push(`ðŸ“‹ <strong>${correctiveActionsCount} corrective action${correctiveActionsCount > 1 ? 's' : ''} recorded</strong>`);
-    if (notifications.length === 0) notifications.push(`ðŸ“Š All KPIs are within targets`);
+    if (notifications.length === 0) notifications.push(` All KPIs are within targets`);
 
     res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>KPI Submitted</title>
       <style>body{font-family:'Segoe UI',sans-serif;background:#f4f4f4;display:flex;
@@ -9621,6 +9649,25 @@ function syncDomFromStore(kvId) {
           function getTrimmedText(node) { return getTextContent(node).trim(); }
           function getInputValue(node) { return node && typeof node.value === "string" ? node.value : ""; }
           function getTrimmedValue(node) { return getInputValue(node).trim(); }
+          function normalizeMetricInputValue(value) {
+            const text = String(value ?? "").trim();
+            if (!text) return "";
+            const numeric = Number(text);
+            return Number.isFinite(numeric) ? String(numeric) : text;
+          }
+          function setValueInputServerState(input, serverValue) {
+            if (!input) return;
+            input.dataset.serverValue = normalizeMetricInputValue(serverValue);
+            input.dataset.dirty = "false";
+          }
+          function syncValueInputDirtyState(input) {
+            if (!input) return false;
+            const currentValue = normalizeMetricInputValue(input.value);
+            const serverValue = normalizeMetricInputValue(input.dataset.serverValue);
+            const isDirty = currentValue !== serverValue;
+            input.dataset.dirty = isDirty ? "true" : "false";
+            return isDirty;
+          }
 
           function getCorrectiveActionStack(kvId) {
             return document.querySelector('.ca-actions-stack[data-kpi-values-id="' + kvId + '"]');
@@ -10190,18 +10237,34 @@ async function sendAssistantPrompt(message) {
   }
 
   const input = document.getElementById("value_" + kvId);
-  if (input && data.currentValue !== null) {
-    input.value = data.currentValue;
+  const preserveDraftValue = input
+    ? (syncValueInputDirtyState(input) || document.activeElement === input)
+    : false;
+
+  if (input && !preserveDraftValue) {
+    const nextValue = data.currentValue !== null && data.currentValue !== undefined
+      ? String(data.currentValue)
+      : "";
+    input.value = nextValue;
+    setValueInputServerState(input, nextValue);
   }
 
   const chart = kpiCharts[kvId];
   if (!chart) {
     buildKpiChart(kvId);
+    if (preserveDraftValue && input) {
+      updateCurrentMonthBarFromInput(kvId, input.value);
+    }
     return;
   }
 
   chart.data.labels = data.labels;
   chart.data.datasets[0].data = data.values;
+  if (preserveDraftValue && input) {
+    updateCurrentMonthBarFromInput(kvId, input.value);
+    return;
+  }
+
   updateKpiChart(kvId);
 }
 
@@ -10779,10 +10842,12 @@ function getFallbackCurrentMonthLabel(card, labels) {
   // Value inputs
   document.querySelectorAll(".value-input").forEach(input => {
     const kvId = input.dataset.kpiValuesId;
+    setValueInputServerState(input, input.value);
     checkLowLimit(input);
     buildKpiChart(kvId);
 
     input.addEventListener("input", function() {
+      syncValueInputDirtyState(this);
       checkLowLimit(this);
       updateCurrentMonthBarFromInput(kvId, this.value);
     });
@@ -11831,6 +11896,7 @@ const generateVerticalBarChart = (chartData) => {
   };
 
   const resolvedDirection = normalizeKpiDirection(direction) || 'up';
+  const directionMeta = getKpiGoodDirectionMeta(resolvedDirection);
   const pointColors = values.map(v => getDotColor(v, cleanLow, cleanHigh, resolvedDirection));
 
   const allVals = [...validData];
@@ -11875,6 +11941,27 @@ const generateVerticalBarChart = (chartData) => {
   };
 
   const currentValue = data[data.length - 1] || 0;
+  const directionGuideHtml = `
+    <table border="0" cellpadding="0" cellspacing="0" width="100%"
+           style="margin:0 0 18px;background:${directionMeta.background};
+                  border:1px solid ${directionMeta.border};border-radius:12px;">
+      <tr>
+        <td style="padding:14px 16px;">
+          <div style="font-size:11px;font-weight:700;color:${directionMeta.accent};
+                      text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">
+            Good Direction
+          </div>
+          <div style="font-size:15px;font-weight:700;color:#1f2937;margin-bottom:4px;">
+            <span style="color:${directionMeta.accent};margin-right:6px;">${directionMeta.icon}</span>
+            ${directionMeta.label} = ${directionMeta.summary}
+          </div>
+          <div style="font-size:12px;color:#475569;line-height:1.5;">
+            Examples: ${directionMeta.examples}. This direction is used for colors, alerts, and target management.
+          </div>
+        </td>
+      </tr>
+    </table>
+  `;
 
   // STATS BOX - 3 columns (CURRENT, AVERAGE, TREND)
   // Replace the statsBox const with this:
@@ -12161,6 +12248,7 @@ const generateVerticalBarChart = (chartData) => {
           ${unit ? `<p style="margin:5px 0 0;color:#888;font-size:12px;">Unit: ${unit} | Frequency: ${frequency || 'Monthly'}</p>` : ''}
         </div>
 
+        ${directionGuideHtml}
         ${statsBox}
         ${thresholdFocusHtml}
 
@@ -12221,7 +12309,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
     const histRes = await pool.query(
       `WITH KpiHistory AS (
         SELECT h.kpi_id, h.week, h.new_value, h.updated_at, h.comment,
-               k.subject, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
+               k.subject, k.indicator_sub_title, k.unit, k.target, k.target_direction, k.min, k.max,
                k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency, k.definition,
                k.low_limit, k.high_limit,
                ca.corrective_action_id,
@@ -12265,6 +12353,7 @@ const generateWeeklyReportData = async (responsibleId, reportWeek) => {
           subtitle: row.indicator_sub_title || '',
           unit: row.unit || '',
           target: row.target,
+          target_direction: row.target_direction,
           direction: inferKpiDirection(row),
           min: row.min,
           max: row.max,
@@ -12466,6 +12555,18 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               </div>
             </td></tr>
 
+            <tr><td style="padding:16px 30px 0;">
+              <div style="background:#f8fbff;border:1px solid #dbeafe;border-radius:10px;padding:16px 18px;">
+                <div style="font-size:12px;font-weight:700;color:#0f6cbd;text-transform:uppercase;
+                            letter-spacing:0.08em;margin-bottom:8px;">Good Direction Guide</div>
+                <div style="font-size:14px;color:#1f2937;line-height:1.6;">
+                  <strong>Up</strong> = higher is better, for example Sales and OTD.<br />
+                  <strong>Down</strong> = lower is better, for example Scrap, accidents, and customer claims.<br />
+                  This direction is used for colors, alerts, and target management across the report.
+                </div>
+              </div>
+            </td></tr>
+
             <tr><td style="padding:30px;">${chartsHtml}</td></tr>
 
             <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
@@ -12564,36 +12665,36 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
   }
 };
 // ---------- Cron: weekly KPI submission email ----------
-let cronRunning = false;
-cron.schedule("07 12 1 * *", async () => {
-  const lockId = "send_kpi_weekly_email_job";
-  const lock = await acquireJobLock(lockId);
-  if (!lock.acquired) return;
-  try {
-    if (cronRunning) return;
-    cronRunning = true;
-    const now = new Date();
-    const startOfYear = new Date(now.getFullYear(), 0, 1);
-    const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
-    const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-    const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
-    const resps = await pool.query(
-      `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
-       JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
-      [forcedWeek]
-    );
-    for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
-    console.log(`KPI emails sent to ${resps.rows.length} responsibles`);
-  } catch (err) {
-    console.error("Scheduled email error:", err.message);
-  } finally {
-    cronRunning = false;
-    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-  }
-}, { scheduled: true, timezone: "Africa/Tunis" });
+// let cronRunning = false;
+// cron.schedule("17 11 * * *", async () => {
+//   const lockId = "send_kpi_weekly_email_job";
+//   const lock = await acquireJobLock(lockId);
+//   if (!lock.acquired) return;
+//   try {
+//     if (cronRunning) return;
+//     cronRunning = true;
+//     const now = new Date();
+//     const startOfYear = new Date(now.getFullYear(), 0, 1);
+//     const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
+//     const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
+//     const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
+//     const resps = await pool.query(
+//       `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
+//        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
+//       [forcedWeek]
+//     );
+//     for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
+//     console.log(`KPI emails sent to ${resps.rows.length} responsibles`);
+//   } catch (err) {
+//     console.error("Scheduled email error:", err.message);
+//   } finally {
+//     cronRunning = false;
+//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
 
 
-// // ---------- Cron: weekly reports ----------
+// ---------- Cron: weekly reports ----------
 // let reportCronRunning = false;
 // cron.schedule("21 17 * * *", async () => {
 //   const lockId = "weekly_kpi_report_job";
@@ -12652,7 +12753,7 @@ const createIndividualKPIChart = (kpi) => {
   const weeks = weeklyData.weeks.slice(0, 12);
   const values = weeklyData.values.slice(0, 12);
 
-  if (!values || values.length === 0 || values.every(v => v <= 0)) {
+  if (!values || values.length === 0) {
     return `<table border="0" cellpadding="15" cellspacing="0" width="100%"
               style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:15px;">
       <tr><td style="text-align:center;color:#999;font-size:14px;padding:20px;">
@@ -12782,10 +12883,17 @@ const createIndividualKPIChart = (kpi) => {
   ` : '';
 
   const hasComments = kpi.comments && kpi.comments.length > 0;
+  const correctiveActionDueDate = kpi.correctiveAction?.dueDate
+    ? formatInputDate(kpi.correctiveAction.dueDate)
+    : '';
+  const correctiveActionWeekLabel = kpi.correctiveAction?.week
+    ? weekToMonthLabel(kpi.correctiveAction.week) || String(kpi.correctiveAction.week).replace('2026-Week', 'Week ')
+    : '';
   const hasCA = kpi.correctiveAction && (
     kpi.correctiveAction.rootCause ||
     kpi.correctiveAction.implementedSolution ||
-    kpi.correctiveAction.evidence
+    kpi.correctiveAction.evidence ||
+    correctiveActionDueDate
   );
   const hasSide = hasComments || hasCA;
   const leftWidth = hasSide ? '52%' : '100%';
@@ -12836,6 +12944,12 @@ const createIndividualKPIChart = (kpi) => {
           CORRECTIVE ACTION ${caStatusBadge}
         </div>
 
+        ${correctiveActionWeekLabel ? `
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;
+                    letter-spacing:0.08em;margin:0 0 8px;">
+          Action Week: ${correctiveActionWeekLabel}
+        </div>` : ''}
+
         ${kpi.correctiveAction.rootCause ? `
         <table border="0" cellpadding="0" cellspacing="0" width="100%"
                style="margin-bottom:8px;">
@@ -12862,6 +12976,21 @@ const createIndividualKPIChart = (kpi) => {
             </div>
             <div style="font-size:11px;color:#374151;line-height:1.5;">
               ${kpi.correctiveAction.implementedSolution}
+            </div>
+          </td></tr>
+        </table>` : ''}
+
+        ${correctiveActionDueDate ? `
+        <table border="0" cellpadding="0" cellspacing="0" width="100%"
+               style="margin-bottom:8px;">
+          <tr><td style="padding:8px 10px;background:#f5f3ff;border-radius:6px;
+                         border-left:3px solid #7c3aed;">
+            <div style="font-size:9px;font-weight:800;color:#6d28d9;
+                        text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
+              Due Date
+            </div>
+            <div style="font-size:11px;color:#374151;line-height:1.5;">
+              ${correctiveActionDueDate}
             </div>
           </td></tr>
         </table>` : ''}
@@ -12998,10 +13127,10 @@ const generateManagerReportHtml = (reportData) => {
 <body>
   <div style="padding:30px 20px;max-width:1400px;margin:0 auto;">
     <div style="background:white;border-radius:12px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:30px;">
-      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">ðŸ“Š CEO KPI CODIR DASHBOARD</h1>
+      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">CEO KPI CODIR DASHBOARD</h1>
       <div style="font-size:14px;color:#6c757d;">
-        <strong>${plant.plant_name}</strong> â€¢ Week: <strong>${week.replace('2026-Week', 'W')}</strong>
-        â€¢ Manager: <strong>${plant.manager || 'N/A'}</strong></div>
+        <strong>${plant.plant_name}</strong>  Week: <strong>${week.replace('2026-Week', 'W')}</strong>
+        Manager: <strong>${plant.manager || 'N/A'}</strong></div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;
                   background:#f8f9fa;padding:20px;border-radius:8px;margin-top:20px;">
         <div style="text-align:center;">
@@ -13462,15 +13591,33 @@ const getDepartmentKPIReport = async (plantId, week) => {
            AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'
        )
        SELECT lkv.*,
-              ca.root_cause, ca.implemented_solution, ca.evidence, ca.status AS ca_status
+              ca.root_cause, ca.implemented_solution, ca.evidence, ca.status AS ca_status,
+              ca.due_date AS ca_due_date, ca.week AS ca_week
        FROM LatestKPIValues lkv
        LEFT JOIN LATERAL (
-         SELECT root_cause, implemented_solution, evidence, status
+         SELECT root_cause, implemented_solution, evidence, status, due_date, week
          FROM public.corrective_actions
          WHERE kpi_id = lkv.kpi_id
            AND responsible_id = lkv.responsible_id
-           AND week = lkv.week
-         ORDER BY COALESCE(updated_date, created_date) DESC, corrective_action_id DESC
+         ORDER BY
+           CASE
+             WHEN week = lkv.week
+              AND (
+                NULLIF(BTRIM(COALESCE(root_cause, '')), '') IS NOT NULL
+                OR NULLIF(BTRIM(COALESCE(implemented_solution, '')), '') IS NOT NULL
+                OR NULLIF(BTRIM(COALESCE(evidence, '')), '') IS NOT NULL
+                OR due_date IS NOT NULL
+              ) THEN 0
+             WHEN
+                NULLIF(BTRIM(COALESCE(root_cause, '')), '') IS NOT NULL
+                OR NULLIF(BTRIM(COALESCE(implemented_solution, '')), '') IS NOT NULL
+                OR NULLIF(BTRIM(COALESCE(evidence, '')), '') IS NOT NULL
+                OR due_date IS NOT NULL THEN 1
+             WHEN week = lkv.week THEN 2
+             ELSE 3
+           END,
+           COALESCE(updated_date, created_date) DESC,
+           corrective_action_id DESC
          LIMIT 1
        ) ca ON TRUE
        WHERE lkv.rn = 1 ORDER BY lkv.indicator_title`,
@@ -13563,11 +13710,13 @@ const getDepartmentKPIReport = async (plantId, week) => {
       }
       if (row.comment && row.comment.trim())
         existing.comments.push({ week: row.week, text: row.comment.trim() });
-      if (!existing.correctiveAction && (row.root_cause || row.implemented_solution || row.evidence)) {
+      if (!existing.correctiveAction && (row.root_cause || row.implemented_solution || row.evidence || row.ca_due_date)) {
         existing.correctiveAction = {
           rootCause: (row.root_cause || '').trim(),
           implementedSolution: (row.implemented_solution || '').trim(),
           evidence: (row.evidence || '').trim(),
+          dueDate: row.ca_due_date || null,
+          week: row.ca_week || null,
           status: row.ca_status || ''
         };
       }
@@ -13592,8 +13741,8 @@ const getDepartmentKPIReport = async (plantId, week) => {
 
 const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
   try {
-    const prevWeek = getPreviousWeek(currentWeek);
-    const reportData = await getDepartmentKPIReport(plantId, prevWeek);
+    const reportWeek = currentWeek;
+    const reportData = await getDepartmentKPIReport(plantId, reportWeek);
     if (!reportData || reportData.stats.totalKPIs === 0) return null;
 
     const emailHtml = generateManagerReportHtml(reportData);
@@ -13602,9 +13751,9 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     let pdfAttachment = null;
     try {
       console.log(`ðŸ“„ Generating plant-wide recommendations PDF for plant=${plantId}â€¦`);
-      const pdfBuffer = await generatePlantKPIRecommendationsPDFBuffer(pool, plantId, prevWeek);
+      const pdfBuffer = await generatePlantKPIRecommendationsPDFBuffer(pool, plantId, reportWeek);
       if (pdfBuffer) {
-        const weekLabel = prevWeek.replace('2026-Week', 'Week_');
+        const weekLabel = reportWeek.replace('2026-Week', 'Week_');
         pdfAttachment = {
           filename: `KPI_Recommendations_${reportData.plant.plant_name.replace(/ /g, '_')}_${weekLabel}.pdf`,
           content: pdfBuffer,
@@ -13614,7 +13763,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
       }
     } catch (pdfErr) {
       // Never block the main email if PDF generation fails
-      console.error(`âš ï¸ Could not generate plant recommendations PDF:`, pdfErr.message);
+      console.error(`Could not generate plant recommendations PDF:`, pdfErr.message);
     }
 
     // â”€â”€ Send email with optional PDF attachment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -13622,59 +13771,59 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     await transporter.sendMail({
       from: '"AVOCarbon Plant Analytics" <administration.STS@avocarbon.com>',
       to: reportData.plant.manager_email,
-      subject: `ðŸ“Š Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${prevWeek.replace('2026-Week', '')}`,
+      subject: `Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${reportWeek.replace('2026-Week', '')}`,
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
     });
 
     console.log(`KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${reportData.plant.manager_email}`);
   } catch (error) {
-    console.error(`âŒ Failed to send report for plant ${plantId}:`, error.message);
+    console.error(`Failed to send report for plant ${plantId}:`, error.message);
   }
 };
 
 // ---------- Cron: weekly manager/plant report ----------
-// let managerCronRunning = false;
-// cron.schedule("06 10 * * *", async () => {
-//   const lockId = "department_report_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (managerCronRunning) return;
-//     managerCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const currentWeek = `${year}-Week${weekNumber}`;
-//     console.log(`ðŸ“Š [Manager Report] Sending reports for week ${currentWeek}...`);
-//     const plantsRes = await pool.query(
-//       `SELECT plant_id, name, manager_email FROM public."Plant"
-//        WHERE manager_email IS NOT NULL AND manager_email != ''`
-//     );
-//     console.log(`ðŸ“‹ Found ${plantsRes.rows.length} plants with manager emails`);
-//     for (const plant of plantsRes.rows) {
-//       try {
-//         await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-//         console.log(`Report sent for plant: ${plant.name}`);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
-//       } catch (err) {
-//         console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
-//       }
-//     }
-//     console.log(`[Manager Report] All plant reports sent`);
-//   } catch (error) {
-//     console.error("âŒ [Manager Report] Cron error:", error.message);
-//   } finally {
-//     managerCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let managerCronRunning = false;
+cron.schedule("18 17 * * *", async () => {
+  const lockId = "department_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (managerCronRunning) return;
+    managerCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const currentWeek = `${year}-Week${weekNumber}`;
+    console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
+    const plantsRes = await pool.query(
+      `SELECT plant_id, name, manager_email FROM public."Plant"
+       WHERE manager_email IS NOT NULL AND manager_email != ''`
+    );
+    console.log(`ðŸ“‹ Found ${plantsRes.rows.length} plants with manager emails`);
+    for (const plant of plantsRes.rows) {
+      try {
+        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+        console.log(`Report sent for plant: ${plant.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
+      }
+    }
+    console.log(`[Manager Report] All plant reports sent`);
+  } catch (error) {
+    console.error("âŒ [Manager Report] Cron error:", error.message);
+  } finally {
+    managerCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
