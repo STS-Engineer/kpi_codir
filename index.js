@@ -4755,6 +4755,7 @@ const CORRECTIVE_ACTION_STATUS_OPTIONS = [
 ];
 
 const OPEN_CORRECTIVE_ACTION_STATUS = "Open";
+const CLOSED_CORRECTIVE_ACTION_STATUS = "Closed";
 
 const CORRECTIVE_ACTION_ESCALATION_STAGES = [
   {
@@ -6490,6 +6491,13 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
 
   const actionsByKpiId = {};
   correctiveActionsRes.rows.forEach((action) => {
+    if (
+      normalizeCorrectiveActionStatus(action.status, OPEN_CORRECTIVE_ACTION_STATUS) ===
+      CLOSED_CORRECTIVE_ACTION_STATUS
+    ) {
+      return;
+    }
+
     if (!actionsByKpiId[action.kpi_id]) {
       actionsByKpiId[action.kpi_id] = [];
     }
@@ -6904,7 +6912,11 @@ app.get("/corrective-actions-list", async (req, res) => {
       [responsible_id]
     );
 
-    const actions = actionsRes.rows;
+    const actions = actionsRes.rows.filter(
+      (action) =>
+        normalizeCorrectiveActionStatus(action.status, OPEN_CORRECTIVE_ACTION_STATUS) !==
+        CLOSED_CORRECTIVE_ACTION_STATUS
+    );
     const latestSubmittedActionId = actions[0]?.corrective_action_id ?? null;
 
     const formatDate = (dateValue) => {
@@ -9684,6 +9696,63 @@ app.get("/form", async (req, res) => {
           .btn-cancel{padding:10px 20px;border:1px solid #ccc;background:white;border-radius:6px;cursor:pointer;font-weight:600;}
           .btn-confirm{padding:10px 20px;border:none;background:linear-gradient(135deg,#0078D7,#005ea6);color:white;border-radius:6px;cursor:pointer;font-weight:600;}
           .submit-btn{background:#0078D7;color:white;border:none;padding:12px 30px;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer;display:block;width:100%;margin-top:20px;}
+          .close-action-confirm-overlay{
+            position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+            padding:20px;background:rgba(15,23,42,0.62);backdrop-filter:blur(8px);
+            z-index:10005;opacity:0;pointer-events:none;transition:opacity 0.24s ease;
+          }
+          .close-action-confirm-overlay.active{opacity:1;pointer-events:auto;}
+          .close-action-confirm-card{
+            width:min(92vw,470px);background:#fff;border-radius:24px;overflow:hidden;
+            border:1px solid #fecaca;box-shadow:0 28px 80px rgba(15,23,42,0.32);
+            transform:translateY(18px) scale(0.97);transition:transform 0.24s ease;
+          }
+          .close-action-confirm-overlay.active .close-action-confirm-card{transform:translateY(0) scale(1);}
+          .close-action-confirm-hero{
+            padding:24px 24px 18px;
+            background:
+              radial-gradient(circle at top right, rgba(239,68,68,0.18), transparent 34%),
+              linear-gradient(135deg,#fff5f5 0%,#fff7ed 100%);
+            border-bottom:1px solid #fee2e2;
+          }
+          .close-action-confirm-badge{
+            display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;
+            background:#ffffff;border:1px solid #fecaca;color:#b91c1c;font-size:11px;
+            font-weight:900;letter-spacing:0.08em;text-transform:uppercase;
+            box-shadow:0 6px 18px rgba(239,68,68,0.08);
+          }
+          .close-action-confirm-title{
+            margin:14px 0 8px;font-size:24px;font-weight:900;line-height:1.2;color:#111827;
+          }
+          .close-action-confirm-text{
+            margin:0;font-size:15px;line-height:1.7;color:#475569;
+          }
+          .close-action-confirm-body{padding:22px 24px 24px;}
+          .close-action-confirm-note{
+            padding:14px 16px;border-radius:16px;background:#fff7ed;border:1px solid #fed7aa;
+            color:#9a3412;font-size:13px;line-height:1.65;
+          }
+          .close-action-confirm-actions{
+            display:flex;justify-content:flex-end;gap:12px;margin-top:20px;flex-wrap:wrap;
+          }
+          .close-action-confirm-cancel{
+            padding:12px 18px;border:1px solid #dbe3ee;border-radius:14px;background:#ffffff;
+            color:#334155;font-size:14px;font-weight:800;cursor:pointer;
+            transition:background 0.18s ease,border-color 0.18s ease,transform 0.18s ease;
+          }
+          .close-action-confirm-cancel:hover{background:#f8fafc;border-color:#cbd5e1;transform:translateY(-1px);}
+          .close-action-confirm-confirm{
+            padding:12px 18px;border:none;border-radius:14px;
+            background:linear-gradient(135deg,#ef4444,#dc2626);color:#ffffff;
+            font-size:14px;font-weight:800;cursor:pointer;
+            box-shadow:0 12px 26px rgba(220,38,38,0.22);
+            transition:transform 0.18s ease,box-shadow 0.18s ease;
+          }
+          .close-action-confirm-confirm:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(220,38,38,0.28);}
+          .close-action-confirm-cancel:focus-visible,
+          .close-action-confirm-confirm:focus-visible{
+            outline:none;box-shadow:0 0 0 4px rgba(59,130,246,0.15);
+          }
 
           /* â”€â”€ AI Assistant â”€â”€ */
           .assistant-shell{
@@ -9833,6 +9902,30 @@ app.get("/form", async (req, res) => {
             <div class="modal-actions">
               <button id="cancelBtn" type="button" class="btn-cancel">Cancel</button>
               <button id="confirmBtn" type="button" class="btn-confirm">Yes, Submit</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="closeActionConfirmModal" class="close-action-confirm-overlay" aria-hidden="true">
+          <div class="close-action-confirm-card" role="dialog" aria-modal="true" aria-labelledby="closeActionConfirmTitle">
+            <div class="close-action-confirm-hero">
+              <div class="close-action-confirm-badge">
+                <span aria-hidden="true">&#9888;&#65039;</span>
+                Close Corrective Action
+              </div>
+              <h3 id="closeActionConfirmTitle" class="close-action-confirm-title">Are you sure you want to close this corrective action?</h3>
+              <p id="closeActionConfirmMessage" class="close-action-confirm-text">
+                Closing this corrective action will remove it from the current active list.
+              </p>
+            </div>
+            <div class="close-action-confirm-body">
+              <div id="closeActionConfirmNote" class="close-action-confirm-note">
+                The corrective action will stay saved in the system, but it will no longer appear in the current list.
+              </div>
+              <div class="close-action-confirm-actions">
+                <button id="closeActionConfirmCancel" type="button" class="close-action-confirm-cancel">Cancel</button>
+                <button id="closeActionConfirmConfirm" type="button" class="close-action-confirm-confirm">Yes, close it</button>
+              </div>
             </div>
           </div>
         </div>
@@ -10052,6 +10145,68 @@ function getCaModalActions(kvId) {
             const normalized = String(status || "").trim().toLowerCase();
             const matched = HISTORY_STATUS_OPTIONS.find(option => option.toLowerCase() === normalized);
             return matched || "Open";
+          }
+
+          function isClosedCorrectiveActionStatus(status) {
+            return getCanonicalCorrectiveActionStatus(status) === "Closed";
+          }
+
+          let closeActionConfirmState = null;
+
+          function settleCloseActionConfirm(confirmed) {
+            if (!closeActionConfirmState) return;
+
+            const pending = closeActionConfirmState;
+            closeActionConfirmState = null;
+
+            const modal = document.getElementById("closeActionConfirmModal");
+            if (modal) {
+              modal.classList.remove("active");
+              modal.setAttribute("aria-hidden", "true");
+            }
+
+            if (!confirmed && pending.triggerEl && document.contains(pending.triggerEl)) {
+              window.setTimeout(() => pending.triggerEl.focus(), 0);
+            }
+
+            pending.resolve(Boolean(confirmed));
+          }
+
+          function confirmCloseCorrectiveAction(options) {
+            const modal = document.getElementById("closeActionConfirmModal");
+            const message = document.getElementById("closeActionConfirmMessage");
+            const note = document.getElementById("closeActionConfirmNote");
+            const confirmButton = document.getElementById("closeActionConfirmConfirm");
+
+            if (!modal) {
+              return Promise.resolve(window.confirm("Are you sure you want to close this corrective action?"));
+            }
+
+            if (message) {
+              message.textContent = "Closing this corrective action will remove it from the current active list.";
+            }
+
+            if (note) {
+              note.textContent = "The corrective action will stay saved in the system, but it will no longer appear in the current list.";
+            }
+
+            if (closeActionConfirmState) {
+              settleCloseActionConfirm(false);
+            }
+
+            return new Promise((resolve) => {
+              closeActionConfirmState = {
+                resolve,
+                triggerEl: options && options.triggerEl ? options.triggerEl : null
+              };
+
+              modal.classList.add("active");
+              modal.setAttribute("aria-hidden", "false");
+
+              if (confirmButton) {
+                window.setTimeout(() => confirmButton.focus(), 0);
+              }
+            });
           }
 
           function setCorrectiveActionBadgeState(badge, status) {
@@ -11306,16 +11461,38 @@ function getFallbackCurrentMonthLabel(card, labels) {
             const previousStatus = getCanonicalCorrectiveActionStatus(selectEl.dataset.previousStatus || "Open");
             const nextStatus = getCanonicalCorrectiveActionStatus(selectEl.value);
 
-            applyHistoryStatusSelectState(selectEl, nextStatus);
-            updateCorrectiveActionStatusInStore(kvId, actionIndex, nextStatus);
+            if (
+              isClosedCorrectiveActionStatus(nextStatus) &&
+              !isClosedCorrectiveActionStatus(previousStatus)
+            ) {
+              const confirmed = await confirmCloseCorrectiveAction({ triggerEl: selectEl });
+              if (!confirmed) {
+                applyHistoryStatusSelectState(selectEl, previousStatus);
+                return;
+              }
+            }
 
             const actionId = String(selectEl.dataset.actionId || "").trim();
             if (!actionId) {
+              if (isClosedCorrectiveActionStatus(nextStatus)) {
+                removeCorrectiveActionFromStore(kvId, actionIndex);
+                selectEl.dataset.previousStatus = nextStatus;
+                openHistoryModal(kvId);
+                return;
+              }
+
+              applyHistoryStatusSelectState(selectEl, nextStatus);
+              updateCorrectiveActionStatusInStore(kvId, actionIndex, nextStatus);
               selectEl.dataset.previousStatus = nextStatus;
               return;
             }
 
             selectEl.disabled = true;
+            applyHistoryStatusSelectState(selectEl, nextStatus);
+
+            if (!isClosedCorrectiveActionStatus(nextStatus)) {
+              updateCorrectiveActionStatusInStore(kvId, actionIndex, nextStatus);
+            }
 
             try {
               const response = await fetch('/api/corrective-actions/' + encodeURIComponent(actionId) + '/status', {
@@ -11330,9 +11507,15 @@ function getFallbackCurrentMonthLabel(card, labels) {
               }
 
               const savedStatus = getCanonicalCorrectiveActionStatus(payload.status || nextStatus);
-              updateCorrectiveActionStatusInStore(kvId, actionIndex, savedStatus);
-              applyHistoryStatusSelectState(selectEl, savedStatus);
               selectEl.dataset.previousStatus = savedStatus;
+
+              if (isClosedCorrectiveActionStatus(savedStatus)) {
+                removeCorrectiveActionFromStore(kvId, actionIndex);
+                openHistoryModal(kvId);
+              } else {
+                updateCorrectiveActionStatusInStore(kvId, actionIndex, savedStatus);
+                applyHistoryStatusSelectState(selectEl, savedStatus);
+              }
             } catch (error) {
               updateCorrectiveActionStatusInStore(kvId, actionIndex, previousStatus);
               applyHistoryStatusSelectState(selectEl, previousStatus);
@@ -11369,6 +11552,26 @@ function getFallbackCurrentMonthLabel(card, labels) {
               String(action.responsible || "").trim() ||
               String(action.id || action.corrective_action_id || "").trim()
             );
+          }
+
+          function shouldShowCurrentCorrectiveAction(action) {
+            return hasCorrectiveActionContent(action) && !isClosedCorrectiveActionStatus(action.status);
+          }
+
+          function removeCorrectiveActionFromStore(kvId, actionIndex) {
+            const actions = getCaModalActions(kvId);
+            if (!Array.isArray(actions) || actionIndex < 0 || actionIndex >= actions.length) {
+              return null;
+            }
+
+            const removedAction = actions.splice(actionIndex, 1)[0] || null;
+            syncDomFromStore(kvId);
+
+            if (caModalKvId === kvId) {
+              renderCaModalTable(kvId);
+            }
+
+            return removedAction;
           }
 
           function renderHistoryActionsTable(actions, emptyMessage, options) {
@@ -11425,7 +11628,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
     .map(function(action, actionIndex) {
       return Object.assign({ week: currentMonthLabel, status: action.status || "Open", _storeIndex: actionIndex }, action);
     })
-    .filter(hasCorrectiveActionContent);
+    .filter(shouldShowCurrentCorrectiveAction);
   const prevActions = decodeModalPayload(card.dataset.prevMonthActions, []);
   const prevComments = decodeModalPayload(card.dataset.prevMonthComments, []);
   const comments = Array.isArray(prevComments) ? prevComments : [];
@@ -11557,6 +11760,23 @@ function getFallbackCurrentMonthLabel(card, labels) {
               historyModal.addEventListener("click", e => { if (e.target===historyModal) closeHistoryModal(); });
             }
 
+            const closeActionConfirmModal = document.getElementById("closeActionConfirmModal");
+            const closeActionConfirmCancel = document.getElementById("closeActionConfirmCancel");
+            const closeActionConfirmConfirm = document.getElementById("closeActionConfirmConfirm");
+            if (closeActionConfirmCancel) {
+              closeActionConfirmCancel.addEventListener("click", () => settleCloseActionConfirm(false));
+            }
+            if (closeActionConfirmConfirm) {
+              closeActionConfirmConfirm.addEventListener("click", () => settleCloseActionConfirm(true));
+            }
+            if (closeActionConfirmModal) {
+              closeActionConfirmModal.addEventListener("click", e => {
+                if (e.target === closeActionConfirmModal) {
+                  settleCloseActionConfirm(false);
+                }
+              });
+            }
+
             // CA Table Modal close
             const caModalClose = document.getElementById("caModalClose");
             const caTableModal = document.getElementById("caTableModal");
@@ -11576,6 +11796,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
             // Escape key
             document.addEventListener("keydown", e => {
               if (e.key === "Escape") {
+                if (document.getElementById("closeActionConfirmModal").classList.contains("active")) { settleCloseActionConfirm(false); return; }
                 if (document.getElementById("caTableModal").classList.contains("active")) { closeCaTableModal(); return; }
                 if (document.getElementById("chartModal").classList.contains("active")) { closeChartModal(); return; }
                 if (document.getElementById("historyModal").classList.contains("active")) { closeHistoryModal(); return; }
