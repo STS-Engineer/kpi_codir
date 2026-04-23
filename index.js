@@ -11964,24 +11964,6 @@ function getFallbackCurrentMonthLabel(card, labels) {
     '</div>'
   );
 
-  if (comments.length) {
-    const commentsHtml = '<div class="history-comments-list">' + comments.map(c =>
-      '<div class="history-comment-card">' +
-        '<div class="history-comment-label">' +
-          escapeHistoryHtml(c.month_label || "") +
-          (c.week ? ' • ' + formatHistoryWeek(c.week) : '') +
-        '</div>' +
-        '<div class="history-comment-text">' + formatHistoryText(c.text || "") + '</div>' +
-      '</div>'
-    ).join("") + '</div>';
-
-    sections.push(
-      '<div class="history-section">' +
-        '<h4 class="history-section-title">Comments History</h4>' +
-        commentsHtml +
-      '</div>'
-    );
-  }
 
   historyModalContent.innerHTML = sections.join('');
   historyModal.dataset.kpiValuesId = String(kvId);
