@@ -4690,10 +4690,11 @@ const acquireJobLock = async (lockId, ttlMinutes = 9) => {
   }
 };
 
-const releaseJobLock = async (lockId, lockHash) => {
+const releaseJobLock = async (lockId, lockHashOrInstanceId, maybeLockHash) => {
+  const resolvedLockHash = maybeLockHash ?? lockHashOrInstanceId;
   try {
-    if (lockHash) {
-      await pool.query('SELECT pg_advisory_unlock($1)', [lockHash]);
+    if (resolvedLockHash) {
+      await pool.query('SELECT pg_advisory_unlock($1)', [resolvedLockHash]);
     }
   } catch (error) {
     console.error(`âš ï¸ Could not release lock ${lockId}:`, error.message);
@@ -4730,6 +4731,17 @@ const formatInputDate = (dateValue) => {
   return d.toISOString().split("T")[0];
 };
 
+const formatDisplayDate = (
+  dateValue,
+  locale = "en-GB",
+  options = { day: "2-digit", month: "short", year: "numeric" }
+) => {
+  if (!dateValue) return "N/A";
+  const d = new Date(dateValue);
+  if (isNaN(d.getTime())) return "N/A";
+  return d.toLocaleDateString(locale, options);
+};
+
 const normalizeText = (value) => {
   const text = String(value ?? "").trim();
   return text ? text : null;
@@ -4740,6 +4752,43 @@ const CORRECTIVE_ACTION_STATUS_OPTIONS = [
   "Waiting for validation",
   "Completed",
   "Closed"
+];
+
+const OPEN_CORRECTIVE_ACTION_STATUS = "Open";
+
+const CORRECTIVE_ACTION_ESCALATION_STAGES = [
+  {
+    key: "due_day_3_responsible_reminder",
+    minOverdueDays: 3,
+    audience: "responsible",
+    label: "First reminder",
+    intro:
+      "This corrective action is now 3 days overdue. Please review it and update the status as soon as possible."
+  },
+  {
+    key: "due_day_4_responsible_reminder",
+    minOverdueDays: 4,
+    audience: "responsible",
+    label: "Second reminder",
+    intro:
+      "This is a second reminder because the corrective action is still open 4 days after the due date."
+  },
+  {
+    key: "due_day_5_responsible_reminder",
+    minOverdueDays: 5,
+    audience: "responsible",
+    label: "Third reminder",
+    intro:
+      "This is a third reminder because the corrective action is still open 5 days after the due date."
+  },
+  {
+    key: "due_day_6_plant_manager_escalation",
+    minOverdueDays: 6,
+    audience: "manager",
+    label: "Plant manager escalation",
+    intro:
+      "This corrective action is still open 6 days after the due date and has now been escalated to the plant manager."
+  }
 ];
 
 const normalizeCorrectiveActionStatus = (value, fallback = null) => {
@@ -4839,6 +4888,423 @@ const getSubmittedCorrectiveActions = (formData, kpiValuesId, defaultResponsible
     status: normalizeText(statuses[index]) || "Open"
   }));
 };
+
+let correctiveActionEscalationSchemaPromise = null;
+
+const ensureCorrectiveActionEscalationSchema = async () => {
+  if (!correctiveActionEscalationSchemaPromise) {
+    correctiveActionEscalationSchemaPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.corrective_action_escalation_log (
+          escalation_id BIGSERIAL PRIMARY KEY,
+          corrective_action_id BIGINT NOT NULL,
+          escalation_stage TEXT NOT NULL,
+          sent_to_email TEXT,
+          sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CONSTRAINT corrective_action_escalation_log_unique
+            UNIQUE (corrective_action_id, escalation_stage)
+        )
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_corrective_action_escalation_log_action
+        ON public.corrective_action_escalation_log (corrective_action_id)
+      `);
+    })().catch((error) => {
+      correctiveActionEscalationSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return correctiveActionEscalationSchemaPromise;
+};
+
+const getCorrectiveActionOverdueDays = (dateValue, now = new Date()) => {
+  if (!dateValue) return 0;
+
+  const dueDate = new Date(dateValue);
+  if (isNaN(dueDate.getTime())) return 0;
+
+  const currentDay = new Date(now);
+  currentDay.setHours(0, 0, 0, 0);
+
+  const dueDay = new Date(dueDate);
+  dueDay.setHours(0, 0, 0, 0);
+
+  const diffMs = currentDay.getTime() - dueDay.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 0;
+
+  return Math.floor(diffMs / 86400000);
+};
+
+const buildCorrectiveActionEscalationEmailHtml = ({ action, stage, overdueDays }) => {
+  const actionTitle = [action.kpi_subject, action.indicator_sub_title]
+    .filter(Boolean)
+    .join(" - ");
+  const responsibleName = action.responsible_name || "Responsible owner";
+  const managerName = action.manager || "Plant manager";
+  const createdOn = formatDisplayDate(action.created_date);
+  const dueOn = action.due_date ? formatDisplayDate(action.due_date) : "Not set";
+  const isManagerAudience = stage.audience === "manager";
+  const theme = isManagerAudience
+      ? {
+          heroBase: "#7f1d1d",
+          heroStart: "#991b1b",
+          heroEnd: "#dc2626",
+          soft: "#fff1f2",
+          softBorder: "#fecaca",
+          muted: "#7f1d1d",
+          statSurface: "#fff7f7",
+          shadow: "rgba(220,38,38,0.14)"
+      }
+      : {
+          heroBase: "#1d4ed8",
+          heroStart: "#1d4ed8",
+          heroEnd: "#0f766e",
+          soft: "#eff6ff",
+          softBorder: "#bfdbfe",
+          muted: "#1e3a8a",
+          statSurface: "#f8fbff",
+          shadow: "rgba(37,99,235,0.14)"
+      };
+  const recipientIntro =
+    isManagerAudience
+      ? `${escapeHtml(responsibleName)} still has an open corrective action that is overdue by ${overdueDays} day${overdueDays === 1 ? "" : "s"}.`
+      : `Your corrective action is overdue by ${overdueDays} day${overdueDays === 1 ? "" : "s"} after the due date.`;
+  const statusValue = action.status || OPEN_CORRECTIVE_ACTION_STATUS;
+  const normalizedStatus = statusValue.toLowerCase();
+  const statusTheme =
+    normalizedStatus === "completed" || normalizedStatus === "closed"
+      ? {
+          bg: "#ecfdf5",
+          border: "#a7f3d0",
+          color: "#047857"
+        }
+      : normalizedStatus === "waiting for validation"
+        ? {
+            bg: "#fff7ed",
+            border: "#fed7aa",
+            color: "#c2410c"
+          }
+        : {
+            bg: "#fef2f2",
+            border: "#fecaca",
+            color: "#b91c1c"
+          };
+  const rootCauseBlock = normalizeText(action.root_cause)
+    ? `
+      <div style="margin-top:18px;padding:22px 24px;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;box-shadow:0 10px 24px rgba(15,23,42,0.05);">
+        <div style="font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:#64748b;margin-bottom:10px;">Root Cause</div>
+        <div style="font-size:15px;line-height:1.8;color:#1e293b;">${escapeHtml(action.root_cause)}</div>
+      </div>`
+    : "";
+  const solutionBlock = normalizeText(action.implemented_solution)
+    ? `
+      <div style="margin-top:18px;padding:22px 24px;background:${theme.statSurface};border:1px solid ${theme.softBorder};border-radius:20px;box-shadow:0 10px 24px ${theme.shadow};">
+        <div style="font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:${theme.muted};margin-bottom:10px;">Corrective Action</div>
+        <div style="font-size:15px;line-height:1.8;color:#1e293b;">${escapeHtml(action.implemented_solution)}</div>
+      </div>`
+    : "";
+
+  return `<!DOCTYPE html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+      <title>${escapeHtml(stage.label)}</title>
+    </head>
+    <body style="margin:0;padding:0;background:#e8eef5;font-family:'Segoe UI',Arial,sans-serif;color:#0f172a;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;background:#e8eef5;">
+        <tr>
+          <td align="center" style="padding:28px 16px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:760px;width:100%;border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #dbe3ee;border-radius:28px;overflow:hidden;box-shadow:0 24px 60px rgba(15,23,42,0.12);">
+              <tr>
+                <td style="padding:0;background:${theme.heroBase};background-image:linear-gradient(135deg, ${theme.heroStart}, ${theme.heroEnd});">
+                  <div style="padding:32px 32px 30px;background:radial-gradient(circle at top right, rgba(255,255,255,0.22), transparent 34%);">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+                      <tr>
+                        <td style="vertical-align:top;padding-right:14px;">
+                          <div style="display:inline-block;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.18);font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#ffffff;">
+                            ${escapeHtml(stage.label)}
+                          </div>
+                          <h1 style="margin:18px 0 10px;font-size:31px;line-height:1.18;color:#ffffff;letter-spacing:-0.03em;">
+                            ${escapeHtml(actionTitle || "Corrective Action")}
+                          </h1>
+                          <p style="margin:0;font-size:15px;line-height:1.75;color:rgba(255,255,255,0.90);max-width:470px;">
+                            ${isManagerAudience ? `Dear ${escapeHtml(managerName)},` : `Dear ${escapeHtml(responsibleName)},`}
+                          </p>
+                        </td>
+                        <td align="right" style="vertical-align:top;width:180px;">
+                          <div style="display:inline-block;min-width:150px;padding:16px 18px;border-radius:20px;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.18);box-shadow:inset 0 1px 0 rgba(255,255,255,0.18);text-align:left;">
+                            <div style="font-size:11px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:rgba(255,255,255,0.74);margin-bottom:6px;">Overdue</div>
+                            <div style="font-size:30px;font-weight:800;line-height:1;color:#ffffff;">${overdueDays}</div>
+                            <div style="margin-top:6px;font-size:13px;line-height:1.4;color:rgba(255,255,255,0.84);">day${overdueDays === 1 ? "" : "s"} past due</div>
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding:28px 32px 0;">
+                  <div style="padding:20px 22px;background:${theme.soft};border:1px solid ${theme.softBorder};border-radius:22px;box-shadow:0 10px 28px ${theme.shadow};">
+                    <div style="font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:${theme.muted};margin-bottom:8px;">
+                      Attention Required
+                    </div>
+                    <div style="font-size:17px;font-weight:700;line-height:1.6;color:#0f172a;">
+                      ${recipientIntro}
+                    </div>
+                    <div style="margin-top:8px;font-size:15px;line-height:1.75;color:#334155;">
+                      ${escapeHtml(stage.intro)}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding:20px 32px 0;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0 12px;">
+                    <tr>
+                      <td style="width:50%;padding-right:6px;vertical-align:top;">
+                        <div style="padding:16px 18px;background:${theme.statSurface};border:1px solid ${theme.softBorder};border-radius:18px;">
+                          <div style="font-size:11px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:#64748b;margin-bottom:8px;">Due Date</div>
+                          <div style="font-size:19px;font-weight:800;color:#0f172a;">${escapeHtml(dueOn)}</div>
+                        </div>
+                      </td>
+                      <td style="width:50%;padding-left:6px;vertical-align:top;">
+                        <div style="padding:16px 18px;background:#ffffff;border:1px solid ${statusTheme.border};border-radius:18px;">
+                          <div style="font-size:11px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:#64748b;margin-bottom:8px;">Status</div>
+                          <span style="display:inline-block;padding:8px 12px;border-radius:999px;background:${statusTheme.bg};border:1px solid ${statusTheme.border};font-size:13px;font-weight:800;color:${statusTheme.color};">
+                            ${escapeHtml(statusValue)}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding:16px 32px 0;">
+                  <div style="font-size:12px;font-weight:800;letter-spacing:0.10em;text-transform:uppercase;color:#64748b;margin-bottom:12px;">
+                    Action Overview
+                  </div>
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden;">
+                    <tr>
+                      <td style="padding:12px 16px;background:#f8fafc;color:#475569;font-weight:700;width:180px;">Plant</td>
+                      <td style="padding:12px 16px;color:#0f172a;">${escapeHtml(action.plant_name || "N/A")}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:12px 16px;background:#f8fafc;color:#475569;font-weight:700;width:180px;border-top:1px solid #e2e8f0;">Department</td>
+                      <td style="padding:12px 16px;color:#0f172a;border-top:1px solid #e2e8f0;">${escapeHtml(action.department_name || "N/A")}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:12px 16px;background:#f8fafc;color:#475569;font-weight:700;width:180px;border-top:1px solid #e2e8f0;">Responsible</td>
+                      <td style="padding:12px 16px;color:#0f172a;border-top:1px solid #e2e8f0;">${escapeHtml(responsibleName)}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:12px 16px;background:#f8fafc;color:#475569;font-weight:700;width:180px;border-top:1px solid #e2e8f0;">Week</td>
+                      <td style="padding:12px 16px;color:#0f172a;border-top:1px solid #e2e8f0;">${escapeHtml(action.week || "N/A")}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding:12px 16px;background:#f8fafc;color:#475569;font-weight:700;width:180px;border-top:1px solid #e2e8f0;">Created On</td>
+                      <td style="padding:12px 16px;color:#0f172a;border-top:1px solid #e2e8f0;">${escapeHtml(createdOn)}</td>
+                    </tr>
+                  </table>
+                  ${rootCauseBlock}
+                  ${solutionBlock}
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding:22px 32px 32px;">
+                  <div style="padding-top:18px;border-top:1px solid #e2e8f0;font-size:13px;line-height:1.8;color:#64748b;">
+                    This notification was sent automatically by the AVOCarbon KPI System to help keep corrective actions visible and on track.
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+  </html>`;
+};
+
+const getPendingCorrectiveActionEscalations = async () => {
+  await ensureCorrectiveActionEscalationSchema();
+
+  const actionsRes = await pool.query(
+    `
+    SELECT
+      ca.corrective_action_id,
+      ca.responsible_id,
+      ca.kpi_id,
+      ca.week,
+      ca.status,
+      ca.root_cause,
+      ca.implemented_solution,
+      ca.due_date,
+      ca.created_date,
+      r.name AS responsible_name,
+      r.email AS responsible_email,
+      p.name AS plant_name,
+      p.manager,
+      p.manager_email,
+      d.name AS department_name,
+      k.subject AS kpi_subject,
+      k.indicator_sub_title
+    FROM public.corrective_actions ca
+    JOIN public."Responsible" r
+      ON ca.responsible_id = r.responsible_id
+    LEFT JOIN public."Plant" p
+      ON r.plant_id = p.plant_id
+    LEFT JOIN public."Department" d
+      ON r.department_id = d.department_id
+    JOIN public."Kpi" k
+      ON ca.kpi_id = k.kpi_id
+    WHERE COALESCE(ca.status, $1::text) = $1::text
+      AND ca.due_date IS NOT NULL
+      AND ca.due_date::date <= CURRENT_DATE - INTERVAL '3 days'
+    ORDER BY ca.due_date ASC, ca.corrective_action_id ASC
+    `,
+    [OPEN_CORRECTIVE_ACTION_STATUS]
+  );
+
+  if (!actionsRes.rows.length) {
+    return [];
+  }
+
+  const actionIds = actionsRes.rows
+    .map((row) => String(row.corrective_action_id ?? "").trim())
+    .filter(Boolean);
+  const escalationLogRes = actionIds.length
+    ? await pool.query(
+        `
+        SELECT corrective_action_id, escalation_stage
+        FROM public.corrective_action_escalation_log
+        WHERE corrective_action_id = ANY($1::bigint[])
+        `,
+        [actionIds]
+      )
+    : { rows: [] };
+
+  const sentStagesByActionId = escalationLogRes.rows.reduce((acc, row) => {
+    const actionId = String(row.corrective_action_id);
+    if (!acc[actionId]) {
+      acc[actionId] = new Set();
+    }
+    acc[actionId].add(row.escalation_stage);
+    return acc;
+  }, {});
+
+  const pendingEscalations = [];
+
+  actionsRes.rows.forEach((action) => {
+    const overdueDays = getCorrectiveActionOverdueDays(action.due_date);
+    const sentStages = sentStagesByActionId[String(action.corrective_action_id)] || new Set();
+
+    CORRECTIVE_ACTION_ESCALATION_STAGES.forEach((stage) => {
+      if (overdueDays < stage.minOverdueDays || sentStages.has(stage.key)) {
+        return;
+      }
+
+      const recipientEmail = normalizeText(
+        stage.audience === "manager" ? action.manager_email : action.responsible_email
+      );
+
+      if (!recipientEmail) {
+        return;
+      }
+
+      pendingEscalations.push({
+        action,
+        stage,
+        overdueDays,
+        recipientEmail
+      });
+    });
+  });
+
+  return pendingEscalations;
+};
+
+const sendCorrectiveActionEscalationEmail = async ({
+  transporter,
+  action,
+  stage,
+  overdueDays,
+  recipientEmail
+}) => {
+  const kpiLabel = [action.kpi_subject, action.indicator_sub_title]
+    .filter(Boolean)
+    .join(" - ");
+  const subject =
+    stage.audience === "manager"
+      ? `Escalation: Corrective action overdue by ${overdueDays} days - ${kpiLabel || action.corrective_action_id}`
+      : `${stage.label}: Corrective action overdue by ${overdueDays} days - ${kpiLabel || action.corrective_action_id}`;
+
+  await transporter.sendMail({
+    from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
+    to: recipientEmail,
+    subject,
+    html: buildCorrectiveActionEscalationEmailHtml({ action, stage, overdueDays })
+  });
+
+  await pool.query(
+    `
+    INSERT INTO public.corrective_action_escalation_log
+      (corrective_action_id, escalation_stage, sent_to_email)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (corrective_action_id, escalation_stage) DO NOTHING
+    `,
+    [action.corrective_action_id, stage.key, recipientEmail]
+  );
+};
+
+const runCorrectiveActionEscalationJob = async () => {
+  const pendingEscalations = await getPendingCorrectiveActionEscalations();
+
+  if (!pendingEscalations.length) {
+    console.log("[Corrective Action Escalation] No pending escalation emails.");
+    return { sent: 0, pending: 0 };
+  }
+
+  const transporter = createTransporter();
+  let sentCount = 0;
+
+  for (const escalation of pendingEscalations) {
+    try {
+      await sendCorrectiveActionEscalationEmail({
+        transporter,
+        action: escalation.action,
+        stage: escalation.stage,
+        overdueDays: escalation.overdueDays,
+        recipientEmail: escalation.recipientEmail
+      });
+
+      sentCount += 1;
+      console.log(
+        `[Corrective Action Escalation] ${escalation.stage.key} sent for corrective action ${escalation.action.corrective_action_id} to ${escalation.recipientEmail}`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } catch (error) {
+      console.error(
+        `[Corrective Action Escalation] Failed to send ${escalation.stage.key} for corrective action ${escalation.action.corrective_action_id}:`,
+        error.message
+      );
+    }
+  }
+
+  return {
+    sent: sentCount,
+    pending: pendingEscalations.length
+  };
+};
+
 const buildCorrectiveActionEntryHtml = ({
   kpiValuesId,
   actionIndex,
@@ -7437,14 +7903,6 @@ app.get("/corrective-actions-bulk", async (req, res) => {
                   </div>
                   <div class="ai-card-text" id="ia-text-${action.corrective_action_id}"></div>
                 </div>
-                <div class="ai-suggestion-card evidence-card"
-                     onclick="applyToField('evidence_${action.corrective_action_id}',this)">
-                  <div class="ai-card-label">
-                    <span class="ai-card-icon">&#128202;</span>Evidence
-                    <span class="apply-hint">Click to apply &#8595;</span>
-                  </div>
-                  <div class="ai-card-text" id="ev-text-${action.corrective_action_id}"></div>
-                </div>
               </div>
             </div>
 
@@ -7472,16 +7930,6 @@ app.get("/corrective-actions-bulk", async (req, res) => {
                         id="solution_${action.corrective_action_id}" required
                         placeholder="Click 'Generate Suggestion' above, or describe actions taken manually"
               >${action.implemented_solution || ''}</textarea>
-            </div>
-            <div class="form-group">
-              <label for="evidence_${action.corrective_action_id}">
-                &#128202; Evidence <span class="required">*</span>
-              </label>
-              <textarea name="evidence_${action.corrective_action_id}"
-                        id="evidence_${action.corrective_action_id}" required
-                        placeholder="What evidence shows improvement?"
-              >${action.evidence || ''}</textarea>
-              <div class="help-text">Provide data, metrics, or observations demonstrating effectiveness</div>
             </div>
 
             <div class="form-grid">
@@ -7578,19 +8026,17 @@ app.get("/corrective-actions-bulk", async (req, res) => {
           @keyframes fadeIn{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
           .suggestion-content{padding:14px 16px;animation:fadeIn 0.3s ease;}
           .suggestion-error{padding:12px 16px;font-size:13px;color:#92400e;background:#fff7ed;}
-          .ai-suggestion-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+          .ai-suggestion-row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
           .ai-suggestion-card{background:white;border-radius:8px;padding:14px;cursor:pointer;
             transition:transform 0.15s,box-shadow 0.15s;border:1.5px solid transparent;}
           .ai-suggestion-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,0.1);}
           .ai-suggestion-card.applied{border-color:#4ade80!important;background:#f0fdf4;}
           .root-cause-card{border-top:3px solid #ef4444;}
           .action-card{border-top:3px solid #f59e0b;}
-          .evidence-card{border-top:3px solid #3b82f6;}
           .ai-card-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;
             margin-bottom:8px;display:flex;align-items:center;gap:5px;}
           .root-cause-card .ai-card-label{color:#dc2626;}
           .action-card .ai-card-label{color:#d97706;}
-          .evidence-card .ai-card-label{color:#2563eb;}
           .apply-hint{margin-left:auto;font-size:10px;font-weight:500;color:#9ca3af;
             text-transform:none;letter-spacing:0;}
           .ai-card-text{font-size:13px;color:#374151;line-height:1.55;}
@@ -7692,7 +8138,6 @@ app.get("/corrective-actions-bulk", async (req, res) => {
               const s = data.suggestion;
               document.getElementById('rc-text-' + caId).textContent = s.root_cause       || '';
               document.getElementById('ia-text-' + caId).textContent = s.immediate_action || '';
-              document.getElementById('ev-text-' + caId).textContent = s.evidence         || '';
               suggDiv.style.display = 'block';
             } catch (err) {
               errDiv.style.display = 'block';
@@ -7721,31 +8166,28 @@ app.post("/submit-bulk-corrective-actions", async (req, res) => {
     for (const caId of ids) {
       const rootCause = normalizeText(formData[`root_cause_${caId}`]);
       const solution = normalizeText(formData[`solution_${caId}`]);
-      const evidence = normalizeText(formData[`evidence_${caId}`]);
       const dueDate = formData[`due_date_${caId}`] || null;
       const responsibleName = normalizeText(formData[`responsible_${caId}`]);
-      if (rootCause || solution || evidence || dueDate || responsibleName) {
+      if (rootCause || solution || dueDate || responsibleName) {
         await pool.query(
           `UPDATE public.corrective_actions
            SET root_cause=$1,
                implemented_solution=$2,
-               evidence=$3,
-               due_date=$4::date,
-               responsible=$5::text,
+               due_date=$3::date,
+               responsible=$4::text,
                status = CASE
                  WHEN $1::text IS NOT NULL
                   AND $2::text IS NOT NULL
-                  AND $3::text IS NOT NULL
-                  AND $4::date IS NOT NULL
-                  AND NULLIF(BTRIM($5::text), '') IS NOT NULL
+                  AND $3::date IS NOT NULL
+                  AND NULLIF(BTRIM($4::text), '') IS NOT NULL
                  THEN 'Waiting for validation'
                  ELSE status
                END,
                updated_date=NOW()
-           WHERE corrective_action_id=$6`,
-          [rootCause, solution, evidence, dueDate, responsibleName, caId]
+           WHERE corrective_action_id=$5`,
+          [rootCause, solution, dueDate, responsibleName, caId]
         );
-        if (rootCause && solution && evidence && dueDate && responsibleName) {
+        if (rootCause && solution && dueDate && responsibleName) {
           completedCount++;
         }
       }
@@ -7902,9 +8344,7 @@ app.post("/redirect", async (req, res) => {
       <body><div class="sc">
         <h1 style="color:#28a745;">KPI Submitted Successfully!</h1>
         <p>Your KPI values for ${week} have been saved.</p>
-        <div style="background:#f8f9fa;padding:20px;border-radius:8px;margin:20px 0;">
-          ${notifications.map(n => `<div class="ni"><span style="margin-right:10px;">ðŸ“Œ</span><span>${n}</span></div>`).join('')}
-        </div>
+     
         <a href="/dashboard?responsible_id=${responsible_id}" class="btn">Go to Dashboard</a>
       </div></body></html>`);
   } catch (err) {
@@ -9448,7 +9888,6 @@ app.get("/form", async (req, res) => {
                       <th class="ca-col-num">#</th>
                       <th>Root Cause</th>
                       <th>Immediate Action</th>
-                      <th>Evidence</th>
                       <th>Due Date</th>
                       <th>Responsible</th>
                       <th>Status</th>
@@ -9456,7 +9895,7 @@ app.get("/form", async (req, res) => {
                     </tr>
                   </thead>
                   <tbody id="caModalTableBody">
-                    <tr><td colspan="8" class="ca-table-empty">No corrective actions yet.</td></tr>
+                    <tr><td colspan="7" class="ca-table-empty">No corrective actions yet.</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -9647,7 +10086,7 @@ function getCaModalActions(kvId) {
        if (!tbody) return;
        const actions = getCaModalActions(kvId);
        if (!actions.length) {
-       tbody.innerHTML = '<tr><td colspan="8" class="ca-table-empty">No corrective actions yet. Click "Add" below to get started.</td></tr>';
+       tbody.innerHTML = '<tr><td colspan="7" class="ca-table-empty">No corrective actions yet. Click "Add" below to get started.</td></tr>';
        return;
        }
 
@@ -9657,7 +10096,6 @@ function getCaModalActions(kvId) {
       <td class="ca-col-num">\${i + 1}</td>
       <td title="\${escapeHtml(a.root_cause)}">\${escapeHtml(truncate(a.root_cause, 60))}</td>
       <td title="\${escapeHtml(a.implemented_solution)}">\${escapeHtml(truncate(a.implemented_solution, 60))}</td>
-      <td title="\${escapeHtml(a.evidence || "")}">\${escapeHtml(truncate(a.evidence || "", 40))}</td>
       <td>\${escapeHtml(a.due_date)}</td>
       <td>\${escapeHtml(a.responsible)}</td>
       <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "&mdash;"}</td>
@@ -12356,12 +12794,6 @@ const generateVerticalBarChart = (chartData) => {
               <div style="font-size:12px;color:#374151;">${ca.implemented_solution}</div>
             </div>
           ` : ''}
-          ${ca.evidence ? `
-            <div>
-              <div style="font-size:11px;font-weight:700;color:#2563eb;">Evidence</div>
-              <div style="font-size:12px;color:#374151;">${ca.evidence}</div>
-            </div>
-          ` : ''}
         </div>
       `).join('')}
     </div>
@@ -13104,7 +13536,6 @@ const createIndividualKPIChart = (kpi) => {
   const hasCA = kpi.correctiveAction && (
     kpi.correctiveAction.rootCause ||
     kpi.correctiveAction.implementedSolution ||
-    kpi.correctiveAction.evidence ||
     correctiveActionDueDate
   );
   const hasSide = hasComments || hasCA;
@@ -13207,19 +13638,6 @@ const createIndividualKPIChart = (kpi) => {
           </td></tr>
         </table>` : ''}
 
-        ${kpi.correctiveAction.evidence ? `
-        <table border="0" cellpadding="0" cellspacing="0" width="100%">
-          <tr><td style="padding:8px 10px;background:#f0f9ff;border-radius:6px;
-                         border-left:3px solid #3b82f6;">
-            <div style="font-size:9px;font-weight:800;color:#2563eb;
-                        text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
-              Evidence
-            </div>
-            <div style="font-size:11px;color:#374151;line-height:1.5;">
-              ${kpi.correctiveAction.evidence}
-            </div>
-          </td></tr>
-        </table>` : ''}
       </div>` : ''}
 
     </td>` : '';
@@ -13994,6 +14412,27 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
   }
 };
 
+// ---------- Cron: corrective action escalation reminders ----------
+let correctiveActionEscalationCronRunning = false;
+cron.schedule("35 9 * * *", async () => {
+  const lockId = "corrective_action_escalation_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (correctiveActionEscalationCronRunning) return;
+    correctiveActionEscalationCronRunning = true;
+    const result = await runCorrectiveActionEscalationJob();
+    console.log(
+      `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
+    );
+  } catch (error) {
+    console.error("[Corrective Action Escalation] Cron error:", error.message);
+  } finally {
+    correctiveActionEscalationCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
+
 // ---------- Cron: weekly manager/plant report ----------
 // let managerCronRunning = false;
 // cron.schedule("18 17 * * *", async () => {
@@ -14039,5 +14478,12 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
+ensureCorrectiveActionEscalationSchema()
+  .then(() => {
+    console.log("[Corrective Action Escalation] Tracking table is ready.");
+  })
+  .catch((error) => {
+    console.error("[Corrective Action Escalation] Tracking table setup failed:", error.message);
+  });
 // ---------- Start server ----------
 app.listen(port, () => console.log(`ðŸš€ Server running on port ${port}`));
