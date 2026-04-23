@@ -14920,25 +14920,25 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 };
 
 // ---------- Cron: corrective action escalation reminders ----------
-let correctiveActionEscalationCronRunning = false;
-cron.schedule("00 9 * * *", async () => {
-  const lockId = "corrective_action_escalation_job";
-  const lock = await acquireJobLock(lockId);
-  if (!lock.acquired) return;
-  try {
-    if (correctiveActionEscalationCronRunning) return;
-    correctiveActionEscalationCronRunning = true;
-    const result = await runCorrectiveActionEscalationJob();
-    console.log(
-      `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
-    );
-  } catch (error) {
-    console.error("[Corrective Action Escalation] Cron error:", error.message);
-  } finally {
-    correctiveActionEscalationCronRunning = false;
-    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-  }
-}, { scheduled: true, timezone: "Africa/Tunis" });
+// let correctiveActionEscalationCronRunning = false;
+// cron.schedule("00 9 * * *", async () => {
+//   const lockId = "corrective_action_escalation_job";
+//   const lock = await acquireJobLock(lockId);
+//   if (!lock.acquired) return;
+//   try {
+//     if (correctiveActionEscalationCronRunning) return;
+//     correctiveActionEscalationCronRunning = true;
+//     const result = await runCorrectiveActionEscalationJob();
+//     console.log(
+//       `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
+//     );
+//   } catch (error) {
+//     console.error("[Corrective Action Escalation] Cron error:", error.message);
+//   } finally {
+//     correctiveActionEscalationCronRunning = false;
+//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
 
 // ---------- Cron: weekly manager/plant report ----------
 // let managerCronRunning = false;
