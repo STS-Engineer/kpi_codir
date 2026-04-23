@@ -8517,6 +8517,15 @@ app.get("/form", async (req, res) => {
         .pop() || null;
     }
 
+    function sortHistoryEntries(entries, getUpdatedAt) {
+      return (Array.isArray(entries) ? entries.slice() : []).sort((a, b) => {
+        const weekDiff = weekLabelToDate(b?.week) - weekLabelToDate(a?.week);
+        if (weekDiff !== 0) return weekDiff;
+
+        return new Date(getUpdatedAt(b) || 0) - new Date(getUpdatedAt(a) || 0);
+      });
+    }
+
     const encodeModalPayload = (value) =>
       encodeURIComponent(JSON.stringify(value ?? null));
 
@@ -8539,6 +8548,7 @@ app.get("/form", async (req, res) => {
     const correctiveActionsHistoryRes = await pool.query(
       `
       SELECT
+        corrective_action_id,
         kpi_id,
         week,
         root_cause,
@@ -8583,6 +8593,7 @@ app.get("/form", async (req, res) => {
       }
 
       correctiveActionsByKpiMonth[row.kpi_id][monthLabel].push({
+        corrective_action_id: row.corrective_action_id || null,
         week: row.week,
         month_label: monthLabel,
         status: row.status || "",
@@ -8684,22 +8695,17 @@ app.get("/form", async (req, res) => {
         return Number((m.sum / m.count).toFixed(2));
       });
 
-      const commentMonths = Object.keys(commentsByKpiMonth[kpi.kpi_id] || {});
-      const correctiveActionMonths = Object.keys(correctiveActionsByKpiMonth[kpi.kpi_id] || {});
-      const previousMonthLabel = findPreviousMonthLabel(
-        currentMonthLabel,
-        historyLabels.concat(commentMonths, correctiveActionMonths)
+      const allHistoryActions = sortHistoryEntries(
+        Object.values(correctiveActionsByKpiMonth[kpi.kpi_id] || {}).flat(),
+        (entry) => entry?.updated_at
       );
-      const previousMonthActions = previousMonthLabel
-        ? correctiveActionsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || []
-        : [];
-      const previousMonthComments = previousMonthLabel
-        ? (commentsByKpiMonth[kpi.kpi_id]?.[previousMonthLabel] || [])
-          .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
-        : [];
-      const hasPreviousMonthDetails = Boolean(
-        (previousMonthActions && previousMonthActions.length) ||
-        (previousMonthComments && previousMonthComments.length)
+      const allHistoryComments = sortHistoryEntries(
+        Object.values(commentsByKpiMonth[kpi.kpi_id] || {}).flat(),
+        (entry) => entry?.updated_at
+      );
+      const hasHistoryDetails = Boolean(
+        (allHistoryActions && allHistoryActions.length) ||
+        (allHistoryComments && allHistoryComments.length)
       );
 
       kpiCardsHtml += `
@@ -8715,9 +8721,8 @@ app.get("/form", async (req, res) => {
        data-current-week="${week}"
        data-current-month-label="${currentMonthLabel}"
        data-unit="${kpi.unit || ""}"
-      data-prev-month-label="${previousMonthLabel || ""}"
-      data-prev-month-actions="${encodeModalPayload(previousMonthActions)}"
-      data-prev-month-comments="${encodeModalPayload(previousMonthComments)}">
+      data-history-actions="${encodeModalPayload(allHistoryActions)}"
+      data-history-comments="${encodeModalPayload(allHistoryComments)}">
 
           <div class="kpi-header">
             <div>
@@ -8784,7 +8789,7 @@ app.get("/form", async (req, res) => {
           </div>
                 </div>
 
-                <div class="kpi-history-panel ${hasPreviousMonthDetails ? "history-available" : "history-empty"}">
+                <div class="kpi-history-panel ${hasHistoryDetails ? "history-available" : "history-empty"}">
                   <div class="kpi-history-copy">
                  
                   </div>
@@ -9131,6 +9136,76 @@ app.get("/form", async (req, res) => {
   margin: 0;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+.history-filter-bar{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-end;
+  gap:12px;
+  margin:0 0 14px;
+}
+
+.history-filter-group{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width:180px;
+  flex:1 1 180px;
+}
+
+.history-filter-label{
+  font-size:11px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:0.05em;
+  color:#64748b;
+}
+
+.history-filter-input{
+  min-height:42px;
+  padding:10px 12px;
+  border:1px solid #cbd5e1;
+  border-radius:12px;
+  background:#fff;
+  color:#0f172a;
+  font:inherit;
+  transition:border-color .2s ease, box-shadow .2s ease;
+}
+
+.history-filter-input:focus{
+  outline:none;
+  border-color:#93c5fd;
+  box-shadow:0 0 0 4px rgba(59,130,246,0.12);
+}
+
+.history-filter-clear{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:42px;
+  padding:10px 16px;
+  border:none;
+  border-radius:12px;
+  background:#e2e8f0;
+  color:#0f172a;
+  font-size:12px;
+  font-weight:800;
+  cursor:pointer;
+  transition:transform .2s ease, box-shadow .2s ease, background-color .2s ease, opacity .2s ease;
+}
+
+.history-filter-clear:hover{
+  transform:translateY(-1px);
+  background:#cbd5e1;
+  box-shadow:0 10px 20px rgba(15,23,42,0.08);
+}
+
+.history-filter-clear:disabled{
+  opacity:0.62;
+  cursor:not-allowed;
+  transform:none;
+  box-shadow:none;
 }
 
           /* â”€â”€ CA Section â”€â”€ */
@@ -9877,6 +9952,8 @@ app.get("/form", async (req, res) => {
             .kpi-history-panel{width:calc(100% - 8px);}
             .kpi-card-actions{flex-direction:column;align-items:stretch;}
             .kpi-card-actions-right{justify-content:flex-end;}
+            .history-filter-group{min-width:100%;flex-basis:100%;}
+            .history-filter-clear{width:100%;justify-content:center;}
           }
           @media(max-width:600px){
             .info-section{grid-template-columns:1fr;}
@@ -10113,7 +10190,7 @@ function getCaModalActions(kvId) {
         card.querySelector('input[name="ca_status_' + kvId + '[]"]')
       );
 
-      if (rootCause || implSolution || dueDate || responsible || actionId) {
+      if (rootCause || implSolution || dueDate || actionId) {
         caModalStore[kvId].push({
         id: actionId,
         root_cause: rootCause,
@@ -10229,6 +10306,36 @@ function getCaModalActions(kvId) {
             }
 
             return canonicalStatus;
+          }
+
+          function syncHistoryActionStatusInCard(kvId, actionId, status) {
+            const normalizedActionId = String(actionId || "").trim();
+            if (!normalizedActionId) return;
+
+            const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
+            if (!card) return;
+
+            const historyActions = decodeModalPayload(card.dataset.historyActions, []);
+            if (!Array.isArray(historyActions) || !historyActions.length) return;
+
+            let hasChanges = false;
+            const canonicalStatus = getCanonicalCorrectiveActionStatus(status);
+            const nextHistoryActions = historyActions.map(function(action) {
+              const currentActionId = String(
+                (action && (action.id || action.corrective_action_id)) || ""
+              ).trim();
+
+              if (currentActionId !== normalizedActionId) {
+                return action;
+              }
+
+              hasChanges = true;
+              return Object.assign({}, action, { status: canonicalStatus });
+            });
+
+            if (hasChanges) {
+              card.dataset.historyActions = encodeModalPayload(nextHistoryActions);
+            }
           }
 
           function truncate(str, n) {
@@ -11409,14 +11516,144 @@ function getFallbackCurrentMonthLabel(card, labels) {
           /* â”€â”€ History modal helpers â”€â”€ */
           function escapeHistoryHtml(v) { return String(v||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
           function formatHistoryText(v) { return escapeHistoryHtml(v).split("\\n").join("<br>"); }
+          function encodeModalPayload(v) { try { return encodeURIComponent(JSON.stringify(v ?? null)); } catch(e){ return ""; } }
           function decodeModalPayload(v, fb) { try { const d=decodeURIComponent(v||""); if(!d) return fb; const p=JSON.parse(d); return (p===null||p===undefined)?fb:p; } catch(e){ return fb; } }
           function formatHistoryWeek(w) { const m=String(w||"").match(/^(\\d{4})-Week(\\d{1,2})$/); return m?"Week "+parseInt(m[2],10):escapeHistoryHtml(w||""); }
           function getHistoryStatusClass(s) { return "status-"+String(s||"Open").trim().toLowerCase().replace(/\s+/g,"-"); }
+          function getHistoryDueDateFilterValue(rawDueDate) {
+            const text = String(rawDueDate || "").trim();
+            if (!text) return "";
+
+            const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})/);
+            if (isoMatch) {
+              return isoMatch[1];
+            }
+
+            const parsedDate = new Date(text);
+            if (isNaN(parsedDate.getTime())) {
+              return "";
+            }
+
+            const year = String(parsedDate.getFullYear());
+            const month = String(parsedDate.getMonth() + 1).padStart(2, "0");
+            const day = String(parsedDate.getDate()).padStart(2, "0");
+            return year + "-" + month + "-" + day;
+          }
+
+          function applyHistoryDueDateFilters(panelEl) {
+            if (!panelEl) return;
+
+            const fromInput = panelEl.querySelector('[data-history-filter="due-from"]');
+            const toInput = panelEl.querySelector('[data-history-filter="due-to"]');
+            const clearButton = panelEl.querySelector('[data-history-filter="clear"]');
+            const tableWrap = panelEl.querySelector("[data-history-table-wrap]");
+            const emptyState = panelEl.querySelector("[data-history-filter-empty]");
+            const rows = panelEl.querySelectorAll("tbody tr");
+
+            const fromValue = String(fromInput?.value || "").trim();
+            const toValue = String(toInput?.value || "").trim();
+            let visibleCount = 0;
+
+            rows.forEach(function(row) {
+              const dueDateValue = String(row.dataset.historyDueDate || "").trim();
+              let isVisible = true;
+
+              if (fromValue) {
+                isVisible = Boolean(dueDateValue) && dueDateValue >= fromValue;
+              }
+
+              if (isVisible && toValue) {
+                isVisible = Boolean(dueDateValue) && dueDateValue <= toValue;
+              }
+
+              row.hidden = !isVisible;
+
+              if (isVisible) {
+                visibleCount += 1;
+                const numberCell = row.querySelector(".history-row-number");
+                if (numberCell) {
+                  numberCell.textContent = String(visibleCount);
+                }
+              }
+            });
+
+            if (tableWrap) {
+              tableWrap.hidden = visibleCount === 0;
+            }
+
+            if (emptyState) {
+              emptyState.hidden = visibleCount !== 0;
+            }
+
+            if (clearButton) {
+              clearButton.disabled = !(fromValue || toValue);
+            }
+          }
+
+          function bindHistoryDueDateFilters() {
+            document.querySelectorAll("[data-history-filter-panel]").forEach(function(panelEl) {
+              const fromInput = panelEl.querySelector('[data-history-filter="due-from"]');
+              const toInput = panelEl.querySelector('[data-history-filter="due-to"]');
+              const clearButton = panelEl.querySelector('[data-history-filter="clear"]');
+
+              if (!fromInput || !toInput) {
+                return;
+              }
+
+              const syncInputsAndApply = function(source) {
+                if (fromInput.value && toInput.value && fromInput.value > toInput.value) {
+                  if (source === "from") {
+                    toInput.value = fromInput.value;
+                  } else if (source === "to") {
+                    fromInput.value = toInput.value;
+                  }
+                }
+
+                if (toInput.value) {
+                  fromInput.max = toInput.value;
+                } else {
+                  fromInput.removeAttribute("max");
+                }
+
+                if (fromInput.value) {
+                  toInput.min = fromInput.value;
+                } else {
+                  toInput.removeAttribute("min");
+                }
+
+                applyHistoryDueDateFilters(panelEl);
+              };
+
+              fromInput.oninput = function() {
+                syncInputsAndApply("from");
+              };
+
+              toInput.oninput = function() {
+                syncInputsAndApply("to");
+              };
+
+              if (clearButton) {
+                clearButton.onclick = function() {
+                  fromInput.value = "";
+                  toInput.value = "";
+                  syncInputsAndApply();
+                };
+              }
+
+              syncInputsAndApply();
+            });
+          }
 
           function renderHistoryStatusContent(action, options) {
             const canonicalStatus = getCanonicalCorrectiveActionStatus(action.status);
+            const allowEditableStatus = Boolean(
+              options &&
+              options.editableStatus &&
+              action &&
+              action._editableStatus
+            );
 
-            if (!options || !options.editableStatus) {
+            if (!allowEditableStatus) {
               return canonicalStatus
                 ? '<span class="history-chip ' + getHistoryStatusClass(canonicalStatus) + '">' + escapeHistoryHtml(canonicalStatus) + '</span>'
                 : '&mdash;';
@@ -11452,8 +11689,10 @@ function getFallbackCurrentMonthLabel(card, labels) {
 
             const kvId = String(selectEl.dataset.kpiValuesId || "").trim();
             const actionIndex = parseInt(selectEl.dataset.actionIndex || "", 10);
+            const hasActionIndex = !Number.isNaN(actionIndex);
+            const actionId = String(selectEl.dataset.actionId || "").trim();
 
-            if (!kvId || Number.isNaN(actionIndex)) {
+            if (!kvId || (!hasActionIndex && !actionId)) {
               applyHistoryStatusSelectState(selectEl, selectEl.dataset.previousStatus || "Open");
               return;
             }
@@ -11472,7 +11711,6 @@ function getFallbackCurrentMonthLabel(card, labels) {
               }
             }
 
-            const actionId = String(selectEl.dataset.actionId || "").trim();
             if (!actionId) {
               if (isClosedCorrectiveActionStatus(nextStatus)) {
                 removeCorrectiveActionFromStore(kvId, actionIndex);
@@ -11490,7 +11728,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
             selectEl.disabled = true;
             applyHistoryStatusSelectState(selectEl, nextStatus);
 
-            if (!isClosedCorrectiveActionStatus(nextStatus)) {
+            if (!isClosedCorrectiveActionStatus(nextStatus) && hasActionIndex) {
               updateCorrectiveActionStatusInStore(kvId, actionIndex, nextStatus);
             }
 
@@ -11507,17 +11745,24 @@ function getFallbackCurrentMonthLabel(card, labels) {
               }
 
               const savedStatus = getCanonicalCorrectiveActionStatus(payload.status || nextStatus);
+              syncHistoryActionStatusInCard(kvId, actionId, savedStatus);
               selectEl.dataset.previousStatus = savedStatus;
 
               if (isClosedCorrectiveActionStatus(savedStatus)) {
-                removeCorrectiveActionFromStore(kvId, actionIndex);
+                if (hasActionIndex) {
+                  removeCorrectiveActionFromStore(kvId, actionIndex);
+                }
                 openHistoryModal(kvId);
               } else {
-                updateCorrectiveActionStatusInStore(kvId, actionIndex, savedStatus);
+                if (hasActionIndex) {
+                  updateCorrectiveActionStatusInStore(kvId, actionIndex, savedStatus);
+                }
                 applyHistoryStatusSelectState(selectEl, savedStatus);
               }
             } catch (error) {
-              updateCorrectiveActionStatusInStore(kvId, actionIndex, previousStatus);
+              if (hasActionIndex) {
+                updateCorrectiveActionStatusInStore(kvId, actionIndex, previousStatus);
+              }
               applyHistoryStatusSelectState(selectEl, previousStatus);
               alert(error.message || 'Could not update corrective action status.');
             } finally {
@@ -11543,13 +11788,24 @@ function getFallbackCurrentMonthLabel(card, labels) {
             }
           }
 
+          function getHistoryPeriodLabel(action) {
+            if (!action) return "Current month";
+
+            const monthLabel = String(action.month_label || "").trim();
+            if (monthLabel) return monthLabel;
+
+            const weekLabel = String(action.week || "").trim();
+            if (!weekLabel) return "Current month";
+
+            return weekToMonthLabelClient(weekLabel) || weekLabel;
+          }
+
           function hasCorrectiveActionContent(action) {
             if (!action) return false;
             return Boolean(
               String(action.root_cause || "").trim() ||
               String(action.implemented_solution || "").trim() ||
               String(action.due_date || "").trim() ||
-              String(action.responsible || "").trim() ||
               String(action.id || action.corrective_action_id || "").trim()
             );
           }
@@ -11579,35 +11835,54 @@ function getFallbackCurrentMonthLabel(card, labels) {
               return '<div class="history-empty">' + escapeHistoryHtml(emptyMessage) + '</div>';
             }
 
+            const dueDateFrom = escapeHistoryHtml(options?.dueDateFrom || "");
+            const dueDateTo = escapeHistoryHtml(options?.dueDateTo || "");
+
             return '' +
-              '<div class="history-table-wrap">' +
-                '<table class="history-table">' +
+              '<div data-history-filter-panel>' +
+                '<div class="history-filter-bar">' +
+                  '<div class="history-filter-group">' +
+                    '<label class="history-filter-label" for="historyDueFrom">Due Date From</label>' +
+                    '<input id="historyDueFrom" class="history-filter-input" data-history-filter="due-from" type="date" value="' + dueDateFrom + '">' +
+                  '</div>' +
+                  '<div class="history-filter-group">' +
+                    '<label class="history-filter-label" for="historyDueTo">Due Date To</label>' +
+                    '<input id="historyDueTo" class="history-filter-input" data-history-filter="due-to" type="date" value="' + dueDateTo + '">' +
+                  '</div>' +
+                  '<button type="button" class="history-filter-clear" data-history-filter="clear">Clear Filter</button>' +
+                '</div>' +
+                '<div class="history-empty" data-history-filter-empty hidden>No corrective actions match the selected due date range.</div>' +
+                '<div class="history-table-wrap" data-history-table-wrap>' +
+                  '<table class="history-table">' +
                   '<thead>' +
                     '<tr>' +
                       '<th>#</th>' +
-                      '<th>Week</th>' +
+                      '<th>Month</th>' +
                       '<th>Root Cause</th>' +
                       '<th>Implemented Solution</th>' +
                       '<th>Due Date</th>' +
                       '<th>Responsible</th>' +
                       '<th>Status</th>' +
-                    '</tr>' +
-                  '</thead>' +
-                  '<tbody>' +
-                    actions.map(function(action, index) {
-                      return '' +
-                        '<tr>' +
-                          '<td>' + (index + 1) + '</td>' +
-                          '<td>' + escapeHistoryHtml(action.week || action.month_label || "Current") + '</td>' +
-                          '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
-                          '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
-                          '<td>' + escapeHistoryHtml(action.due_date || "") + '</td>' +
-                          '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
-                          '<td>' + renderHistoryStatusContent(action, options) + '</td>' +
-                        '</tr>';
-                    }).join("") +
-                  '</tbody>' +
-                '</table>' +
+                      '</tr>' +
+                    '</thead>' +
+                    '<tbody>' +
+                      actions.map(function(action, index) {
+                        const filterDueDate = getHistoryDueDateFilterValue(action.due_date);
+                        const dueDateDisplay = filterDueDate || String(action.due_date || "").trim();
+                        return '' +
+                          '<tr data-history-due-date="' + escapeHistoryHtml(filterDueDate) + '">' +
+                            '<td class="history-row-number">' + (index + 1) + '</td>' +
+                            '<td>' + escapeHistoryHtml(getHistoryPeriodLabel(action)) + '</td>' +
+                            '<td><pre>' + escapeHistoryHtml(action.root_cause || "") + '</pre></td>' +
+                            '<td><pre>' + escapeHistoryHtml(action.implemented_solution || "") + '</pre></td>' +
+                            '<td>' + escapeHistoryHtml(dueDateDisplay) + '</td>' +
+                            '<td>' + escapeHistoryHtml(action.responsible || "") + '</td>' +
+                            '<td>' + renderHistoryStatusContent(action, options) + '</td>' +
+                          '</tr>';
+                      }).join("") +
+                    '</tbody>' +
+                  '</table>' +
+                '</div>' +
               '</div>';
           }
 
@@ -11620,19 +11895,55 @@ function getFallbackCurrentMonthLabel(card, labels) {
 
   if (!card || !historyModal || !historyModalContent) return;
 
+  const activeModalKvId = String(historyModal.dataset.kpiValuesId || "").trim();
+  const dueDateFromInput = activeModalKvId === String(kvId)
+    ? historyModalContent.querySelector('[data-history-filter="due-from"]')
+    : null;
+  const dueDateToInput = activeModalKvId === String(kvId)
+    ? historyModalContent.querySelector('[data-history-filter="due-to"]')
+    : null;
+  const dueDateFrom = String(dueDateFromInput?.value || "").trim();
+  const dueDateTo = String(dueDateToInput?.value || "").trim();
+
   const titleText = getTrimmedText(card.querySelector(".kpi-title")) || "Corrective Actions";
   const subtitleText = getTrimmedText(card.querySelector(".kpi-subtitle"));
   const currentMonthLabel = card.dataset.currentMonthLabel || "Current month";
-  const prevLabel = card.dataset.prevMonthLabel || "";
   const liveActions = getCaModalActions(kvId)
     .map(function(action, actionIndex) {
-      return Object.assign({ week: currentMonthLabel, status: action.status || "Open", _storeIndex: actionIndex }, action);
+      return Object.assign({
+        week: currentMonthLabel,
+        month_label: currentMonthLabel,
+        status: action.status || "Open",
+        _editableStatus: true,
+        _storeIndex: actionIndex
+      }, action);
     })
     .filter(shouldShowCurrentCorrectiveAction);
-  const prevActions = decodeModalPayload(card.dataset.prevMonthActions, []);
-  const prevComments = decodeModalPayload(card.dataset.prevMonthComments, []);
-  const comments = Array.isArray(prevComments) ? prevComments : [];
-  const previousActions = (Array.isArray(prevActions) ? prevActions : []).filter(hasCorrectiveActionContent);
+  const historyActions = decodeModalPayload(card.dataset.historyActions, []);
+  const historyComments = decodeModalPayload(card.dataset.historyComments, []);
+  const comments = Array.isArray(historyComments) ? historyComments : [];
+  const liveActionIds = new Set(
+    liveActions
+      .map(function(action) {
+        return String((action && (action.id || action.corrective_action_id)) || "").trim();
+      })
+      .filter(Boolean)
+  );
+  const combinedActions = liveActions.concat(
+    (Array.isArray(historyActions) ? historyActions : [])
+      .filter(hasCorrectiveActionContent)
+      .filter(function(action) {
+        return !isClosedCorrectiveActionStatus(action.status);
+      })
+      .filter(function(action) {
+        const actionId = String((action && (action.id || action.corrective_action_id)) || "").trim();
+        return !actionId || !liveActionIds.has(actionId);
+      })
+      .map(function(action) {
+        const actionId = String((action && (action.id || action.corrective_action_id)) || "").trim();
+        return Object.assign({ _editableStatus: Boolean(actionId) }, action);
+      })
+  );
   const sections = [];
 
   if (historyModalTitle) historyModalTitle.textContent = titleText;
@@ -11644,29 +11955,20 @@ function getFallbackCurrentMonthLabel(card, labels) {
 
   sections.push(
     '<div class="history-section">' +
-      '<h4 class="history-section-title">Current Corrective Actions</h4>' +
+      '<h4 class="history-section-title">Corrective Actions</h4>' +
       renderHistoryActionsTable(
-        liveActions,
-        'No corrective actions saved yet for this KPI in the current month.',
-        { editableStatus: true, kvId: kvId }
+        combinedActions,
+        'No corrective actions were found for this KPI.',
+        { editableStatus: true, kvId: kvId, dueDateFrom: dueDateFrom, dueDateTo: dueDateTo }
       ) +
     '</div>'
   );
-
-  if (previousActions.length) {
-    sections.push(
-      '<div class="history-section">' +
-        '<h4 class="history-section-title">Previous Month Corrective Actions</h4>' +
-        renderHistoryActionsTable(previousActions, 'No previous-month corrective actions were found.') +
-      '</div>'
-    );
-  }
 
   if (comments.length) {
     const commentsHtml = '<div class="history-comments-list">' + comments.map(c =>
       '<div class="history-comment-card">' +
         '<div class="history-comment-label">' +
-          escapeHistoryHtml(c.month_label || prevLabel || "") +
+          escapeHistoryHtml(c.month_label || "") +
           (c.week ? ' • ' + formatHistoryWeek(c.week) : '') +
         '</div>' +
         '<div class="history-comment-text">' + formatHistoryText(c.text || "") + '</div>' +
@@ -11675,14 +11977,16 @@ function getFallbackCurrentMonthLabel(card, labels) {
 
     sections.push(
       '<div class="history-section">' +
-        '<h4 class="history-section-title">Previous Month Comments</h4>' +
+        '<h4 class="history-section-title">Comments History</h4>' +
         commentsHtml +
       '</div>'
     );
   }
 
   historyModalContent.innerHTML = sections.join('');
+  historyModal.dataset.kpiValuesId = String(kvId);
   bindHistoryStatusControls();
+  bindHistoryDueDateFilters();
   historyModal.classList.add("active");
   historyModal.setAttribute("aria-hidden", "false");
   document.body.classList.add("chart-modal-open");
