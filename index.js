@@ -1030,7 +1030,10 @@ app.get("/kpi-admin", async (req, res) => {
           </div>
           <div class="field">
             <label>Calculation On</label>
-            <input id="calculation_on" />
+            <select id="calculation_on">
+              <option value="Value">Value</option>
+              <option value="Average">Average</option>
+            </select>
           </div>
           <div class="field">
             <label>Target</label>
@@ -1038,7 +1041,10 @@ app.get("/kpi-admin", async (req, res) => {
           </div>
           <div class="field">
             <label>Target Auto Adjustment</label>
-            <input id="target_auto_adjustment" />
+            <select id="target_auto_adjustment">
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
           </div>
         </div>
 
@@ -1348,33 +1354,51 @@ app.get("/kpi-admin", async (req, res) => {
           : text;
       }
 
-      function resetForm() {
-        const fields = [
-          "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
-          "frequency","target","tolerance_type","up_tolerance","low_tolerance",
-          "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
-        ];
+    function handleToleranceTypeChange(source) {
+     syncToleranceInputs(source);
 
-        fields.forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.value = "";
-        });
-      }
+        const toleranceType = document.getElementById("tolerance_type").value;
 
-      function fillForm(data) {
-        const fields = [
-          "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
-          "frequency","target","tolerance_type","up_tolerance","low_tolerance",
-          "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
-        ];
+        if (String(toleranceType).trim().toLowerCase() === "relative") {
+        recalculateLimits(source);
+        }
+    }
 
-        fields.forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.value = data[id] ?? "";
-        });
+    function resetForm() {
+      const fields = [
+        "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
+        "frequency","target","tolerance_type","up_tolerance","low_tolerance",
+        "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
+      ];
 
+      fields.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+
+      document.getElementById("calculation_on").value = "Value";
+      document.getElementById("target_auto_adjustment").value = "Yes";
+      document.getElementById("tolerance_type").value = "Relative";
+      handleToleranceTypeChange();
+    }
+
+    function fillForm(data) {
+     const fields = [
+    "kpi_id","indicator_title","indicator_sub_title","unit","subject","definition",
+    "frequency","target","tolerance_type","up_tolerance","low_tolerance",
+    "max","min","calculation_on","target_auto_adjustment","high_limit","low_limit"
+    ];
+
+    fields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = data[id] ?? "";
+    });
+
+    handleToleranceTypeChange();
+  }
         document.getElementById("up_tolerance").value = formatToleranceForInput(data.up_tolerance, data.tolerance_type);
         document.getElementById("low_tolerance").value = formatToleranceForInput(data.low_tolerance, data.tolerance_type);
+        handleToleranceTypeChange();
       }
 
       function openNewDrawer() {
@@ -3234,12 +3258,18 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
               <div class="field col-4">
                 <label><span>Calculation On</span><span class="hint">Scope or basis</span></label>
-                <input id="calculation_on" placeholder="Monthly average" />
+                <select id="calculation_on">
+                  <option value="Value">Value</option>
+                  <option value="Average">Average</option>
+                </select>
               </div>
 
               <div class="field col-4">
                 <label><span>Target Auto Adjustment</span><span class="hint">Optional</span></label>
-                <input id="target_auto_adjustment" placeholder="Optional rule" />
+               <select id="target_auto_adjustment">
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
               </div>
 
               <div class="field col-4">
@@ -3254,11 +3284,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
               <div class="field col-4">
                 <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
-                <select id="tolerance_type" onchange="handleToleranceTypeChange(this)" oninput="handleToleranceTypeChange(this)">
-                  <option value="">Select tolerance type</option>
-                  <option value="Relative">Relative</option>
-                  <option value="Absolute">Absolute</option>
-                </select>
+              <select id="tolerance_type" onchange="handleToleranceTypeChange()">
+              <option value="Relative">Relative</option>
+              <option value="Absolute">Absolute</option>
+              </select>
               </div>
             </div>
           </div>
@@ -3280,12 +3309,12 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
               <div class="field col-3">
                 <label><span>High Limit</span><span class="hint">Read only</span></label>
-                <input id="high_limit" class="readonly-input" type="number" step="any" placeholder="159.5" readonly />
-              </div>
+                <input id="high_limit" class="readonly-input" type="number" step="any" placeholder="159.5" />
+               </div>
 
-              <div class="field col-3">
+               <div class="field col-3">
                 <label><span>Low Limit</span><span class="hint">Read only</span></label>
-                <input id="low_limit" class="readonly-input" type="number" step="any" placeholder="130.5" readonly />
+               <input id="low_limit" class="readonly-input" type="number" step="any" placeholder="130.5" />
               </div>
             </div>
           </div>
@@ -3783,94 +3812,92 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         };
       }
 
-      function syncToleranceInputs(source = null) {
-        const {
-          toleranceTypeInput,
-          upToleranceInput,
-          lowToleranceInput
-        } = getLimitFields(source);
+  function syncToleranceInputs(source = null) {
+  const {
+    toleranceTypeInput,
+    upToleranceInput,
+    lowToleranceInput,
+    highLimitInput,
+    lowLimitInput
+  } = getLimitFields(source);
 
-        if (!toleranceTypeInput || !upToleranceInput || !lowToleranceInput) return;
+  if (!toleranceTypeInput || !upToleranceInput || !lowToleranceInput || !highLimitInput || !lowLimitInput) return;
 
-        const toleranceType = toleranceTypeInput.value;
-        const isRelative = isRelativeToleranceType(toleranceType);
-        const hasType = !!String(toleranceType || "").trim();
+  const toleranceType = String(toleranceTypeInput.value || "").trim().toLowerCase();
+  const isAbsolute = toleranceType === "absolute";
+  const isRelative = toleranceType === "relative";
 
-        upToleranceInput.placeholder = isRelative ? "10%" : hasType ? "10" : "10% or 10";
-        lowToleranceInput.placeholder = isRelative ? "-10%" : hasType ? "-10" : "-10% or -10";
+  // Absolute: limits editable, tolerances readonly
+  highLimitInput.readOnly = !isAbsolute;
+  lowLimitInput.readOnly = !isAbsolute;
 
-        if (String(upToleranceInput.value || "").trim()) {
-          upToleranceInput.value = formatToleranceForInput(upToleranceInput.value, toleranceType, "up");
-        }
+  upToleranceInput.readOnly = isAbsolute;
+  lowToleranceInput.readOnly = isAbsolute;
 
-        if (String(lowToleranceInput.value || "").trim()) {
-          lowToleranceInput.value = formatToleranceForInput(lowToleranceInput.value, toleranceType, "low");
-        }
-      }
+  highLimitInput.classList.toggle("readonly-input", !isAbsolute);
+  lowLimitInput.classList.toggle("readonly-input", !isAbsolute);
+
+  upToleranceInput.classList.toggle("readonly-input", isAbsolute);
+  lowToleranceInput.classList.toggle("readonly-input", isAbsolute);
+
+  upToleranceInput.placeholder = isRelative ? "10%" : "10";
+  lowToleranceInput.placeholder = isRelative ? "-10%" : "-10";
+
+  if (String(upToleranceInput.value || "").trim()) {
+    upToleranceInput.value = formatToleranceForInput(upToleranceInput.value, toleranceType, "up");
+  }
+
+  if (String(lowToleranceInput.value || "").trim()) {
+    lowToleranceInput.value = formatToleranceForInput(lowToleranceInput.value, toleranceType, "low");
+  }
+}
 
       function handleToleranceTypeChange(source) {
         syncToleranceInputs(source);
         recalculateLimits(source);
       }
 
-      function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
-        const source = sourceOrOptions && typeof sourceOrOptions.closest === "function"
-          ? sourceOrOptions
-          : null;
-        const options = source
-          ? maybeOptions
-          : sourceOrOptions;
-        const { clearOnInvalid = true } = options || {};
+function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
+  const source = sourceOrOptions && typeof sourceOrOptions.closest === "function"
+    ? sourceOrOptions
+    : null;
 
-        const {
-          targetInput,
-          toleranceTypeInput,
-          upToleranceInput,
-          lowToleranceInput,
-          highLimitInput,
-          lowLimitInput
-        } = getLimitFields(source);
+  const {
+    targetInput,
+    toleranceTypeInput,
+    upToleranceInput,
+    lowToleranceInput,
+    highLimitInput,
+    lowLimitInput
+  } = getLimitFields(source);
 
-        if (!highLimitInput || !lowLimitInput) return;
+  const toleranceType = String(toleranceTypeInput?.value || "").trim().toLowerCase();
 
-        const toleranceType = String(toleranceTypeInput?.value || "").trim().toLowerCase();
-        const targetValue = parseLimitNumber(targetInput?.value);
-        const upToleranceValue = parseToleranceDelta(upToleranceInput?.value, toleranceType, "up");
-        const lowToleranceValue = parseToleranceDelta(lowToleranceInput?.value, toleranceType, "low");
+  // Absolute = DO NOTHING
+  if (toleranceType === "absolute") {
+    return;
+  }
 
-        if (
-          !toleranceType ||
-          !Number.isFinite(targetValue) ||
-          !Number.isFinite(upToleranceValue) ||
-          !Number.isFinite(lowToleranceValue)
-        ) {
-          if (clearOnInvalid) {
-            highLimitInput.value = "";
-            lowLimitInput.value = "";
-          }
-          return;
-        }
+  // Only Relative can calculate
+  if (toleranceType !== "relative") {
+    return;
+  }
 
-        let highLimit = null;
-        let lowLimit = null;
+  const targetValue = parseLimitNumber(targetInput?.value);
+  const upToleranceValue = parseToleranceDelta(upToleranceInput?.value, toleranceType, "up");
+  const lowToleranceValue = parseToleranceDelta(lowToleranceInput?.value, toleranceType, "low");
 
-        if (toleranceType === "relative") {
-          highLimit = targetValue * (1 + upToleranceValue);
-          lowLimit = targetValue * (1 + lowToleranceValue);
-        } else if (toleranceType === "absolute") {
-          highLimit = targetValue + upToleranceValue;
-          lowLimit = targetValue + lowToleranceValue;
-        } else if (clearOnInvalid) {
-          highLimitInput.value = "";
-          lowLimitInput.value = "";
-          return;
-        } else {
-          return;
-        }
+  if (
+    !Number.isFinite(targetValue) ||
+    !Number.isFinite(upToleranceValue) ||
+    !Number.isFinite(lowToleranceValue)
+  ) {
+    return;
+  }
 
-        highLimitInput.value = formatCalculatedLimit(highLimit);
-        lowLimitInput.value = formatCalculatedLimit(lowLimit);
-      }
+  highLimitInput.value = formatCalculatedLimit(targetValue * (1 + upToleranceValue));
+  lowLimitInput.value = formatCalculatedLimit(targetValue * (1 + lowToleranceValue));
+}
 
       function bindOverviewListeners() {
         ["frequency", "unit", "target"].forEach(id => {
@@ -3919,7 +3946,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           if (el) el.value = "";
         });
 
-        document.getElementById("tolerance_type").value = "";
+        document.getElementById("tolerance_type").value = "Relative";
         updateModalOverview();
         syncToleranceInputs();
         recalculateLimits();
@@ -3952,7 +3979,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         updateModalOverview();
         syncToleranceInputs();
-        recalculateLimits({ clearOnInvalid: false });
+
+        if (String(data.tolerance_type || "").trim().toLowerCase() === "relative") {
+          recalculateLimits({ clearOnInvalid: false });
+        }
       }
 
       function openCreateModal() {
@@ -4194,8 +4224,11 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
         </div>
 
         <div class="field">
-          <label>Tolerance Type</label>
-          <input id="tolerance_type" />
+           <label>Tolerance Type</label>
+           <select id="tolerance_type" onchange="handleToleranceTypeChange()">
+            <option value="Relative">Relative</option>
+            <option value="Absolute">Absolute</option>
+          </select> 
         </div>
 
         <div class="field">
@@ -4219,13 +4252,20 @@ app.get("/responsible/:responsibleId/kpis/:kpiId/edit", async (req, res) => {
         </div>
 
         <div class="field">
-          <label>Calculation On</label>
-          <input id="calculation_on" />
+           <label>Calculation On</label>
+           <select id="calculation_on">
+             <option value="Value">Value</option>
+             <option value="Average">Average</option>
+           </select>
+
         </div>
 
         <div class="field">
-          <label>Target Auto Adjustment</label>
-          <input id="target_auto_adjustment" />
+           <label>Target Auto Adjustment</label>
+           <select id="target_auto_adjustment">
+             <option value="Yes">Yes</option>
+             <option value="No">No</option>
+           </select>
         </div>
 
         <div class="field">
@@ -11921,7 +11961,6 @@ function getFallbackCurrentMonthLabel(card, labels) {
     .filter(shouldShowCurrentCorrectiveAction);
   const historyActions = decodeModalPayload(card.dataset.historyActions, []);
   const historyComments = decodeModalPayload(card.dataset.historyComments, []);
-  const comments = Array.isArray(historyComments) ? historyComments : [];
   const liveActionIds = new Set(
     liveActions
       .map(function(action) {
@@ -11963,7 +12002,6 @@ function getFallbackCurrentMonthLabel(card, labels) {
       ) +
     '</div>'
   );
-
 
   historyModalContent.innerHTML = sections.join('');
   historyModal.dataset.kpiValuesId = String(kvId);
@@ -13817,7 +13855,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 // let cronRunning = false;
-// cron.schedule("00 09 4 * *", async () => {
+// cron.schedule("17 11 * * *", async () => {
 //   const lockId = "send_kpi_weekly_email_job";
 //   const lock = await acquireJobLock(lockId);
 //   if (!lock.acquired) return;
@@ -13847,7 +13885,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 
 // ---------- Cron: weekly reports ----------
 // let reportCronRunning = false;
-// cron.schedule("00 10 4 * *", async () => {
+// cron.schedule("21 17 * * *", async () => {
 //   const lockId = "weekly_kpi_report_job";
 //   const lock = await acquireJobLock(lockId);
 //   if (!lock.acquired) return;
@@ -14920,29 +14958,29 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
 };
 
 // ---------- Cron: corrective action escalation reminders ----------
-// let correctiveActionEscalationCronRunning = false;
-// cron.schedule("00 9 * * *", async () => {
-//   const lockId = "corrective_action_escalation_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (correctiveActionEscalationCronRunning) return;
-//     correctiveActionEscalationCronRunning = true;
-//     const result = await runCorrectiveActionEscalationJob();
-//     console.log(
-//       `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
-//     );
-//   } catch (error) {
-//     console.error("[Corrective Action Escalation] Cron error:", error.message);
-//   } finally {
-//     correctiveActionEscalationCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let correctiveActionEscalationCronRunning = false;
+cron.schedule("35 9 * * *", async () => {
+  const lockId = "corrective_action_escalation_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (correctiveActionEscalationCronRunning) return;
+    correctiveActionEscalationCronRunning = true;
+    const result = await runCorrectiveActionEscalationJob();
+    console.log(
+      `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
+    );
+  } catch (error) {
+    console.error("[Corrective Action Escalation] Cron error:", error.message);
+  } finally {
+    correctiveActionEscalationCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 // ---------- Cron: weekly manager/plant report ----------
 // let managerCronRunning = false;
-// cron.schedule("00 11 4 * *", async () => {
+// cron.schedule("18 17 * * *", async () => {
 //   const lockId = "department_report_job";
 //   const lock = await acquireJobLock(lockId);
 //   if (!lock.acquired) return;
