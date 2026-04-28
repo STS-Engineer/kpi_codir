@@ -4618,7 +4618,6 @@ function renderKpis(rows) {
             <tr>
               <th>Category</th>
               <th>KPI</th>
-              <th class="kpi-table-actions">Edit</th>
             </tr>
           </thead>
           <tbody>
