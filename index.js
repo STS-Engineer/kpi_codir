@@ -189,6 +189,7 @@ const prepareResponsibleParameterKpiPayload = (payload = {}) => {
 
 let responsibleParameterKpiSchemaPromise = null;
 let kpiRatioSchemaPromise = null;
+let kpiObjectSchemaPromise = null;
 
 const ensureKpiRatioSchema = async () => {
   if (!kpiRatioSchemaPromise) {
@@ -357,33 +358,134 @@ const ensureResponsibleParameterKpiSchema = async () => {
   return responsibleParameterKpiSchemaPromise;
 };
 
+const ensureKpiObjectSchema = async () => {
+  if (!kpiObjectSchemaPromise) {
+    kpiObjectSchemaPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.kpi_object (
+          kpi_object_id BIGSERIAL PRIMARY KEY,
+          kpi_id INTEGER
+            REFERENCES public."Kpi" (kpi_id)
+            ON DELETE SET NULL,
+          location VARCHAR(255) NOT NULL,
+          local_currency VARCHAR(50) NOT NULL,
+          responsible VARCHAR(255) NOT NULL,
+          value NUMERIC(18, 2),
+          value_date DATE,
+          target NUMERIC(18, 2),
+          best_new_target NUMERIC(18, 2),
+          kpi_type VARCHAR(120) NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          plant VARCHAR(120),
+          zone VARCHAR(255)
+        )
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_object
+        ADD COLUMN IF NOT EXISTS plant VARCHAR(120)
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_object
+        ADD COLUMN IF NOT EXISTS zone VARCHAR(255)
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_object_responsible
+        ON public.kpi_object (responsible, created_at DESC)
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_object_kpi
+        ON public.kpi_object (kpi_id)
+      `);
+    })().catch((error) => {
+      kpiObjectSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return kpiObjectSchemaPromise;
+};
+
+const getResponsibleNameById = async (responsibleId) => {
+  const result = await pool.query(
+    `SELECT name FROM public."Responsible" WHERE responsible_id = $1 LIMIT 1`,
+    [responsibleId]
+  );
+
+  return normalizeOptionalTextInput(result.rows[0]?.name);
+};
+
 
 const prepareKpiObjectPayload = (payload = {}) => {
-  const kpiId = payload.kpi_id;
-  const location = payload.location;
-  const localCurrency = payload.local_currency;
-  const responsible = payload.responsible;
-  const kpiType = payload.kpi_type;
-  const plant = payload.plant;
-  const zone = payload.zone;
-  if (!kpiId) throw createHttpError(400, "KPI Name is required");
-  if (!location) throw createHttpError(400, "Location is required");
-  if (!localCurrency) throw createHttpError(400, "Currency is required");
-  if (!kpiType) throw createHttpError(400, "KPI type is required");
+  const rawKpiId = normalizeOptionalTextInput(payload.kpi_id);
+  const rawValue = normalizeOptionalTextInput(payload.value);
+  const rawTarget = normalizeOptionalTextInput(payload.target);
+  const rawBestNewTarget = normalizeOptionalTextInput(payload.best_new_target);
+  const rawValueDate = normalizeOptionalTextInput(payload.value_date);
+  const kpiId = rawKpiId === null ? null : Number(rawKpiId);
 
-return {
-  kpi_id: Number(kpiId),
-  location,
-  local_currency: localCurrency,
-  responsible,
-  plant,
-  zone,
-  value: payload.value || null,
-  value_date: payload.value_date || null,
-  target: payload.target || null,
-  best_new_target: payload.best_new_target || null,
-  kpi_type: kpiType
-};
+  const normalizedValue = normalizeOptionalNumericInput(rawValue);
+  const normalizedTarget = normalizeOptionalNumericInput(rawTarget);
+  const normalizedBestNewTarget = normalizeOptionalNumericInput(rawBestNewTarget);
+  const normalizedValueDate = normalizeOptionalDateInput(rawValueDate);
+
+  if (rawKpiId === null || !Number.isInteger(kpiId) || kpiId <= 0) {
+    throw createHttpError(400, "KPI Name is required.");
+  }
+
+  if (rawValue !== null && normalizedValue === null) {
+    throw createHttpError(400, "Value must be numeric.");
+  }
+
+  if (rawTarget !== null && normalizedTarget === null) {
+    throw createHttpError(400, "Target must be numeric.");
+  }
+
+  if (rawBestNewTarget !== null && normalizedBestNewTarget === null) {
+    throw createHttpError(400, "Best new target must be numeric.");
+  }
+
+  if (rawValueDate !== null && normalizedValueDate === null) {
+    throw createHttpError(400, "Date must use YYYY-MM-DD format.");
+  }
+
+  const location = normalizeOptionalTextInput(payload.location);
+  const localCurrency = normalizeOptionalTextInput(payload.local_currency);
+  const responsible = normalizeOptionalTextInput(payload.responsible);
+  const kpiType = normalizeOptionalTextInput(payload.kpi_type);
+  const plant = normalizeOptionalTextInput(payload.plant);
+  const zone = normalizeOptionalTextInput(payload.zone);
+
+  if (!location) throw createHttpError(400, "Location is required.");
+  if (!localCurrency) throw createHttpError(400, "Currency is required.");
+  if (!responsible) throw createHttpError(400, "Responsible is required.");
+  if (!kpiType) throw createHttpError(400, "KPI type is required.");
+
+  if (kpiType === "Multisite" && !plant) {
+    throw createHttpError(400, "Plant is required for Multisite KPI objects.");
+  }
+
+  if (kpiType === "Zone" && !zone) {
+    throw createHttpError(400, "Zone is required for Zone KPI objects.");
+  }
+
+  return {
+    kpi_id: kpiId,
+    location,
+    local_currency: localCurrency,
+    responsible,
+    plant,
+    zone,
+    value: normalizedValue === null ? null : Number(normalizedValue),
+    value_date: normalizedValueDate,
+    target: normalizedTarget === null ? null : Number(normalizedTarget),
+    best_new_target: normalizedBestNewTarget === null ? null : Number(normalizedBestNewTarget),
+    kpi_type: kpiType
+  };
 };
 
 
@@ -2500,6 +2602,7 @@ app.post("/api/responsibles/:responsibleId/parameter-kpis", async (req, res) => 
 
 app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
   try {
+    await ensureKpiObjectSchema();
     const {
       kpi_id,
       location,
@@ -2553,6 +2656,212 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     res.status(error.statusCode || 500).json({
       error: error.statusCode ? error.message : "Failed to create KPI object"
     });
+  }
+});
+
+app.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
+  const { responsibleId } = req.params;
+
+  try {
+    await ensureKpiObjectSchema();
+    const responsibleName = await getResponsibleNameById(responsibleId);
+
+    if (!responsibleName) {
+      return res.status(404).json({ error: "Responsible not found" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        ko.kpi_object_id,
+        ko.kpi_id,
+        ko.location,
+        ko.local_currency,
+        ko.responsible,
+        ko.value,
+        ko.value_date,
+        ko.target,
+        ko.best_new_target,
+        ko.kpi_type,
+        ko.plant,
+        ko.zone,
+        ko.created_at,
+        ko.updated_at,
+        k.subject AS kpi_subject,
+        k.indicator_title AS kpi_group,
+        k.indicator_sub_title AS kpi_name
+      FROM public.kpi_object ko
+      LEFT JOIN public."Kpi" k
+        ON k.kpi_id = ko.kpi_id
+      WHERE ko.responsible = $1
+      ORDER BY ko.created_at DESC, ko.kpi_object_id DESC
+      `,
+      [responsibleName]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("GET KPI objects error:", error);
+    res.status(500).json({ error: "Failed to load KPI objects" });
+  }
+});
+
+app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
+  const { responsibleId, kpiObjectId } = req.params;
+
+  try {
+    await ensureKpiObjectSchema();
+    const responsibleName = await getResponsibleNameById(responsibleId);
+
+    if (!responsibleName) {
+      return res.status(404).json({ error: "Responsible not found" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        ko.kpi_object_id,
+        ko.kpi_id,
+        ko.location,
+        ko.local_currency,
+        ko.responsible,
+        ko.value,
+        ko.value_date,
+        ko.target,
+        ko.best_new_target,
+        ko.kpi_type,
+        ko.plant,
+        ko.zone,
+        ko.created_at,
+        ko.updated_at,
+        k.subject AS kpi_subject,
+        k.indicator_title AS kpi_group,
+        k.indicator_sub_title AS kpi_name
+      FROM public.kpi_object ko
+      LEFT JOIN public."Kpi" k
+        ON k.kpi_id = ko.kpi_id
+      WHERE ko.kpi_object_id = $1
+        AND ko.responsible = $2
+      LIMIT 1
+      `,
+      [kpiObjectId, responsibleName]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI object not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("GET one KPI object error:", error);
+    res.status(500).json({ error: "Failed to load KPI object" });
+  }
+});
+
+app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
+  const { responsibleId, kpiObjectId } = req.params;
+
+  try {
+    await ensureKpiObjectSchema();
+    const currentResponsibleName = await getResponsibleNameById(responsibleId);
+
+    if (!currentResponsibleName) {
+      return res.status(404).json({ error: "Responsible not found" });
+    }
+
+    const {
+      kpi_id,
+      location,
+      local_currency,
+      responsible,
+      plant,
+      zone,
+      value,
+      value_date,
+      target,
+      best_new_target,
+      kpi_type
+    } = prepareKpiObjectPayload(req.body);
+
+    const result = await pool.query(
+      `
+      UPDATE public.kpi_object
+      SET
+        kpi_id = $1,
+        location = $2,
+        local_currency = $3,
+        responsible = $4,
+        plant = $5,
+        zone = $6,
+        value = $7,
+        value_date = $8,
+        target = $9,
+        best_new_target = $10,
+        kpi_type = $11,
+        updated_at = NOW()
+      WHERE kpi_object_id = $12
+        AND responsible = $13
+      RETURNING *
+      `,
+      [
+        kpi_id,
+        location,
+        local_currency,
+        responsible,
+        plant,
+        zone,
+        value,
+        value_date,
+        target,
+        best_new_target,
+        kpi_type,
+        kpiObjectId,
+        currentResponsibleName
+      ]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI object not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("PUT KPI object error:", error);
+    res.status(error.statusCode || 500).json({
+      error: error.statusCode ? error.message : "Failed to update KPI object"
+    });
+  }
+});
+
+app.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
+  const { responsibleId, kpiObjectId } = req.params;
+
+  try {
+    await ensureKpiObjectSchema();
+    const responsibleName = await getResponsibleNameById(responsibleId);
+
+    if (!responsibleName) {
+      return res.status(404).json({ error: "Responsible not found" });
+    }
+
+    const result = await pool.query(
+      `
+      DELETE FROM public.kpi_object
+      WHERE kpi_object_id = $1
+        AND responsible = $2
+      RETURNING kpi_object_id
+      `,
+      [kpiObjectId, responsibleName]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "KPI object not found" });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("DELETE KPI object error:", error);
+    res.status(500).json({ error: "Failed to delete KPI object" });
   }
 });
 
@@ -4181,7 +4490,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           <div class="modal-title-wrap">
             <h2 id="parameterModalTitle">Create KPI Object</h2>
             <div class="modal-subtitle" id="parameterModalSubtitle">
-              Create a structured KPI assignment with business attributes for this responsible.
+              Create a structured KPI object with business attributes for this responsible.
             </div>
           </div>
 
@@ -4277,11 +4586,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         </div>
 
         <div class="modal-footer">
-          <button class="btn btn-danger" id="parameterDeleteBtn" onclick="deleteCurrentParameterKpi()">Delete Parameter KPI</button>
+          <button class="btn btn-danger" id="parameterDeleteBtn" onclick="deleteCurrentParameterKpi()">Delete KPI Object</button>
 
           <div class="footer-actions">
             <button class="btn btn-soft" onclick="closeParameterModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveParameterKpi()">Save KPI Attributes</button>
+            <button class="btn btn-primary" onclick="saveParameterKpi()">Save KPI Object</button>
           </div>
         </div>
       </div>
@@ -4671,7 +4980,7 @@ function renderKpis(rows) {
         if (!parameterGrid) return;
 
         if (!currentParameterRows.length) {
-          parameterGrid.innerHTML = '<div class="empty">No parameter KPI assigned yet for this responsible.</div>';
+          parameterGrid.innerHTML = '<div class="empty">No KPI object created yet for this responsible.</div>';
           return;
         }
 
@@ -4683,6 +4992,7 @@ function renderKpis(rows) {
                   <tr>
                     <th>KPI</th>
                     <th>KPI Type</th>
+                    <th>Plant / Zone</th>
                     <th>Location</th>
                     <th>Local Currency</th>
                     <th>Value</th>
@@ -4704,6 +5014,10 @@ function renderKpis(rows) {
                         <div class="parameter-table-title">\${escapeHtml(row.kpi_type || "Not set")}</div>
                       </td>
                       <td>
+                        <div class="parameter-table-subvalue">\${escapeHtml(row.plant || row.zone || "-")}</div>
+                        <div class="parameter-table-meta">\${escapeHtml(row.plant ? "Plant" : row.zone ? "Zone" : "No scope")}</div>
+                      </td>
+                      <td>
                         <div class="parameter-table-subvalue">\${escapeHtml(row.location || "-")}</div>
                       </td>
                       <td>
@@ -4714,11 +5028,11 @@ function renderKpis(rows) {
                       <td>\${escapeHtml(formatParameterDisplayValue(row.target))}</td>
                       <td>\${escapeHtml(formatParameterDisplayValue(row.best_new_target))}</td>
                       <td>
-                        <div class="parameter-table-subvalue">\${escapeHtml(row.responsible_name || responsibleName || "-")}</div>
+                        <div class="parameter-table-subvalue">\${escapeHtml(row.responsible || responsibleName || "-")}</div>
                         <div class="parameter-table-meta">Assigned owner</div>
                       </td>
                       <td class="parameter-table-actions">
-                        <button type="button" class="action-btn edit-btn" onclick="openEditParameterModal(\${row.parameter_kpi_id})">Edit</button>
+                        <button type="button" class="action-btn edit-btn" onclick="openEditParameterModal(\${row.kpi_object_id})">Edit</button>
                       </td>
                     </tr>
                   \`).join("")}
@@ -4733,17 +5047,17 @@ function renderKpis(rows) {
         const parameterGrid = document.getElementById("parameterGrid");
 
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/parameter-kpis');
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects');
           const data = await res.json();
 
           if (!res.ok) {
-            throw new Error(data?.error || "Failed to load parameter KPIs");
+            throw new Error(data?.error || "Failed to load KPI objects");
           }
 
           renderParameterKpis(data);
         } catch (error) {
           if (parameterGrid) {
-            parameterGrid.innerHTML = '<div class="empty">Failed to load parameter KPIs.</div>';
+            parameterGrid.innerHTML = '<div class="empty">Failed to load KPI objects.</div>';
           }
         }
       }
@@ -4832,6 +5146,80 @@ function renderKpis(rows) {
         }
       };
 
+      const kpiFlowLinePlugin = {
+        id: "kpiFlowLine",
+        afterDatasetsDraw(chart, args, pluginOptions) {
+          const datasetIndex = Number.isInteger(pluginOptions?.datasetIndex)
+            ? pluginOptions.datasetIndex
+            : 0;
+          const meta = chart.getDatasetMeta(datasetIndex);
+          const area = chart.chartArea;
+
+          if (!meta?.data?.length || !area) return;
+
+          const offset = Number.isFinite(pluginOptions?.offset) ? pluginOptions.offset : 12;
+          const pointRadius = Number.isFinite(pluginOptions?.pointRadius) ? pluginOptions.pointRadius : 3.5;
+          const points = [];
+
+          meta.data.forEach((barElement, index) => {
+            const rawValue = chart.data?.datasets?.[datasetIndex]?.data?.[index];
+            const numericValue = Number(rawValue);
+
+            if (!Number.isFinite(numericValue) || !Number.isFinite(barElement?.x) || !Number.isFinite(barElement?.y)) {
+              return;
+            }
+
+            points.push({
+              x: barElement.x,
+              y: Math.max(barElement.y - offset, area.top + 8)
+            });
+          });
+
+          if (points.length < 2) return;
+
+          const ctx = chart.ctx;
+          const strokeStyle = pluginOptions?.color || "rgba(15, 23, 42, 0.92)";
+          const pointFill = pluginOptions?.pointFill || "rgba(15, 23, 42, 0.96)";
+          const pointStroke = pluginOptions?.pointStroke || "rgba(255, 255, 255, 0.98)";
+          const lineWidth = Number.isFinite(pluginOptions?.lineWidth) ? pluginOptions.lineWidth : 3;
+
+          ctx.save();
+          ctx.lineWidth = lineWidth;
+          ctx.strokeStyle = strokeStyle;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+
+          for (let index = 1; index < points.length; index += 1) {
+            const previousPoint = points[index - 1];
+            const currentPoint = points[index];
+            const midX = (previousPoint.x + currentPoint.x) / 2;
+            const midY = (previousPoint.y + currentPoint.y) / 2;
+            ctx.quadraticCurveTo(previousPoint.x, previousPoint.y, midX, midY);
+          }
+
+          const lastPoint = points[points.length - 1];
+          ctx.lineTo(lastPoint.x, lastPoint.y);
+          ctx.stroke();
+
+          points.forEach((point) => {
+            ctx.beginPath();
+            ctx.fillStyle = pointFill;
+            ctx.arc(point.x, point.y, pointRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = pointStroke;
+            ctx.stroke();
+            ctx.lineWidth = lineWidth;
+            ctx.strokeStyle = strokeStyle;
+          });
+
+          ctx.restore();
+        }
+      };
+
       async function loadKpis(search = "") {
         try {
           const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?search=' + encodeURIComponent(search));
@@ -4890,7 +5278,6 @@ function renderKpis(rows) {
             const ctx = canvas.getContext('2d');
             const sourceLabels = Array.isArray(row.labels) ? row.labels : [];
             const periodLabels = sourceLabels.map((_, labelIndex) => 'Period ' + (labelIndex + 1));
-            const flowSeries = Array.isArray(row.values) ? row.values : [];
 
             const targetSeries = Array.isArray(sourceLabels)
               ? sourceLabels.map(() => row.targetValue ?? null)
@@ -4953,19 +5340,6 @@ function renderKpis(rows) {
                   },
                   {
                     type: 'line',
-                    label: 'Flow',
-                    data: flowSeries,
-                    borderColor: 'rgba(15, 23, 42, 0.90)',
-                    backgroundColor: 'rgba(15, 23, 42, 0.04)',
-                    borderWidth: 2.5,
-                    tension: 0.35,
-                    fill: false,
-                    pointRadius: 0,
-                    pointHoverRadius: 4,
-                    spanGaps: true
-                  },
-                  {
-                    type: 'line',
                     label: 'Target',
                     data: targetSeries,
                     borderColor: 'rgba(239, 68, 68, 0.95)',
@@ -5012,6 +5386,12 @@ function renderKpis(rows) {
                   kpiThresholdBands: {
                     lowLimit: row.lowLimitValue,
                     highLimit: row.highLimitValue
+                  },
+                  kpiFlowLine: {
+                    datasetIndex: 0,
+                    offset: 12,
+                    lineWidth: 3,
+                    pointRadius: 3.5
                   },
                   legend: {
                     display: false
@@ -5076,7 +5456,7 @@ function renderKpis(rows) {
                   }
                 }
               },
-              plugins: [kpiThresholdBandsPlugin]
+              plugins: [kpiThresholdBandsPlugin, kpiFlowLinePlugin]
             });
 
             chartInstances.push(chart);
@@ -5707,7 +6087,7 @@ function handleKpiTypeChange() {
   const type = document.getElementById("parameter_kpi_type").value;
   const plantWrap = document.getElementById("plantWrap");
   const zoneWrap = document.getElementById("zoneWrap");
-  const responsible = document.getElementById("parameter_responsible_name").value = "";
+  const responsibleInput = document.getElementById("parameter_responsible_name");
 
   plantWrap.style.display = type === "Multisite" ? "" : "none";
   zoneWrap.style.display = type === "Zone" ? "" : "none";
@@ -5716,11 +6096,11 @@ function handleKpiTypeChange() {
   document.getElementById("parameter_zone").value = "";
 
   if (type === "Individual") {
-    responsible.readOnly = false;
-    responsible.value = "";
+    responsibleInput.readOnly = false;
+    responsibleInput.value = responsibleName || "";
   } else {
-    responsible.readOnly = true;
-    responsible.value = responsibleName || "";
+    responsibleInput.readOnly = true;
+    responsibleInput.value = responsibleName || "";
   }
 }
 
@@ -5774,6 +6154,8 @@ function handlePlantChange() {
           "parameter_object_id",
           "parameter_kpi_id",
           "parameter_kpi_type",
+          "parameter_plant",
+          "parameter_zone",
           "parameter_location",
           "parameter_local_currency",
           "parameter_value",
@@ -5786,7 +6168,10 @@ function handlePlantChange() {
         });
 
         const responsibleInput = document.getElementById("parameter_responsible_name");
-        if (responsibleInput) responsibleInput.value = responsibleName || "";
+        if (responsibleInput) {
+          responsibleInput.value = responsibleName || "";
+          responsibleInput.readOnly = true;
+        }
 
         const valueDateInput = document.getElementById("parameter_value_date");
         if (valueDateInput) {
@@ -5794,15 +6179,18 @@ function handlePlantChange() {
         }
 
         document.getElementById("parameterDeleteBtn").style.display = "none";
+        handleKpiTypeChange();
         updateParameterOverview();
         updateParameterKpiSummary();
       }
 
       function fillParameterForm(data) {
         const mappings = {
-          parameter_object_id: data.parameter_kpi_id,
+          parameter_object_id: data.kpi_object_id,
           parameter_kpi_id: data.kpi_id,
           parameter_kpi_type: data.kpi_type,
+          parameter_plant: data.plant,
+          parameter_zone: data.zone,
           parameter_location: data.location,
           parameter_local_currency: data.local_currency,
           parameter_value: data.value ?? "",
@@ -5818,9 +6206,19 @@ function handlePlantChange() {
 
         const responsibleInput = document.getElementById("parameter_responsible_name");
         if (responsibleInput) {
-          responsibleInput.value = data.responsible_name || responsibleName || "";
+          responsibleInput.value = data.responsible || responsibleName || "";
         }
 
+        handleKpiTypeChange();
+        if (document.getElementById("parameter_plant")) {
+          document.getElementById("parameter_plant").value = data.plant || "";
+        }
+        if (document.getElementById("parameter_zone")) {
+          document.getElementById("parameter_zone").value = data.zone || "";
+        }
+        if (responsibleInput) {
+          responsibleInput.value = data.responsible || responsibleName || "";
+        }
         updateParameterOverview();
         updateParameterKpiSummary();
       }
@@ -5830,29 +6228,29 @@ function handlePlantChange() {
         resetParameterForm();
         document.getElementById("parameterModalTitle").textContent = "Create KPI Object";
         document.getElementById("parameterModalSubtitle").textContent =
-          "";
+          "Create a KPI object with location, currency, target and ownership details for this responsible.";
         openParameterModal();
       }
 
-      async function openEditParameterModal(parameterKpiId) {
+      async function openEditParameterModal(parameterObjectId) {
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/parameter-kpis/' + parameterKpiId);
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId);
           const data = await res.json();
 
           if (!res.ok) {
-            throw new Error(data?.error || "Failed to load parameter KPI");
+            throw new Error(data?.error || "Failed to load KPI object");
           }
 
           await loadKpiNames(data.kpi_id);
           fillParameterForm(data);
-          document.getElementById("parameterModalTitle").textContent = "Edit Parameter KPI";
+          document.getElementById("parameterModalTitle").textContent = "Edit KPI Object";
           document.getElementById("parameterModalSubtitle").textContent =
-            "Update location, local currency, value, target and best new target in one clear workflow.";
+            "Update location, plant or zone, value, target and ownership details in one clear workflow.";
           document.getElementById("parameterDeleteBtn").style.display = "inline-flex";
           openParameterModal();
         } catch (error) {
-          console.error("OPEN PARAMETER KPI MODAL ERROR:", error);
-          showToast("Unable to load parameter KPI: " + error.message);
+          console.error("OPEN KPI OBJECT MODAL ERROR:", error);
+          showToast("Unable to load KPI object: " + error.message);
         }
       }
 
@@ -5876,9 +6274,8 @@ function handlePlantChange() {
   const parameterObjectId = getParameterFieldValue("parameter_object_id");
   const method = parameterObjectId ? "PUT" : "POST";
 
-  // POST goes to kpi-objects, PUT still goes to parameter-kpis for edits
   const url = parameterObjectId
-    ? '/api/responsibles/' + responsibleId + '/parameter-kpis/' + parameterObjectId
+    ? '/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId
     : '/api/responsibles/' + responsibleId + '/kpi-objects';
 
   try {
@@ -5890,8 +6287,8 @@ function handlePlantChange() {
 
     if (!res.ok) {
       const errorData = await res.json().catch(() => null);
-      console.error("SAVE PARAMETER KPI API ERROR:", errorData);
-      showToast(errorData?.error || "Failed to save parameter KPI");
+      console.error("SAVE KPI OBJECT API ERROR:", errorData);
+      showToast(errorData?.error || "Failed to save KPI object");
       return;
     }
 
@@ -5899,27 +6296,27 @@ function handlePlantChange() {
     await loadParameterKpis();
     showToast(parameterObjectId ? "KPI Object updated" : "KPI Object created");
   } catch (error) {
-    console.error("SAVE PARAMETER KPI ERROR:", error);
+    console.error("SAVE KPI OBJECT ERROR:", error);
     showToast("Failed to save: " + error.message);
   }
 }
 
       async function deleteCurrentParameterKpi() {
-        const parameterKpiId = getParameterFieldValue("parameter_object_id");
-        if (!parameterKpiId) return;
+        const parameterObjectId = getParameterFieldValue("parameter_object_id");
+        if (!parameterObjectId) return;
 
-        const ok = confirm("Delete this parameter KPI?");
+        const ok = confirm("Delete this KPI object?");
         if (!ok) return;
 
-        await deleteParameterKpi(parameterKpiId, true);
+        await deleteParameterKpi(parameterObjectId, true);
       }
 
-      async function deleteParameterKpi(parameterKpiId, fromModal = false) {
-        const ok = fromModal ? true : confirm("Delete this parameter KPI?");
+      async function deleteParameterKpi(parameterObjectId, fromModal = false) {
+        const ok = fromModal ? true : confirm("Delete this KPI object?");
         if (!ok) return;
 
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/parameter-kpis/' + parameterKpiId, {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId, {
             method: "DELETE"
           });
 
@@ -5931,7 +6328,7 @@ function handlePlantChange() {
 
           if (fromModal) closeParameterModal();
           await loadParameterKpis();
-          showToast("Parameter KPI deleted");
+          showToast("KPI object deleted");
         } catch (error) {
           showToast("Delete failed");
         }
@@ -13322,6 +13719,75 @@ async function sendAssistantPrompt(message) {
             }
           };
 
+          const kpiBarFlowLinePlugin = {
+            id: "kpiBarFlowLine",
+            afterDatasetsDraw(chart, args, opts) {
+              const datasetIndex = Number.isInteger(opts?.datasetIndex) ? opts.datasetIndex : 0;
+              const meta = chart.getDatasetMeta(datasetIndex);
+              const area = chart.chartArea;
+              if (!meta?.data?.length || !area) return;
+
+              const offset = Number.isFinite(opts?.offset) ? opts.offset : 12;
+              const pointRadius = Number.isFinite(opts?.pointRadius) ? opts.pointRadius : 3.5;
+              const lineWidth = Number.isFinite(opts?.lineWidth) ? opts.lineWidth : 3;
+              const color = opts?.color || "#111827";
+              const pointFill = opts?.pointFill || color;
+              const pointStroke = opts?.pointStroke || "#ffffff";
+              const points = [];
+
+              meta.data.forEach((barElement, index) => {
+                const rawValue = chart.data?.datasets?.[datasetIndex]?.data?.[index];
+                const numericValue = Number(rawValue);
+
+                if (!Number.isFinite(numericValue) || !Number.isFinite(barElement?.x) || !Number.isFinite(barElement?.y)) {
+                  return;
+                }
+
+                points.push({
+                  x: barElement.x,
+                  y: Math.max(barElement.y - offset, area.top + 8)
+                });
+              });
+
+              if (points.length < 2) return;
+
+              const ctx = chart.ctx;
+              ctx.save();
+              ctx.lineWidth = lineWidth;
+              ctx.strokeStyle = color;
+              ctx.lineCap = "round";
+              ctx.lineJoin = "round";
+              ctx.beginPath();
+              ctx.moveTo(points[0].x, points[0].y);
+
+              for (let index = 1; index < points.length; index += 1) {
+                const previousPoint = points[index - 1];
+                const currentPoint = points[index];
+                const cp1x = previousPoint.x + (currentPoint.x - previousPoint.x) * 0.35;
+                const cp1y = previousPoint.y;
+                const cp2x = currentPoint.x - (currentPoint.x - previousPoint.x) * 0.35;
+                const cp2y = currentPoint.y;
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, currentPoint.x, currentPoint.y);
+              }
+
+              ctx.stroke();
+
+              points.forEach((point) => {
+                ctx.beginPath();
+                ctx.fillStyle = pointFill;
+                ctx.arc(point.x, point.y, pointRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = pointStroke;
+                ctx.stroke();
+                ctx.lineWidth = lineWidth;
+                ctx.strokeStyle = color;
+              });
+
+              ctx.restore();
+            }
+          };
+
           function getThresholdLines(lowLimit, target, highLimit) {
             const lines = [];
             const low = parseFloat(lowLimit);
@@ -13439,10 +13905,14 @@ async function sendAssistantPrompt(message) {
               options:{
                 responsive:true, maintainAspectRatio:false, animation:false,
                 layout:{ padding:{ right:12 } },
-                plugins:{ legend:{ display:false }, kpiThresholdLines:{ lines: getThresholdLines(lowLimit,target,highLimit) } },
+                plugins:{
+                  legend:{ display:false },
+                  kpiThresholdLines:{ lines: getThresholdLines(lowLimit,target,highLimit) },
+                  kpiBarFlowLine:{ datasetIndex:0, offset:12, lineWidth:3, pointRadius:3.5 }
+                },
                 scales:{ x:{ grid:{ display:false } }, y:{ min:bounds.min, max:bounds.max } }
               },
-              plugins:[kpiThresholdLinesPlugin]
+              plugins:[kpiThresholdLinesPlugin, kpiBarFlowLinePlugin]
             });
           }
 
@@ -13559,6 +14029,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
             expandedChart.options.scales.y.min = src.options.scales.y.min;
             expandedChart.options.scales.y.max = src.options.scales.y.max;
             expandedChart.options.plugins.kpiThresholdLines.lines = (src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()}));
+            expandedChart.options.plugins.kpiBarFlowLine = Object.assign({}, src.options.plugins.kpiBarFlowLine || { datasetIndex:0, offset:14, lineWidth:3, pointRadius:4 });
             expandedChart.update();
           }
 
@@ -13601,10 +14072,14 @@ function getFallbackCurrentMonthLabel(card, labels) {
                 options:{
                   responsive:true, maintainAspectRatio:false, animation:false,
                   interaction:{ mode:"index", intersect:false }, layout:{ padding:{right:12} },
-                  plugins:{ legend:{display:false}, kpiThresholdLines:{ lines:(src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()})) } },
+                  plugins:{
+                    legend:{display:false},
+                    kpiThresholdLines:{ lines:(src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()})) },
+                    kpiBarFlowLine: Object.assign({}, src.options.plugins.kpiBarFlowLine || { datasetIndex:0, offset:14, lineWidth:3, pointRadius:4 })
+                  },
                   scales:{ x:{grid:{display:false},ticks:{color:"#475569",font:{size:14,weight:"600"}}}, y:{min:src.options.scales.y.min,max:src.options.scales.y.max,ticks:{color:"#64748b",font:{size:13}},grid:{color:"#e2e8f0"}} }
                 },
-                plugins:[expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
+                plugins:[expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin, kpiBarFlowLinePlugin]
               });
             });
           }
