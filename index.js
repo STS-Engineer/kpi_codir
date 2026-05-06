@@ -378,6 +378,120 @@ const getResponsibleNameById = async (responsibleId) => {
   return getPeopleDisplayName(result.rows[0]);
 };
 
+const loadPeopleContextByPeopleId = async (peopleId) => {
+  const normalizedPeopleId = normalizeOptionalIntegerInput(peopleId);
+  if (!normalizedPeopleId) return null;
+
+  const peopleRes = await pool.query(
+    `
+    SELECT
+      p.people_id,
+      p.first_name,
+      p.name,
+      p.email,
+      u.unit_name AS plant_name
+    FROM public.people p
+    LEFT JOIN public.unit u
+      ON u.unit_id = p.work_at_unit_id
+    WHERE p.people_id = $1
+    LIMIT 1
+    `,
+    [normalizedPeopleId]
+  );
+
+  const row = peopleRes.rows[0];
+  if (!row) return null;
+
+  return {
+    people_id: row.people_id,
+    name: getPeopleDisplayName(row) || `People #${normalizedPeopleId}`,
+    email: normalizeOptionalTextInput(row.email),
+    plant_name: normalizeOptionalTextInput(row.plant_name) || "Allocated scope",
+    department_name: ""
+  };
+};
+
+const loadLegacyResponsibleIdentity = async (responsibleId) => {
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
+  if (!normalizedResponsibleId) return null;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT responsible_id, name, email
+      FROM public."Responsible"
+      WHERE responsible_id = $1
+      LIMIT 1
+      `,
+      [normalizedResponsibleId]
+    );
+
+    const row = result.rows[0];
+    if (!row) return null;
+
+    return {
+      responsible_id: row.responsible_id,
+      name: normalizeOptionalTextInput(row.name),
+      email: normalizeOptionalTextInput(row.email)
+    };
+  } catch (error) {
+    return null;
+  }
+};
+
+const findPeopleContextForLegacyResponsible = async (legacyResponsible = {}) => {
+  const legacyEmail = normalizeOptionalTextInput(legacyResponsible.email);
+  const legacyName = normalizeOptionalTextInput(legacyResponsible.name);
+  if (!legacyEmail && !legacyName) return null;
+
+  const result = await pool.query(
+    `
+    SELECT
+      p.people_id,
+      p.first_name,
+      p.name,
+      p.email,
+      u.unit_name AS plant_name
+    FROM public.people p
+    LEFT JOIN public.unit u
+      ON u.unit_id = p.work_at_unit_id
+    WHERE
+      ($1::text IS NOT NULL AND LOWER(COALESCE(p.email, '')) = LOWER($1))
+      OR (
+        $2::text IS NOT NULL
+        AND (
+          LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($2)
+          OR LOWER(COALESCE(p.name, '')) = LOWER($2)
+          OR LOWER(COALESCE(p.first_name, '')) = LOWER($2)
+        )
+      )
+    ORDER BY
+      CASE
+        WHEN $1::text IS NOT NULL AND LOWER(COALESCE(p.email, '')) = LOWER($1) THEN 0
+        WHEN $2::text IS NOT NULL
+          AND LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($2) THEN 1
+        WHEN $2::text IS NOT NULL AND LOWER(COALESCE(p.name, '')) = LOWER($2) THEN 2
+        WHEN $2::text IS NOT NULL AND LOWER(COALESCE(p.first_name, '')) = LOWER($2) THEN 3
+        ELSE 4
+      END,
+      p.people_id ASC
+    LIMIT 1
+    `,
+    [legacyEmail, legacyName]
+  );
+
+  const row = result.rows[0];
+  if (!row) return null;
+
+  return {
+    people_id: row.people_id,
+    name: getPeopleDisplayName(row) || legacyName || `People #${row.people_id}`,
+    email: normalizeOptionalTextInput(row.email) || legacyEmail,
+    plant_name: normalizeOptionalTextInput(row.plant_name) || "Allocated scope",
+    department_name: ""
+  };
+};
+
 
 const prepareKpiObjectPayload = (payload = {}) => {
   const rawKpiId = normalizeOptionalTextInput(payload.kpi_id);
@@ -684,13 +798,18 @@ const loadKpiTargetAllocationLookups = async () => {
 };
 
 const getDashboardOwnerDisplayName = async (responsibleId) => {
-  return (await getResponsibleNameById(responsibleId)) || "KPI Workspace";
+  return (await loadFormResponsibleContext(responsibleId))?.name || "KPI Workspace";
 };
 
 const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
   const subjectId = row.subject_id === null || row.subject_id === undefined
     ? null
     : String(row.subject_id);
+  const subjectPath = subjectId ? subjectPathById.get(subjectId) || row.subject_name || "" : "";
+  const setByPeopleDisplayName = getPeopleDisplayName({
+    name: row.set_by_people_name,
+    first_name: row.set_by_people_first_name
+  }) || "";
 
   return {
     kpi_id: row.kpi_id,
@@ -699,11 +818,11 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     kpi_code: row.kpi_code || "",
     kpi_formula: row.kpi_formula || "",
     unit: row.unit || "",
-    subject: subjectId ? subjectPathById.get(subjectId) || row.subject_name || "" : "",
+    subject: subjectPath,
     subject_node_id: subjectId,
     definition: row.kpi_explanation || "",
     frequency: row.frequency || "",
-    target: row.target_value,
+    target: row.allocation_target_value ?? row.target_value,
     target_direction: row.target_direction || "",
     tolerance_type: row.tolerance_type || "",
     up_tolerance: row.up_tolerance || "",
@@ -725,14 +844,22 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     status: row.status || "Active",
     comments: row.comments || "",
     created_at: row.created_at,
-    updated_at: row.updated_at
+    updated_at: row.updated_at,
+    full_subject_path: subjectPath,
+    kpi_target_allocation_id: row.kpi_target_allocation_id ?? null,
+    allocation_target_value: row.allocation_target_value ?? null,
+    allocation_target_unit: row.allocation_target_unit || "",
+    allocation_target_status: row.allocation_target_status || "",
+    set_by_people_id: row.set_by_people_id ?? null,
+    set_by_people_display_name: setByPeopleDisplayName
   };
 };
 
-const loadKpiRowsForUi = async ({ search = "", kpiId = null } = {}) => {
+const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = null } = {}) => {
   const subjectHierarchy = await loadSubjectHierarchyData();
   const searchText = normalizeOptionalTextInput(search) || "";
-  const params = [searchText, `%${searchText}%`, kpiId];
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
+  const params = [searchText, `%${searchText}%`, kpiId, normalizedResponsibleId];
 
   const result = await pool.query(
     `
@@ -768,8 +895,43 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null } = {}) => {
       k.comments,
       k.created_at,
       k.updated_at,
-      primary_subject.subject_id
+      primary_subject.subject_id,
+      assignment.kpi_target_allocation_id,
+      assignment.target_value AS allocation_target_value,
+      assignment.target_unit AS allocation_target_unit,
+      assignment.target_status AS allocation_target_status,
+      assignment.set_by_people_id,
+      set_by_people.name AS set_by_people_name,
+      set_by_people.first_name AS set_by_people_first_name
     FROM public.kpi k
+    ${normalizedResponsibleId === null ? "" : `
+    JOIN LATERAL (
+      SELECT
+        a.kpi_target_allocation_id,
+        a.target_value,
+        a.target_unit,
+        a.target_status,
+        a.set_by_people_id
+      FROM public.kpi_target_allocation a
+      WHERE a.kpi_id = k.kpi_id
+        AND a.set_by_people_id = $4
+      ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.kpi_target_allocation_id DESC
+      LIMIT 1
+    ) assignment ON TRUE
+    LEFT JOIN public.people set_by_people
+      ON set_by_people.people_id = assignment.set_by_people_id
+    `}
+    ${normalizedResponsibleId === null ? `
+    LEFT JOIN LATERAL (
+      SELECT NULL::integer AS kpi_target_allocation_id,
+             NULL::numeric AS target_value,
+             NULL::varchar AS target_unit,
+             NULL::varchar AS target_status,
+             NULL::integer AS set_by_people_id
+    ) assignment ON TRUE
+    LEFT JOIN public.people set_by_people
+      ON 1 = 0
+    ` : ""}
     LEFT JOIN LATERAL (
       SELECT sk.subject_id
       FROM public.subject_kpi sk
@@ -779,6 +941,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null } = {}) => {
     ) primary_subject ON TRUE
     WHERE
       ($3::integer IS NULL OR k.kpi_id = $3)
+      AND ($4::integer IS NULL OR assignment.kpi_target_allocation_id IS NOT NULL)
       AND (
         $1 = ''
         OR COALESCE(k.kpi_name, '') ILIKE $2
@@ -880,8 +1043,9 @@ const upsertPrimarySubjectKpiLink = async (client, kpiId, subjectId) => {
   );
 };
 
-const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null } = {}) => {
+const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsibleId = null } = {}) => {
   const subjectHierarchy = await loadSubjectHierarchyData();
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
   const result = await pool.query(
     `
     SELECT
@@ -953,9 +1117,10 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null } = {}) =>
       LIMIT 1
     ) primary_subject ON TRUE
     WHERE ($1::integer IS NULL OR a.kpi_target_allocation_id = $1)
+      AND ($2::integer IS NULL OR a.set_by_people_id = $2)
     ORDER BY a.created_at DESC, a.kpi_target_allocation_id DESC
     `,
-    [allocationId]
+    [allocationId, normalizedResponsibleId]
   );
 
   return result.rows.map((row) => ({
@@ -2613,10 +2778,15 @@ app.get("/api/responsibles/:responsibleId/kpi-graphs", async (req, res) => {
 });
 
 app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
+  const { responsibleId } = req.params;
   let client;
 
   try {
     await ensureKpiRatioSchema();
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
     const {
       subject_id,
       kpi_name,
@@ -2733,8 +2903,38 @@ VALUES (
     const newKpi = insertKpi.rows[0];
     await upsertPrimarySubjectKpiLink(client, newKpi.kpi_id, resolvedSubjectId);
 
+    await client.query(
+      `
+      INSERT INTO public.kpi_target_allocation (
+        kpi_id,
+        target_value,
+        target_unit,
+        local_currency,
+        kpi_type,
+        target_setup_date,
+        target_status,
+        set_by_people_id,
+        comments
+      )
+      VALUES ($1, $2, $3, $4, $5, CURRENT_DATE, $6, $7, $8)
+      `,
+      [
+        newKpi.kpi_id,
+        newKpi.target_value ?? 0,
+        newKpi.unit || null,
+        null,
+        null,
+        "Draft",
+        responsiblePeopleId,
+        "Auto-created from KPI creation."
+      ]
+    );
+
     await client.query("COMMIT");
-    const rows = await loadKpiRowsForUi({ kpiId: newKpi.kpi_id });
+    const rows = await loadKpiRowsForUi({
+      kpiId: newKpi.kpi_id,
+      responsibleId: responsiblePeopleId
+    });
     res.status(201).json(rows[0] || newKpi);
   } catch (error) {
     if (client) {
@@ -2750,9 +2950,13 @@ VALUES (
 });
 
 app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
+  const { responsibleId } = req.params;
   try {
     await ensureKpiRatioSchema();
-    const rows = await loadKpiRowsForUi({ search: req.query.search || "" });
+    const rows = await loadKpiRowsForUi({
+      search: req.query.search || "",
+      responsibleId
+    });
     res.json(rows);
   } catch (error) {
     console.error("GET /api/responsibles/:responsibleId/kpis error:", error);
@@ -2761,11 +2965,14 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
 });
 
 app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
-  const { kpiId } = req.params;
+  const { responsibleId, kpiId } = req.params;
 
   try {
     await ensureKpiRatioSchema();
-    const rows = await loadKpiRowsForUi({ kpiId: Number(kpiId) });
+    const rows = await loadKpiRowsForUi({
+      kpiId: Number(kpiId),
+      responsibleId
+    });
 
     if (!rows.length) {
       return res.status(404).json({ error: "KPI not found" });
@@ -3111,8 +3318,13 @@ app.post("/api/responsibles/:responsibleId/parameter-kpis", async (req, res) => 
 });
 
 app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
+  const { responsibleId } = req.params;
   try {
     await ensureKpiObjectSchema();
+    const responsiblePeopleContext = await loadPeopleContextByPeopleId(responsibleId);
+    const normalizedResponsiblePeopleId =
+      responsiblePeopleContext?.people_id ||
+      normalizeOptionalIntegerInput(responsibleId);
     const {
       kpi_id,
       plant_id,
@@ -3136,7 +3348,10 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
       set_by_people_id,
       approved_by_people_id,
       comments
-    } = prepareKpiObjectPayload(req.body);
+    } = prepareKpiObjectPayload({
+      ...req.body,
+      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId
+    });
 
     const result = await pool.query(
       `
@@ -3194,7 +3409,8 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$
     );
 
     const rows = await loadKpiTargetAllocationRowsForUi({
-      allocationId: result.rows[0]?.kpi_target_allocation_id
+      allocationId: result.rows[0]?.kpi_target_allocation_id,
+      responsibleId: normalizedResponsiblePeopleId || responsibleId
     });
 
     res.status(201).json(rows[0] || result.rows[0]);
@@ -3207,9 +3423,10 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$
 });
 
 app.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
+  const { responsibleId } = req.params;
   try {
     await ensureKpiObjectSchema();
-    const rows = await loadKpiTargetAllocationRowsForUi();
+    const rows = await loadKpiTargetAllocationRowsForUi({ responsibleId });
     res.json(rows);
   } catch (error) {
     console.error("GET KPI objects error:", error);
@@ -3218,12 +3435,13 @@ app.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
 });
 
 app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
-  const { kpiObjectId } = req.params;
+  const { responsibleId, kpiObjectId } = req.params;
 
   try {
     await ensureKpiObjectSchema();
     const rows = await loadKpiTargetAllocationRowsForUi({
-      allocationId: Number(kpiObjectId)
+      allocationId: Number(kpiObjectId),
+      responsibleId
     });
 
     if (!rows.length) {
@@ -3238,10 +3456,14 @@ app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 });
 
 app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
-  const { kpiObjectId } = req.params;
+  const { responsibleId, kpiObjectId } = req.params;
 
   try {
     await ensureKpiObjectSchema();
+    const responsiblePeopleContext = await loadPeopleContextByPeopleId(responsibleId);
+    const normalizedResponsiblePeopleId =
+      responsiblePeopleContext?.people_id ||
+      normalizeOptionalIntegerInput(responsibleId);
     const {
       kpi_id,
       plant_id,
@@ -3265,7 +3487,10 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       set_by_people_id,
       approved_by_people_id,
       comments
-    } = prepareKpiObjectPayload(req.body);
+    } = prepareKpiObjectPayload({
+      ...req.body,
+      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId
+    });
 
     const result = await pool.query(
       `
@@ -3329,7 +3554,8 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     }
 
     const rows = await loadKpiTargetAllocationRowsForUi({
-      allocationId: Number(kpiObjectId)
+      allocationId: Number(kpiObjectId),
+      responsibleId: normalizedResponsiblePeopleId || responsibleId
     });
 
     res.json(rows[0] || result.rows[0]);
@@ -3541,17 +3767,19 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
 app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   const { responsibleId } = req.params;
   const [
-    responsibleName,
+    responsibleContext,
     subjectHierarchyData,
     roleOptions,
     allocationLookups
   ] = await Promise.all([
-    getDashboardOwnerDisplayName(responsibleId),
+    loadFormResponsibleContext(responsibleId),
     loadSubjectHierarchyData(),
     loadRoleOptions(),
     loadKpiTargetAllocationLookups()
   ]);
 
+  const responsibleName = responsibleContext?.name || "KPI Workspace";
+  const dashboardResponsibleId = responsibleContext?.people_id || responsibleId;
   const kpiSubjectHierarchy = subjectHierarchyData.tree;
 
   res.send(`
@@ -6061,8 +6289,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       <main class="content">
         <div class="topbar">
           <div class="topbar-left">
-            <h1>Responsible KPI Dashboard</h1>
-            <p>Modern KPI workspace for responsible management and tracking.</p>
+              <h1>Responsible KPI Dashboard</h1>
+            <p>Modern KPI workspace for ${escapeHtml(responsibleName)}. KPI creation and target allocation are locked to this responsible.</p>
           </div>
 
         </div>
@@ -6531,7 +6759,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
               </div>
 
               <div class="field col-3">
-                <label><span> Responsible </span><span class="hint">Optional people record</span></label>
+                <label><span id="parameter_set_by_people_label">Responsible</span><span class="hint" id="parameter_set_by_people_hint">Assigned from current dashboard</span></label>
                 <select id="parameter_set_by_people_id"></select>
               </div>
               <div class="field col-3">
@@ -6560,7 +6788,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
     <div id="toast" class="toast"></div>
 
     <script>
-      const responsibleId = "${responsibleId}";
+      const responsibleId = ${JSON.stringify(String(dashboardResponsibleId || ""))};
       const responsibleName = ${JSON.stringify(responsibleName)};
       const kpiSubjectHierarchy = ${JSON.stringify(kpiSubjectHierarchy)};
       const roleOptions = ${JSON.stringify(roleOptions)};
@@ -6869,6 +7097,7 @@ function autoFillSetByFromUnit() {
   const plantSelect = document.getElementById("parameter_plant_id");
   const setBySelect = document.getElementById("parameter_set_by_people_id");
   if (!plantSelect || !setBySelect) return;
+  if (String(setBySelect.value || "").trim()) return;
 
   const selectedUnitText =
     plantSelect.options[plantSelect.selectedIndex]?.textContent?.trim() || "";
@@ -6898,6 +7127,46 @@ const unitToPerson = {
   }
 }
 
+function syncDashboardResponsibleAssignment() {
+  const setBySelect = document.getElementById("parameter_set_by_people_id");
+  const setByHint = document.getElementById("parameter_set_by_people_hint");
+  if (!setBySelect) return;
+
+  const normalizedResponsibleId = String(responsibleId || "").trim();
+  const hasDashboardResponsible = normalizedResponsibleId !== "";
+
+  setBySelect.dataset.lockedResponsible = "false";
+
+  if (setByHint) {
+    setByHint.textContent = hasDashboardResponsible
+      ? "Defaulted to " + (responsibleName || "current responsible") + ". You can change it."
+      : "Select the person who will own this KPI";
+  }
+
+  if (!hasDashboardResponsible) {
+    setBySelect.disabled = false;
+    return;
+  }
+
+  const optionExists = Array.from(setBySelect.options).some(
+    (option) => String(option.value || "") === normalizedResponsibleId
+  );
+
+  if (!optionExists) {
+    setBySelect.insertAdjacentHTML(
+      "beforeend",
+      '<option value="' + escapeHtml(normalizedResponsibleId) + '">' +
+      escapeHtml(responsibleName || ("Person " + normalizedResponsibleId)) +
+      '</option>'
+    );
+  }
+
+  if (!String(setBySelect.value || "").trim()) {
+    setBySelect.value = normalizedResponsibleId;
+  }
+  setBySelect.disabled = false;
+}
+
 function populateAllocationLookupOptions(values = {}) {
   setLookupSelectOptions("parameter_plant_id", allocationLookups.plants, "Select unit", values.parameter_plant_id || values.plant_id || "");
   setLookupSelectOptions("parameter_zone_id", allocationLookups.zones, "Select zone", values.parameter_zone_id || values.zone_id || "");
@@ -6909,6 +7178,7 @@ function populateAllocationLookupOptions(values = {}) {
   setLookupSelectOptions("parameter_set_by_people_id", allocationLookups.people, "Select person", values.parameter_set_by_people_id || values.set_by_people_id || "");
   setLookupSelectOptions("parameter_approved_by_people_id", allocationLookups.people, "Select approver", values.parameter_approved_by_people_id || values.approved_by_people_id || "");
   ensureParameterTargetUnitOption(values.parameter_target_unit || values.target_unit || "");
+  syncDashboardResponsibleAssignment();
 }
 function getFieldValue(id) {
   const el = document.getElementById(id);
@@ -7471,10 +7741,21 @@ function renderKpis(rows) {
             \${currentRows.map(row => \`
               <tr>
                 <td>
-                  <div class="kpi-row-title">\${escapeHtml(getLastPathSegment(row.indicator_title) || "Untitled KPI")}</div>
+                  <div class="kpi-row-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "Untitled KPI")}</div>
+                  <div class="allocation-row-meta">\${escapeHtml([
+                    row.full_subject_path || row.subject || "",
+                    row.set_by_people_display_name ? 'Responsible: ' + row.set_by_people_display_name : ''
+                  ].filter(Boolean).join(" • ") || "No responsible assignment yet")}</div>
                 </td>
                 <td>
                   <div class="kpi-row-subtitle">\${escapeHtml(row.indicator_sub_title || "-")}</div>
+                  <div class="allocation-row-meta">\${escapeHtml([
+                    row.frequency ? 'Frequency: ' + row.frequency : '',
+                    row.target !== null && row.target !== undefined && String(row.target).trim() !== ''
+                      ? 'Target: ' + formatParameterDisplayValue(row.target) + (row.allocation_target_unit || row.unit ? ' ' + (row.allocation_target_unit || row.unit) : '')
+                      : '',
+                    row.status ? 'Status: ' + row.status : ''
+                  ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
               <td class="kpi-table-actions">
   <button type="button" class="action-btn edit-btn" onclick="openEditModal(\${row.kpi_id})">Edit KPI</button>
@@ -8558,10 +8839,10 @@ function fillForm(data) {
         resetForm();
         document.getElementById("modalTitle").textContent = "Add New KPI";
         document.getElementById("modalSubtitle").textContent =
-          "Create a new KPI with clear identity, target logic and threshold visibility.";
+          "Create a new KPI with clear identity, target logic and threshold visibility. It will be linked to " + (responsibleName || "this responsible") + " when you save its target allocation.";
         const deleteBtn = document.getElementById("deleteBtn");
         if (deleteBtn) {
-          deleteBtn.style.display = "none";
+         deleteBtn.style.display = "none";
         }
         updateModalOverview();
         openModal();
@@ -8597,10 +8878,13 @@ function fillForm(data) {
       }
 
 
-        function getSafeValue(id) {
+        function getSafeValue(id, options = {}) {
+      const optional = Boolean(options && options.optional);
       const el = document.getElementById(id);
      if (!el) {
-      console.error("Missing field:", id);
+      if (!optional) {
+        console.error("Missing field:", id);
+      }
     return "";
      }
      return el.value || "";
@@ -8622,7 +8906,7 @@ function fillForm(data) {
           subject: getSafeValue("subject"),
           definition: getSafeValue("definition"),
           frequency: getSafeValue("frequency"),
-          target: getSafeValue("target"),
+          target: getSafeValue("target", { optional: true }),
           tolerance_type: toleranceType,
           up_tolerance: serializeToleranceForPayload(document.getElementById("up_tolerance").value, toleranceType, "up"),
           low_tolerance: serializeToleranceForPayload(document.getElementById("low_tolerance").value, toleranceType, "low"),
@@ -8650,6 +8934,7 @@ function fillForm(data) {
 
       async function saveKpi() {
         const kpiId = document.getElementById("kpi_id").value;
+        const isCreateMode = !kpiId;
         const method = kpiId ? "PUT" : "POST";
         const url = kpiId
           ? '/api/responsibles/' + responsibleId + '/kpis/' + kpiId
@@ -8662,14 +8947,19 @@ function fillForm(data) {
             body: JSON.stringify(buildPayload())
           });
 
+          const savedKpi = await res.json().catch(() => null);
+
           if (!res.ok) {
-            const errorData = await res.json().catch(() => null);
-            showToast(errorData?.error || "Save failed");
+            showToast(savedKpi?.error || "Save failed");
             return;
           }
 
           closeModal();
           await loadKpis(document.getElementById("search").value || "");
+          if (isCreateMode && savedKpi?.kpi_id) {
+            showToast("KPI created successfully");
+            return;
+           }
           showToast(kpiId ? "KPI updated successfully" : "KPI created successfully");
         } catch (error) {
           console.error("SAVE KPI ERROR:", error);
@@ -8805,12 +9095,28 @@ function fillForm(data) {
         updateParameterKpiSummary();
       }
 
-      async function openCreateParameterModal() {
-        await loadKpiNames();
+      async function openCreateParameterModal(defaults = {}) {
+        await loadKpiNames(defaults.kpi_id || "");
         resetParameterForm();
+        const parameterDefaults = {
+          parameter_kpi_id: defaults.kpi_id || "",
+          parameter_target_value: defaults.target_value ?? "",
+          parameter_target_unit: defaults.target_unit || "",
+          parameter_set_by_people_id: defaults.set_by_people_id || responsibleId || ""
+        };
+        populateAllocationLookupOptions(parameterDefaults);
+        Object.keys(parameterDefaults).forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.value = parameterDefaults[id] ?? "";
+          }
+        });
+        syncDashboardResponsibleAssignment();
+        updateParameterOverview();
+        updateParameterKpiSummary();
         document.getElementById("parameterModalTitle").textContent = "Create KPI Target Allocation";
         document.getElementById("parameterModalSubtitle").textContent =
-          "Create a KPI target allocation with scope, target dates and approval details.";
+          "Create a KPI target allocation. The responsible defaults to " + (responsibleName || "this person") + ", but you can reassign it before saving.";
         openParameterModal();
       }
 
@@ -8827,7 +9133,7 @@ function fillForm(data) {
           fillParameterForm(data);
           document.getElementById("parameterModalTitle").textContent = "Edit KPI Target Allocation";
           document.getElementById("parameterModalSubtitle").textContent =
-            "Update scope, target values, dates and approval details in one clear workflow.";
+            "Update the target allocation details and change the responsible if needed.";
           const parameterDeleteBtn = document.getElementById("parameterDeleteBtn");
           if (parameterDeleteBtn) {
             parameterDeleteBtn.style.display = "inline-flex";
@@ -11190,10 +11496,12 @@ const getKpiResultDisplayPeriod = (row = {}) =>
   "";
 
 const loadFormResponsibleContext = async (responsibleId) => {
-  const peopleId = normalizeOptionalIntegerInput(responsibleId);
-  const fallbackName = peopleId ? `People #${peopleId}` : "KPI Owner";
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
+  const fallbackName = normalizedResponsibleId
+    ? `Responsible #${normalizedResponsibleId}`
+    : "KPI Owner";
 
-  if (!peopleId) {
+  if (!normalizedResponsibleId) {
     return {
       responsible_id: null,
       people_id: null,
@@ -11205,46 +11513,39 @@ const loadFormResponsibleContext = async (responsibleId) => {
   }
 
   try {
-    const peopleRes = await pool.query(
-      `
-      SELECT
-        p.people_id,
-        p.first_name,
-        p.name,
-        p.email,
-        u.unit_name AS plant_name
-      FROM public.people p
-      LEFT JOIN public.unit u ON u.unit_id = p.work_at_unit_id
-      WHERE p.people_id = $1
-      LIMIT 1
-      `,
-      [peopleId]
-    );
-
-    const row = peopleRes.rows[0];
-    if (!row) {
-      return {
-        responsible_id: peopleId,
-        people_id: peopleId,
-        name: fallbackName,
-        email: null,
-        plant_name: "Allocated scope",
-        department_name: ""
-      };
-    }
+    const legacyResponsible = await loadLegacyResponsibleIdentity(normalizedResponsibleId);
+    const matchedPeopleFromLegacy = legacyResponsible
+      ? await findPeopleContextForLegacyResponsible(legacyResponsible)
+      : null;
+    const directPeopleContext = await loadPeopleContextByPeopleId(normalizedResponsibleId);
+    const resolvedPeopleContext = matchedPeopleFromLegacy || directPeopleContext;
 
     return {
-      responsible_id: peopleId,
-      people_id: peopleId,
-      name: getPeopleDisplayName(row) || fallbackName,
-      email: normalizeOptionalTextInput(row.email),
-      plant_name: normalizeOptionalTextInput(row.plant_name) || "Allocated scope",
-      department_name: ""
+      responsible_id: normalizedResponsibleId,
+      people_id: resolvedPeopleContext?.people_id ?? directPeopleContext?.people_id ?? null,
+      name:
+        resolvedPeopleContext?.name ||
+        legacyResponsible?.name ||
+        directPeopleContext?.name ||
+        fallbackName,
+      email:
+        resolvedPeopleContext?.email ||
+        legacyResponsible?.email ||
+        directPeopleContext?.email ||
+        null,
+      plant_name:
+        resolvedPeopleContext?.plant_name ||
+        directPeopleContext?.plant_name ||
+        "Allocated scope",
+      department_name:
+        resolvedPeopleContext?.department_name ||
+        directPeopleContext?.department_name ||
+        ""
     };
   } catch (error) {
     return {
-      responsible_id: peopleId,
-      people_id: peopleId,
+      responsible_id: normalizedResponsibleId,
+      people_id: normalizedResponsibleId,
       name: fallbackName,
       email: null,
       plant_name: "Allocated scope",
@@ -11876,7 +12177,9 @@ const updateActionPlanCorrectiveActionStatus = async (correctiveActionId, nextSt
 const getResponsibleWithKPIs = async (responsibleId, week) => {
   const responsible = await loadFormResponsibleContext(responsibleId);
   const normalizedWeek = normalizeOptionalTextInput(week);
-  const responsibleNumericId = normalizeOptionalIntegerInput(responsibleId);
+  const responsibleNumericId = normalizeOptionalIntegerInput(
+    responsible?.people_id ?? responsibleId
+  );
   const correctiveActionsEnabled = await canUseActionPlanCorrectiveActions();
 
   const kpiRes = await pool.query(
@@ -11888,7 +12191,7 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
       COALESCE(subject_link.subject_name, k.kpi_sub_title, k.kpi_name, 'KPI') AS subject,
       COALESCE(k.kpi_name, k.kpi_sub_title, 'Untitled KPI') AS indicator_sub_title,
       COALESCE(kta.target_unit, k.unit) AS unit,
-      COALESCE(kta.target_value, k.target_value) AS target,
+      COALESCE(latest_result.target_value, kta.target_value, k.target_value) AS target,
       k.min_value AS min,
       k.max_value AS max,
       k.tolerance_type,
@@ -11898,8 +12201,8 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
       k.kpi_explanation AS definition,
       k.calculation_on,
       k.target_auto_adjustment,
-      k.high_limit,
-      k.low_limit,
+      COALESCE(latest_result.upper_limit, k.high_limit) AS high_limit,
+      COALESCE(latest_result.lower_limit, k.low_limit) AS low_limit,
       k.target_direction,
       latest_result.raw_value AS value,
       latest_result.comments AS latest_comment,
@@ -11917,6 +12220,9 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
     LEFT JOIN LATERAL (
       SELECT
         kr.raw_value,
+        kr.target_value,
+        kr.upper_limit,
+        kr.lower_limit,
         kr.comments,
         kr.recorded_at
       FROM public.kpi_result kr
@@ -13319,11 +13625,11 @@ app.get("/corrective-actions-bulk", async (req, res) => {
         <div style="text-align:center;padding:60px;font-family:'Segoe UI',sans-serif;">
           <h2 style="color:#4caf50;">No Open Corrective Actions</h2>
           <p>All corrective actions for week ${week} have been completed.</p>
-          <a href="/dashboard?responsible_id=${responsible_id}"
-             style="display:inline-block;padding:12px 25px;background:#0078D7;color:white;
-                    text-decoration:none;border-radius:6px;font-weight:bold;">
-            Go to Dashboard
-          </a>
+          <a href="/dashboard?responsible_id=${encodeURIComponent(responsible_id)}"
+         style="display:inline-block;padding:12px 25px;background:#0078D7;color:white;
+          text-decoration:none;border-radius:6px;font-weight:bold;">
+          Go to Dashboard
+         </a>
         </div>`);
     }
 
@@ -13922,7 +14228,7 @@ app.post("/redirect", async (req, res) => {
         <h1 style="color:#28a745;">KPI Submitted Successfully!</h1>
         <p>Your KPI values for ${normalizedWeek} have been saved.</p>
      
-        <a href="/responsible/${encodeURIComponent(responsible_id)}/dashboard" class="btn">Go to Dashboard</a>
+        <a href="/dashboard?responsible_id=${encodeURIComponent(responsible_id)}" class="btn">Go to Dashboard</a>
       </div></body></html>`);
   } catch (err) {
     res.status(err.statusCode || 500).send(`<h2 style="color:red;">âŒ Failed: ${err.message}</h2>`);
@@ -15742,7 +16048,6 @@ app.get("/form", async (req, res) => {
             <div class="info-section">
               <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
               <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
-              <div class="info-row"><div class="info-label">Department</div><div class="info-value">${responsible.department_name}</div></div>
               <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
             </div>
 
@@ -16968,17 +17273,30 @@ async function sendAssistantPrompt(message) {
           function getThresholdLines(lowLimit, target, highLimit) {
             const lines = [];
             const low = parseFloat(lowLimit);
+            const targetValue = parseFloat(target);
             const high = parseFloat(highLimit);
             const hasLow = !isNaN(low);
+            const hasTarget = !isNaN(targetValue);
             const hasHigh = !isNaN(high);
 
             if (hasHigh) {
               lines.push({
                 key:"high_limit",
-                label:"High",
+                label:"Upper Limit",
                 value:high,
-                borderColor:"#5f7f45",
-                borderDash:[],
+                borderColor:"#f59e0b",
+                borderDash:[8,5],
+                borderWidth:2
+              });
+            }
+
+            if (hasTarget) {
+              lines.push({
+                key:"target",
+                label:"Target",
+                value:targetValue,
+                borderColor:"#22c55e",
+                borderDash:[8,5],
                 borderWidth:2
               });
             }
@@ -16986,21 +17304,10 @@ async function sendAssistantPrompt(message) {
             if (hasLow) {
               lines.push({
                 key:"low_limit",
-                label:"Low",
+                label:"Lower Limit",
                 value:low,
-                borderColor:"#5f7f45",
-                borderDash:[],
-                borderWidth:2
-              });
-            }
-
-            if (!hasLow && !hasHigh && !isNaN(parseFloat(target))) {
-              lines.push({
-                key:"target",
-                label:"Target",
-                value:parseFloat(target),
-                borderColor:"#64748b",
-                borderDash:[6,4],
+                borderColor:"#ef4444",
+                borderDash:[8,5],
                 borderWidth:2
               });
             }
@@ -17892,79 +18199,105 @@ app.get("/dashboard", async (req, res) => {
     if (!responsibleId) {
       return res.status(400).send("Missing responsible_id");
     }
+    const responsible_id = responsibleId;
 
-    const passthroughParams = new URLSearchParams();
-    Object.entries(req.query || {}).forEach(([key, value]) => {
-      if (key === "responsible_id") return;
-
-      if (Array.isArray(value)) {
-        value.forEach((entry) => {
-          if (entry !== undefined && entry !== null) {
-            passthroughParams.append(key, String(entry));
-          }
-        });
-        return;
-      }
-
-      if (value !== undefined && value !== null) {
-        passthroughParams.append(key, String(value));
-      }
-    });
-
-    const dashboardTarget =
-      `/responsible/${encodeURIComponent(responsibleId)}/dashboard` +
-      (passthroughParams.toString() ? `?${passthroughParams.toString()}` : "");
-
-    return res.redirect(dashboardTarget);
-
-    const resResp = await pool.query(
-      `SELECT r.*, p.name AS plant_name, d.name AS department_name
-       FROM public."Responsible" r
-       JOIN public."Plant" p ON r.plant_id = p.plant_id
-       JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`,
-      [responsible_id]
+    const responsibleContext = await loadFormResponsibleContext(responsible_id);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsible_id
     );
 
-    const responsible = resResp.rows[0];
-    if (!responsible) throw new Error("Responsible not found");
+    if (!responsiblePeopleId) {
+      throw new Error("Responsible not found");
+    }
+
+    const responsible = {
+      name: responsibleContext?.name || `Person #${responsiblePeopleId}`,
+      plant_name: responsibleContext?.plant_name || "Allocated scope",
+      department_name: responsibleContext?.department_name || ""
+    };
 
     const kpiRes = await pool.query(
-      `SELECT DISTINCT ON (h.week, h.kpi_id)
-              h.hist_id,
-              h.kpi_values_id,
-              h.new_value as value,
-              h.week,
-              h.kpi_id,
-              h.updated_at,
-              k.subject,
-              k.indicator_sub_title,
-              k.unit,
-              k.target,
-              k.min,
-              k.max,
-              k.tolerance_type,
-              k.up_tolerance,
-              k.low_tolerance,
-              k.frequency,
-              k.definition,
-              k.calculation_on,
-              k.target_auto_adjustment,
-              k.high_limit,
-              k.low_limit
-       FROM public.kpi_values_hist26 h
-       JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-       WHERE h.responsible_id = $1
-       ORDER BY h.week DESC, h.kpi_id ASC, h.updated_at DESC`,
-      [responsible_id]
+      `
+      WITH ranked_results AS (
+        SELECT
+          kr.kpi_result_id,
+          kr.kpi_target_allocation_id AS kpi_values_id,
+          kr.kpi_target_allocation_id,
+          kr.kpi_id,
+          kr.result_date,
+          kr.week,
+          kr.period_label,
+          kr.raw_value AS value,
+          kr.lower_limit AS result_low_limit,
+          kr.upper_limit AS result_high_limit,
+          kr.target_value AS result_target_value,
+          kr.unit AS result_unit,
+          kr.recorded_at AS updated_at,
+          DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_bucket,
+          ROW_NUMBER() OVER (
+            PARTITION BY DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)), kr.kpi_target_allocation_id
+            ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC, kr.kpi_result_id DESC
+          ) AS rn
+        FROM public.kpi_result kr
+        WHERE kr.recorded_by_people_id = $1
+      )
+      SELECT
+        rr.kpi_result_id AS hist_id,
+        rr.kpi_values_id,
+        rr.kpi_target_allocation_id,
+        rr.week,
+        rr.period_label,
+        rr.result_date,
+        rr.kpi_id,
+        rr.value,
+        rr.updated_at,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS subject,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, '') AS indicator_sub_title,
+        COALESCE(rr.result_unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(rr.result_target_value, kta.target_value, k.target_value) AS target,
+        k.min_value AS min,
+        k.max_value AS max,
+        k.tolerance_type,
+        k.up_tolerance,
+        k.low_tolerance,
+        k.frequency,
+        k.kpi_explanation AS definition,
+        k.calculation_on,
+        k.target_auto_adjustment,
+        COALESCE(rr.result_high_limit, k.high_limit) AS high_limit,
+        COALESCE(rr.result_low_limit, k.low_limit) AS low_limit,
+        k.target_direction
+      FROM ranked_results rr
+      JOIN public.kpi k
+        ON k.kpi_id = rr.kpi_id
+      LEFT JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = rr.kpi_target_allocation_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = rr.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE rr.rn = 1
+      ORDER BY
+        rr.month_bucket DESC,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') ASC,
+        rr.kpi_result_id DESC
+      `,
+      [responsiblePeopleId]
     );
 
     const monthMap = new Map();
 
     kpiRes.rows.forEach((kpi) => {
-      if (!kpi.updated_at) return;
+      const sourceDate = kpi.result_date || kpi.updated_at;
+      if (!sourceDate) return;
 
-      const date = new Date(kpi.updated_at);
+      const date = new Date(sourceDate);
+      if (isNaN(date.getTime())) return;
       const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
 
       if (!monthMap.has(monthKey)) monthMap.set(monthKey, []);
@@ -17981,6 +18314,7 @@ app.get("/dashboard", async (req, res) => {
       const numericValue = normalizeMetricNumberByUnit(value, unit);
       if (numericValue === null) return "Not filled";
       const formatted = numericValue.toLocaleString("en-US", {
+        useGrouping: false,
         minimumFractionDigits: 0,
         maximumFractionDigits: isPercentageUnit(unit) ? 1 : 2
       });
