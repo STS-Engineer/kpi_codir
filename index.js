@@ -7103,6 +7103,7 @@ const multisiteUnitResponsibleMap = {
   "Site-Mexico": "Hector OLIVARES",
   "Site-Tianjin": "Yang YANG",
   "Site-Tunisia-SAME": "Imed Ben ALAYA",
+  "Site-Tunisia-SameService": "Fethi CHAOUACHI",
   "Site-Tunisia-SCEET": "Imed Ben ALAYA"
 };
 
