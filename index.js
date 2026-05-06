@@ -7093,16 +7093,7 @@ function handleParameterKpiTypeChange() {
   }
 }
 
-function autoFillSetByFromUnit() {
-  const plantSelect = document.getElementById("parameter_plant_id");
-  const setBySelect = document.getElementById("parameter_set_by_people_id");
-  if (!plantSelect || !setBySelect) return;
-  if (String(setBySelect.value || "").trim()) return;
-
-  const selectedUnitText =
-    plantSelect.options[plantSelect.selectedIndex]?.textContent?.trim() || "";
-
-const unitToPerson = {
+const multisiteUnitResponsibleMap = {
   "Site-Anhui": "Allan RIEGEL",
   "Site-France-Poitiers": "Florence PARADIS",
   "Site-Germany": "Dagmar ANSINN",
@@ -7115,15 +7106,33 @@ const unitToPerson = {
   "Site-Tunisia-SCEET": "Imed Ben ALAYA"
 };
 
-  const personName = unitToPerson[selectedUnitText];
+function autoFillSetByFromUnit() {
+  const normalizedKpiType = getParameterFieldValue("parameter_kpi_type").toLowerCase();
+  const plantSelect = document.getElementById("parameter_plant_id");
+  const setBySelect = document.getElementById("parameter_set_by_people_id");
+  const setByHint = document.getElementById("parameter_set_by_people_hint");
+  if (!plantSelect || !setBySelect || normalizedKpiType !== "multisite") return;
+
+  const selectedUnitText =
+    plantSelect.options[plantSelect.selectedIndex]?.textContent?.trim() || "";
+  const personName = multisiteUnitResponsibleMap[selectedUnitText];
   if (!personName) return;
 
-  const matchingOption = Array.from(setBySelect.options).find(option =>
-    option.textContent.trim().toLowerCase() === personName.toLowerCase()
+  const normalizeLabel = (value) =>
+    String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const matchingOption = Array.from(setBySelect.options).find(
+    (option) => normalizeLabel(option.textContent) === normalizeLabel(personName)
   );
 
   if (matchingOption) {
     setBySelect.value = matchingOption.value;
+    setBySelect.dataset.autoAssignedFromUnit = "true";
+    if (setByHint) {
+      setByHint.textContent = "Auto-filled from selected unit: " + personName + ". You can still change it.";
+    }
+    if (typeof updateParameterOverview === "function") {
+      updateParameterOverview();
+    }
   }
 }
 
