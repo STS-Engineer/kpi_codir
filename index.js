@@ -4426,6 +4426,485 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         letter-spacing: 0.08em;
       }
 
+      .parameter-section-shell {
+        background:
+          radial-gradient(circle at top center, rgba(37,99,235,0.08), transparent 34%),
+          linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(245,249,255,0.96) 100%);
+        border: 1px solid rgba(148,163,184,0.18);
+        border-radius: 34px;
+        box-shadow: 0 26px 58px rgba(15,23,42,0.10);
+        padding: 18px;
+      }
+
+      .parameter-matrix-hero {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+        flex-wrap: wrap;
+        padding: 14px 14px 22px;
+      }
+
+      .parameter-matrix-title h2 {
+        font-size: 28px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -0.04em;
+      }
+
+      .parameter-matrix-title p {
+        margin-top: 10px;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #64748b;
+        max-width: 640px;
+      }
+
+      .parameter-matrix-add-btn {
+        min-width: 190px;
+        justify-content: center;
+      }
+
+      .parameter-matrix-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        padding: 0 14px 18px;
+      }
+
+      .parameter-matrix-search {
+        flex: 1;
+        min-width: 280px;
+        max-width: 440px;
+      }
+
+      .parameter-results-meta {
+        font-size: 13px;
+        font-weight: 800;
+        color: #64748b;
+      }
+
+      .parameter-matrix-table-shell {
+        background: rgba(255,255,255,0.96);
+        border: 1px solid rgba(148,163,184,0.18);
+        border-radius: 28px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.92), 0 16px 34px rgba(15,23,42,0.08);
+        overflow: hidden;
+      }
+
+      .parameter-matrix-table-wrap {
+        overflow-x: auto;
+      }
+
+      .parameter-matrix-table {
+        width: 100%;
+        min-width: 1260px;
+        border-collapse: separate;
+        border-spacing: 0;
+      }
+
+      .parameter-matrix-table thead tr {
+        background:
+          radial-gradient(circle at top center, rgba(37,99,235,0.05), transparent 38%),
+          linear-gradient(180deg, #fbfdff 0%, #eef5ff 100%);
+      }
+
+      .parameter-matrix-table th {
+        padding: 18px 22px;
+        text-align: left;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: #64748b;
+        border-bottom: 1px solid rgba(226,232,240,0.95);
+        white-space: nowrap;
+      }
+
+      .parameter-matrix-table td {
+        padding: 22px;
+        border-bottom: 1px solid rgba(226,232,240,0.92);
+        background: rgba(255,255,255,0.98);
+        vertical-align: middle;
+        color: #0f172a;
+      }
+
+      .parameter-matrix-table tbody tr:last-child td {
+        border-bottom: none;
+      }
+
+      .parameter-matrix-table tbody tr:hover td {
+        background: #f8fbff;
+      }
+
+      .parameter-matrix-kpi-title {
+        font-size: 15px;
+        font-weight: 900;
+        color: #0f172a;
+        line-height: 1.4;
+      }
+
+      .parameter-matrix-kpi-path {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #64748b;
+        line-height: 1.65;
+      }
+
+      .parameter-matrix-cell-main {
+        font-size: 14px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.5;
+      }
+
+      .parameter-matrix-cell-sub {
+        margin-top: 7px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.55;
+      }
+
+      .parameter-matrix-target-main {
+        font-size: 16px;
+        font-weight: 900;
+        color: #0f172a;
+        line-height: 1.35;
+      }
+
+      .parameter-matrix-target-sub {
+        margin-top: 7px;
+        font-size: 12px;
+        color: #64748b;
+      }
+
+      .parameter-status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 14px;
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        border: 1px solid transparent;
+      }
+
+      .parameter-status-badge::before {
+        content: "";
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.9;
+      }
+
+      .parameter-status-draft {
+        background: rgba(245,158,11,0.12);
+        color: #d97706;
+        border-color: rgba(245,158,11,0.14);
+      }
+
+      .parameter-status-active {
+        background: rgba(16,185,129,0.12);
+        color: #059669;
+        border-color: rgba(16,185,129,0.14);
+      }
+
+      .parameter-status-approved {
+        background: rgba(37,99,235,0.12);
+        color: #2563eb;
+        border-color: rgba(37,99,235,0.14);
+      }
+
+      .parameter-status-closed {
+        background: rgba(148,163,184,0.16);
+        color: #475569;
+        border-color: rgba(148,163,184,0.20);
+      }
+
+      .parameter-status-neutral {
+        background: rgba(226,232,240,0.75);
+        color: #475569;
+        border-color: rgba(203,213,225,0.9);
+      }
+
+      .parameter-owner {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .parameter-owner-avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, rgba(191,219,254,0.92), rgba(167,243,208,0.88));
+        color: #1d4ed8;
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+      }
+
+      .parameter-owner-name {
+        font-size: 14px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.4;
+      }
+
+      .parameter-owner-sub {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+      }
+
+      .parameter-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
+      .parameter-action-btn {
+        min-width: 84px;
+        justify-content: center;
+      }
+
+      .parameter-matrix-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 16px 22px;
+        border-top: 1px solid rgba(226,232,240,0.86);
+        background: linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(248,250,252,0.94) 100%);
+        font-size: 13px;
+        color: #64748b;
+        font-weight: 700;
+      }
+
+      .kpi-matrix-shell {
+        background:
+          radial-gradient(circle at top center, rgba(37,99,235,0.08), transparent 34%),
+          linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(245,249,255,0.96) 100%);
+        border: 1px solid rgba(148,163,184,0.18);
+        border-radius: 34px;
+        box-shadow: 0 26px 58px rgba(15,23,42,0.10);
+        padding: 18px;
+      }
+
+      .kpi-matrix-hero {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+        flex-wrap: wrap;
+        padding: 14px 14px 22px;
+      }
+
+      .kpi-matrix-title h2 {
+        font-size: 28px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -0.04em;
+      }
+
+      .kpi-matrix-title p {
+        margin-top: 10px;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #64748b;
+        max-width: 640px;
+      }
+
+      .kpi-matrix-add-btn {
+        min-width: 170px;
+        justify-content: center;
+      }
+
+      .kpi-matrix-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        padding: 0 14px 18px;
+      }
+
+      .kpi-matrix-search {
+        flex: 1;
+        min-width: 280px;
+        max-width: 440px;
+      }
+
+      .kpi-results-meta {
+        font-size: 13px;
+        font-weight: 800;
+        color: #64748b;
+      }
+
+      .kpi-matrix-table-shell {
+        background: rgba(255,255,255,0.96);
+        border: 1px solid rgba(148,163,184,0.18);
+        border-radius: 28px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.92), 0 16px 34px rgba(15,23,42,0.08);
+        overflow: hidden;
+      }
+
+      .kpi-matrix-table-wrap {
+        overflow-x: auto;
+      }
+
+      .kpi-matrix-table {
+        width: 100%;
+        min-width: 1220px;
+        border-collapse: separate;
+        border-spacing: 0;
+      }
+
+      .kpi-matrix-table thead tr {
+        background:
+          radial-gradient(circle at top center, rgba(37,99,235,0.05), transparent 38%),
+          linear-gradient(180deg, #fbfdff 0%, #eef5ff 100%);
+      }
+
+      .kpi-matrix-table th {
+        padding: 18px 22px;
+        text-align: left;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: #64748b;
+        border-bottom: 1px solid rgba(226,232,240,0.95);
+        white-space: nowrap;
+      }
+
+      .kpi-matrix-table td {
+        padding: 22px;
+        border-bottom: 1px solid rgba(226,232,240,0.92);
+        background: rgba(255,255,255,0.98);
+        vertical-align: middle;
+        color: #0f172a;
+      }
+
+      .kpi-matrix-table tbody tr:last-child td {
+        border-bottom: none;
+      }
+
+      .kpi-matrix-table tbody tr:hover td {
+        background: #f8fbff;
+      }
+
+      .kpi-matrix-kpi-title {
+        font-size: 15px;
+        font-weight: 900;
+        color: #0f172a;
+        line-height: 1.4;
+      }
+
+      .kpi-matrix-kpi-path {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #64748b;
+        line-height: 1.65;
+      }
+
+      .kpi-matrix-cell-main {
+        font-size: 14px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.5;
+      }
+
+      .kpi-matrix-cell-sub {
+        margin-top: 7px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.55;
+      }
+
+      .kpi-matrix-target-main {
+        font-size: 16px;
+        font-weight: 900;
+        color: #0f172a;
+        line-height: 1.35;
+      }
+
+      .kpi-matrix-target-sub {
+        margin-top: 7px;
+        font-size: 12px;
+        color: #64748b;
+      }
+
+      .kpi-matrix-owner {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .kpi-matrix-owner-avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, rgba(191,219,254,0.92), rgba(196,181,253,0.88));
+        color: #1d4ed8;
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+      }
+
+      .kpi-matrix-owner-name {
+        font-size: 14px;
+        font-weight: 800;
+        color: #0f172a;
+        line-height: 1.4;
+      }
+
+      .kpi-matrix-owner-sub {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+      }
+
+      .kpi-matrix-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
+      .kpi-matrix-action-btn {
+        min-width: 84px;
+        justify-content: center;
+      }
+
+      .kpi-matrix-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 16px 22px;
+        border-top: 1px solid rgba(226,232,240,0.86);
+        background: linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(248,250,252,0.94) 100%);
+        font-size: 13px;
+        color: #64748b;
+        font-weight: 700;
+      }
+
       .parameter-modal .modal-overview {
         grid-template-columns: repeat(4, minmax(0, 1fr));
       }
@@ -5397,6 +5876,18 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         .parameter-kpi-summary {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+
+        .parameter-matrix-hero,
+        .parameter-matrix-toolbar {
+          padding-left: 8px;
+          padding-right: 8px;
+        }
+
+        .kpi-matrix-hero,
+        .kpi-matrix-toolbar {
+          padding-left: 8px;
+          padding-right: 8px;
+        }
       }
 
       @media (max-width: 820px) {
@@ -5434,6 +5925,34 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
         .parameter-kpi-summary {
           grid-template-columns: 1fr;
+        }
+
+        .parameter-matrix-hero {
+          padding: 4px 4px 18px;
+        }
+
+        .parameter-matrix-toolbar {
+          padding: 0 4px 16px;
+        }
+
+        .parameter-matrix-add-btn,
+        .parameter-matrix-search {
+          width: 100%;
+          max-width: none;
+        }
+
+        .kpi-matrix-hero {
+          padding: 4px 4px 18px;
+        }
+
+        .kpi-matrix-toolbar {
+          padding: 0 4px 16px;
+        }
+
+        .kpi-matrix-add-btn,
+        .kpi-matrix-search {
+          width: 100%;
+          max-width: none;
         }
 
         .field.col-3,
@@ -6325,20 +6844,24 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             </div>
           </div>
 
-          <div class="toolbar">
-            <div class="search-wrap">
-              <input id="search" class="search" placeholder="Search KPI by title, subject, frequency..." />
+          <div class="kpi-matrix-shell">
+            <div class="kpi-matrix-hero">
+              <div class="kpi-matrix-title">
+                <h2>KPI Matrix</h2>
+                <p>View and manage all KPI definitions with direct visibility on KPI subject, KPI name, KPI code, unit, direction, and actions.</p>
+              </div>
+              <button class="btn btn-primary kpi-matrix-add-btn" type="button" onclick="openCreateModal()">+ Add KPI</button>
             </div>
-          </div>
 
-          <div class="section-head">
-            <div>
-              <h2>KPI Portfolio</h2>
-              <p>One KPI per line with the title, subtitle and a quick edit action.</p>
+            <div class="kpi-matrix-toolbar">
+              <div class="search-wrap kpi-matrix-search">
+                <input id="search" class="search" placeholder="Search KPI by subject, name, code, unit or direction..." />
+              </div>
+              <div class="kpi-results-meta" id="kpiResultsMeta">0 KPIs</div>
             </div>
-          </div>
 
-          <div id="grid" class="grid"></div>
+            <div id="grid"></div>
+          </div>
         </section>
 
         <section id="myKpisSection" style="display:none;">
@@ -6353,21 +6876,23 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         </section>
 
         <section id="consultTargetAllocationsSection" style="display:none;">
-          <div class="section-head">
-            <div>
-              <h2>Consult Target Allocation</h2>
-              <p>Consult existing target allocations and quickly edit or delete them.</p>
-            </div>
-          </div>
-
-          <div class="toolbar">
-            <div class="search-wrap">
-              <input id="parameterSearch" class="search" placeholder="Search target allocation by KPI, subject, scope..." />
-            </div>
-          </div>
-
           <div class="parameter-section-shell">
-            <div id="parameterGrid" class="grid"></div>
+            <div class="parameter-matrix-hero">
+              <div class="parameter-matrix-title">
+                <h2>KPI Matrix</h2>
+                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and target value.</p>
+              </div>
+              <button class="btn btn-primary parameter-matrix-add-btn" type="button" onclick="openCreateParameterModal()">+ Add Target Allocation</button>
+            </div>
+
+            <div class="parameter-matrix-toolbar">
+              <div class="search-wrap parameter-matrix-search">
+                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or target value..." />
+              </div>
+              <div class="parameter-results-meta" id="parameterResultsMeta">0 allocations</div>
+            </div>
+
+            <div id="parameterGrid"></div>
           </div>
         </section>
       </main>
@@ -7725,9 +8250,35 @@ function getLastPathSegment(pathText) {
   return parts.length ? parts[parts.length - 1] : normalizedText;
 }
 
+function getKpiCategory(row) {
+  const parts = splitParameterPath(row.full_subject_path || row.subject || row.indicator_title || "");
+  if (parts.length >= 2) return parts[parts.length - 2];
+  if (parts.length === 1) return parts[0];
+  return String(row.indicator_title || "").trim() || "General";
+}
+
+function getKpiStatusClass(status) {
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (normalizedStatus === "active") return "parameter-status-active";
+  if (normalizedStatus === "draft") return "parameter-status-draft";
+  if (normalizedStatus === "approved") return "parameter-status-approved";
+  if (normalizedStatus === "closed" || normalizedStatus === "archived") return "parameter-status-closed";
+  if (normalizedStatus === "inactive") return "parameter-status-neutral";
+  return "parameter-status-neutral";
+}
+
+function updateKpiResultsMeta(visibleCount) {
+  const metaEl = document.getElementById("kpiResultsMeta");
+  if (!metaEl) return;
+
+  const shown = Number.isFinite(visibleCount) ? visibleCount : 0;
+  metaEl.textContent = shown + " KPI" + (shown === 1 ? "" : "s");
+}
+
 function renderKpis(rows) {
   currentRows = rows || [];
   updateStats(currentRows);
+  updateKpiResultsMeta(currentRows.length);
 
   const grid = document.getElementById("grid");
 
@@ -7737,44 +8288,59 @@ function renderKpis(rows) {
   }
 
   grid.innerHTML = \`
-    <div class="kpi-table-shell">
-      <div class="kpi-table-wrap">
-        <table class="kpi-table">
+    <div class="kpi-matrix-table-shell">
+      <div class="kpi-matrix-table-wrap">
+        <table class="kpi-matrix-table">
           <thead>
             <tr>
-              <th>Category</th>
-              <th>KPI</th>
-              <th class="kpi-table-actions"></th>
+              <th>KPI Subject</th>
+              <th>KPI Name</th>
+              <th>KPI Code</th>
+              <th>Unit</th>
+              <th>Direction</th>
+              <th class="parameter-table-actions">Actions</th>
             </tr>
           </thead>
           <tbody>
             \${currentRows.map(row => \`
               <tr>
                 <td>
-                  <div class="kpi-row-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "Untitled KPI")}</div>
-                  <div class="allocation-row-meta">\${escapeHtml([
-                    row.full_subject_path || row.subject || "",
-                    row.set_by_people_display_name ? 'Responsible: ' + row.set_by_people_display_name : ''
-                  ].filter(Boolean).join(" • ") || "No responsible assignment yet")}</div>
+                  <div class="kpi-matrix-kpi-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "No subject")}</div>
+                  <div class="kpi-matrix-kpi-path">\${escapeHtml(row.full_subject_path || row.subject || "No KPI hierarchy attached")}</div>
                 </td>
                 <td>
-                  <div class="kpi-row-subtitle">\${escapeHtml(row.indicator_sub_title || "-")}</div>
-                  <div class="allocation-row-meta">\${escapeHtml([
-                    row.frequency ? 'Frequency: ' + row.frequency : '',
-                    row.target !== null && row.target !== undefined && String(row.target).trim() !== ''
-                      ? 'Target: ' + formatParameterDisplayValue(row.target) + (row.allocation_target_unit || row.unit ? ' ' + (row.allocation_target_unit || row.unit) : '')
-                      : '',
-                    row.status ? 'Status: ' + row.status : ''
+                  <div class="kpi-matrix-kpi-title">\${escapeHtml(row.indicator_sub_title || "Untitled KPI")}</div>
+                  <div class="kpi-matrix-cell-sub">\${escapeHtml([
+                    row.status ? "Status: " + row.status : "",
+                    row.frequency ? "Frequency: " + row.frequency : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
-              <td class="kpi-table-actions">
-  <button type="button" class="action-btn edit-btn" onclick="openEditModal(\${row.kpi_id})">Edit KPI</button>
-  <button type="button" class="action-btn delete-btn" onclick="deleteKpi(\${row.kpi_id})">Delete</button>
-</td>
+                <td>
+                  <div class="kpi-matrix-cell-main">\${escapeHtml(row.kpi_code || "-")}</div>
+                  <div class="kpi-matrix-cell-sub">\${escapeHtml(row.calculation_mode ? "Mode: " + row.calculation_mode : "No KPI code")}</div>
+                </td>
+                <td>
+                  <div class="kpi-matrix-cell-main">\${escapeHtml(row.unit || "-")}</div>
+                  <div class="kpi-matrix-cell-sub">\${escapeHtml(row.target !== null && row.target !== undefined && String(row.target).trim() !== "" ? "Target: " + formatParameterDisplayValue(row.target) : "No unit target")}</div>
+                </td>
+                <td>
+                  <div class="kpi-matrix-cell-main">\${escapeHtml(row.target_direction || "-")}</div>
+                  <div class="kpi-matrix-cell-sub">\${escapeHtml(row.target_auto_adjustment ? "Auto adjust: " + row.target_auto_adjustment : "No direction setting")}</div>
+                </td>
+                <td class="parameter-table-actions">
+                  <div class="kpi-matrix-actions">
+                    <button type="button" class="action-btn edit-btn kpi-matrix-action-btn" onclick="openEditModal(\${row.kpi_id})">Edit</button>
+                    <button type="button" class="action-btn delete-btn kpi-matrix-action-btn" onclick="deleteKpi(\${row.kpi_id})">Delete</button>
+                  </div>
+                </td>
               </tr>
             \`).join("")}
           </tbody>
         </table>
+      </div>
+      <div class="kpi-matrix-footer">
+        <span>\${escapeHtml("Showing " + currentRows.length + " KPI" + (currentRows.length === 1 ? "" : "s"))}</span>
+        <span>KPI definition matrix</span>
       </div>
     </div>
   \`;
@@ -7841,55 +8407,155 @@ function renderKpis(rows) {
         });
       }
 
+      function splitParameterPath(pathText) {
+        return String(pathText || "")
+          .split("/")
+          .map((part) => String(part || "").trim())
+          .filter(Boolean);
+      }
+
+      function getParameterCategory(row) {
+        const parts = splitParameterPath(row.kpi_subject || row.kpi_group || row.kpi_name || "");
+        if (parts.length >= 2) return parts[parts.length - 2];
+        if (parts.length === 1) return parts[0];
+        return "General";
+      }
+
+      function buildParameterScopeSummary(row) {
+        return [
+          row.plant_name,
+          row.zone_name,
+          row.unit_name,
+          row.function,
+          row.product_line_name,
+          row.product_name,
+          row.market_name,
+          row.customer_name
+        ]
+          .filter(Boolean)
+          .join(" / ");
+      }
+
+      function getParameterStatusClass(status) {
+        const normalizedStatus = String(status || "").trim().toLowerCase();
+        if (normalizedStatus === "draft") return "parameter-status-draft";
+        if (normalizedStatus === "active") return "parameter-status-active";
+        if (normalizedStatus === "approved") return "parameter-status-approved";
+        if (normalizedStatus === "closed") return "parameter-status-closed";
+        return "parameter-status-neutral";
+      }
+
+      function getParameterPersonInitials(nameText) {
+        const parts = String(nameText || "")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2);
+
+        if (!parts.length) return "NA";
+        return parts.map((part) => part.charAt(0).toUpperCase()).join("");
+      }
+
+      function updateParameterResultsMeta(visibleCount, totalCount = visibleCount) {
+        const metaEl = document.getElementById("parameterResultsMeta");
+        if (!metaEl) return;
+
+        const shown = Number.isFinite(visibleCount) ? visibleCount : 0;
+        const total = Number.isFinite(totalCount) ? totalCount : shown;
+
+        if (!shown) {
+          metaEl.textContent = total > 0 ? "No matching allocations" : "0 allocations";
+          return;
+        }
+
+        metaEl.textContent = shown === total
+          ? shown + " allocation" + (shown === 1 ? "" : "s")
+          : shown + " of " + total + " allocations";
+      }
+
       function renderParameterKpis(rows) {
         currentParameterRows = rows || [];
         const parameterGrid = document.getElementById("parameterGrid");
         if (!parameterGrid) return;
+        updateParameterResultsMeta(
+          currentParameterRows.length,
+          Array.isArray(parameterSourceRows) ? parameterSourceRows.length : currentParameterRows.length
+        );
 
         if (!currentParameterRows.length) {
           parameterGrid.innerHTML = '<div class="empty">No KPI target allocation found for the current search.</div>';
           return;
         }
 
+        const visibleCount = currentParameterRows.length;
+        const totalCount = Array.isArray(parameterSourceRows) ? parameterSourceRows.length : visibleCount;
+        const footerText = visibleCount === totalCount
+          ? 'Showing ' + visibleCount + ' allocation' + (visibleCount === 1 ? '' : 's')
+          : 'Showing ' + visibleCount + ' of ' + totalCount + ' allocations';
+
         parameterGrid.innerHTML = \`
-          <div class="kpi-table-shell">
-            <div class="kpi-table-wrap">
-              <table class="kpi-table allocation-table">
+          <div class="parameter-matrix-table-shell">
+            <div class="parameter-matrix-table-wrap">
+              <table class="parameter-matrix-table">
                 <thead>
                   <tr>
-                    <th>KPI</th>
-                    <th>Target</th>
-                    <th class="kpi-table-actions"></th>
+                    <th>KPI Name</th>
+                    <th>KPI Type</th>
+                    <th>Responsible</th>
+                    <th>Target Status</th>
+                    <th>Target Value</th>
+                    <th class="parameter-table-actions">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   \${currentParameterRows.map(row => \`
                     <tr>
-                   
                       <td>
-                        <div class="kpi-row-subtitle">\${escapeHtml(row.kpi_name || row.kpi_group || "Linked KPI")}</div>
-                        <div class="allocation-row-meta">\${escapeHtml([row.kpi_group, row.target_status ? 'Status: ' + row.target_status : '', row.set_by_people_display_name ? 'Set by: ' + row.set_by_people_display_name : ''].filter(Boolean).join(" • ") || "No KPI metadata")}</div>
+                        <div class="parameter-matrix-kpi-title">\${escapeHtml(row.kpi_name || row.kpi_group || "Linked KPI")}</div>
+                        <div class="parameter-matrix-kpi-path">\${escapeHtml(row.kpi_subject || row.kpi_group || "No KPI hierarchy attached")}</div>
                       </td>
                       <td>
-                        <div class="allocation-target-value">\${escapeHtml(formatParameterDisplayValue(row.target_value))} \${escapeHtml(row.target_unit || "")}</div>
-                        <div class="allocation-row-meta">\${escapeHtml([
-                          row.local_currency,
-                          row.target_setup_date ? 'Setup: ' + formatParameterDisplayDate(row.target_setup_date) : '',
-                          row.target_start_date ? 'Start: ' + formatParameterDisplayDate(row.target_start_date) : '',
-                          row.target_end_date ? 'End: ' + formatParameterDisplayDate(row.target_end_date) : '',
-                          row.approved_by_people_display_name ? 'Approved: ' + row.approved_by_people_display_name : ''
-                        ].filter(Boolean).join(" • ") || "No target details")}</div>
+                        <div class="parameter-matrix-cell-main">\${escapeHtml(row.kpi_type || "Not Set")}</div>
+                        <div class="parameter-matrix-cell-sub">\${escapeHtml([
+                          buildParameterScopeSummary(row),
+                          row.local_currency
+                        ].filter(Boolean).join(" • ") || "No KPI type context")}</div>
                       </td>
-                      <td class="kpi-table-actions">
-                        <div class="table-actions-group">
-                          <button type="button" class="action-btn edit-btn" onclick="openEditParameterModal(\${row.kpi_target_allocation_id})">Edit</button>
-                          <button type="button" class="action-btn delete-btn" onclick="deleteParameterKpi(\${row.kpi_target_allocation_id})">Delete</button>
+                      <td>
+                        <div class="parameter-owner">
+                          <span class="parameter-owner-avatar">\${escapeHtml(getParameterPersonInitials(row.set_by_people_display_name || row.approved_by_people_display_name || ""))}</span>
+                          <div>
+                            <div class="parameter-owner-name">\${escapeHtml(row.set_by_people_display_name || "Unassigned")}</div>
+                            <div class="parameter-owner-sub">\${escapeHtml(row.approved_by_people_display_name ? 'Approved by ' + row.approved_by_people_display_name : 'No approver set')}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="parameter-status-badge \${escapeHtml(getParameterStatusClass(row.target_status))}">\${escapeHtml(row.target_status || "Not Set")}</span>
+                      </td>
+                      <td>
+                        <div class="parameter-matrix-target-main">\${escapeHtml(formatParameterDisplayValue(row.target_value))} \${escapeHtml(row.target_unit || "")}</div>
+                        <div class="parameter-matrix-target-sub">\${escapeHtml([
+                          row.kpi_type,
+                          row.target_setup_date ? 'Setup ' + formatParameterDisplayDate(row.target_setup_date) : '',
+                          row.target_start_date ? 'Start ' + formatParameterDisplayDate(row.target_start_date) : '',
+                          row.target_end_date ? 'End ' + formatParameterDisplayDate(row.target_end_date) : ''
+                        ].filter(Boolean).join(" • ") || "Target allocation")}</div>
+                      </td>
+                      <td class="parameter-table-actions">
+                        <div class="parameter-actions">
+                          <button type="button" class="action-btn edit-btn parameter-action-btn" onclick="openEditParameterModal(\${row.kpi_target_allocation_id})">Edit</button>
+                          <button type="button" class="action-btn delete-btn parameter-action-btn" onclick="deleteParameterKpi(\${row.kpi_target_allocation_id})">Delete</button>
                         </div>
                       </td>
                     </tr>
                   \`).join("")}
                 </tbody>
               </table>
+            </div>
+            <div class="parameter-matrix-footer">
+              <span>\${escapeHtml(footerText)}</span>
+              <span>Target allocation matrix</span>
             </div>
           </div>
         \`;
@@ -7914,6 +8580,7 @@ function renderKpis(rows) {
           applyParameterSearch(search);
         } catch (error) {
           parameterSourceRows = [];
+          updateParameterResultsMeta(0, 0);
           if (parameterGrid) {
             parameterGrid.innerHTML = '<div class="empty">Failed to load KPI target allocations.</div>';
           }
@@ -8066,7 +8733,6 @@ function renderKpis(rows) {
             ctx.fillStyle = pointFill;
             ctx.arc(point.x, point.y, pointRadius, 0, Math.PI * 2);
             ctx.fill();
-
             ctx.lineWidth = 1.5;
             ctx.strokeStyle = pointStroke;
             ctx.stroke();
@@ -8084,6 +8750,7 @@ function renderKpis(rows) {
           const data = await res.json();
           renderKpis(data);
         } catch (error) {
+          updateKpiResultsMeta(0);
           document.getElementById("grid").innerHTML =
             '<div class="empty">Failed to load KPIs.</div>';
         }
@@ -20338,7 +21005,7 @@ const createIndividualKPIChart = (kpi) => {
 // generateManagerReportHtml
 // ============================================================
 const generateManagerReportHtml = (reportData) => {
-  const { plant, week, kpisByDepartment, stats } = reportData;
+  const { plant, week, kpisByDepartment, stats, deliveryRecipient } = reportData;
   let kpiSections = '';
   const departments = Object.keys(kpisByDepartment).sort();
   departments.forEach(department => {
@@ -20384,7 +21051,9 @@ const generateManagerReportHtml = (reportData) => {
       <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">CEO KPI CODIR DASHBOARD</h1>
       <div style="font-size:14px;color:#6c757d;">
         <strong>${plant.plant_name}</strong>  Week: <strong>${week.replace('2026-Week', 'W')}</strong>
-        Manager: <strong>${plant.manager || 'N/A'}</strong></div>
+        Manager: <strong>${plant.manager || 'N/A'}</strong>
+        ${deliveryRecipient ? `&nbsp;&nbsp;|&nbsp;&nbsp;Recipient: <strong>${deliveryRecipient}</strong>` : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:15px;
                   background:#f8f9fa;padding:20px;border-radius:8px;margin-top:20px;">
         <div style="text-align:center;">
@@ -20818,88 +21487,391 @@ const weekToMonthLabel = (weekStr) => {
   return date.toLocaleString('en-US', { month: 'short', year: 'numeric' }); // "Feb 2026"
 };
 
+const CEO_REPORT_RECIPIENT_EMAIL = "mootaz.farwa@avocarbon.com";
+
+const hasMeaningfulManagerReportCorrectiveAction = (action = {}) =>
+  Boolean(
+    normalizeOptionalTextInput(action.root_cause) ||
+    normalizeOptionalTextInput(action.implemented_solution) ||
+    normalizeOptionalDateInput(action.due_date)
+  );
+
+const selectManagerReportCorrectiveAction = ({
+  currentActions = [],
+  historyActions = []
+} = {}) => {
+  const currentMeaningfulActions = sortCorrectiveActions(
+    (Array.isArray(currentActions) ? currentActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+  );
+  if (currentMeaningfulActions.length) {
+    return currentMeaningfulActions[0];
+  }
+
+  const historyMeaningfulActions = sortCorrectiveActions(
+    (Array.isArray(historyActions) ? historyActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+  );
+  return historyMeaningfulActions.length ? historyMeaningfulActions[0] : null;
+};
+
+const resolveManagerReportActionPlanContext = async (rows = [], currentPeriodLabel = null) => {
+  const reportRows = Array.isArray(rows) ? rows : [];
+
+  if (!reportRows.length || !(await canUseActionPlanCorrectiveActions())) {
+    return {
+      rows: reportRows,
+      currentByAllocationId: {},
+      historyByAllocationId: {}
+    };
+  }
+
+  const allRowsHaveDirectAllocations = reportRows.every((row) => {
+    const allocationId = normalizeOptionalIntegerInput(row.kpi_target_allocation_id ?? row.kpi_values_id);
+    const kpiId = normalizeOptionalIntegerInput(row.kpi_id);
+    return Number.isInteger(allocationId) && allocationId > 0 && Number.isInteger(kpiId) && kpiId > 0;
+  });
+
+  if (allRowsHaveDirectAllocations) {
+    const {
+      currentByAllocationId,
+      historyByAllocationId
+    } = await loadActionPlanCorrectiveActionMaps(reportRows, currentPeriodLabel);
+
+    return {
+      rows: reportRows,
+      currentByAllocationId,
+      historyByAllocationId
+    };
+  }
+
+  const uniqueResponsibleIds = Array.from(
+    new Set(
+      reportRows
+        .map((row) => normalizeOptionalIntegerInput(row.responsible_id))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+
+  const responsibleContexts = await Promise.all(
+    uniqueResponsibleIds.map(async (responsibleId) => ([
+      String(responsibleId),
+      await loadFormResponsibleContext(responsibleId)
+    ]))
+  );
+
+  const peopleIdByResponsibleId = new Map(
+    responsibleContexts.map(([responsibleId, context]) => ([
+      responsibleId,
+      normalizeOptionalIntegerInput(context?.people_id)
+    ]))
+  );
+
+  const uniquePeopleIds = Array.from(
+    new Set(
+      Array.from(peopleIdByResponsibleId.values()).filter(
+        (value) => Number.isInteger(value) && value > 0
+      )
+    )
+  );
+
+  if (!uniquePeopleIds.length) {
+    return {
+      rows: reportRows,
+      currentByAllocationId: {},
+      historyByAllocationId: {}
+    };
+  }
+
+  const allocationRes = await pool.query(
+    `
+    SELECT
+      kta.kpi_target_allocation_id,
+      kta.set_by_people_id,
+      kta.kpi_id,
+      COALESCE(k.kpi_name, '') AS kpi_name,
+      COALESCE(k.kpi_sub_title, '') AS kpi_group,
+      COALESCE(k.unit, '') AS kpi_unit,
+      COALESCE(kta.target_unit, '') AS target_unit
+    FROM public.kpi_target_allocation kta
+    JOIN public.kpi k
+      ON k.kpi_id = kta.kpi_id
+    WHERE kta.set_by_people_id = ANY($1::int[])
+    ORDER BY
+      COALESCE(kta.updated_at, kta.created_at) DESC,
+      kta.kpi_target_allocation_id DESC
+    `,
+    [uniquePeopleIds]
+  );
+
+  const allocationsByPeopleId = new Map();
+  allocationRes.rows.forEach((row) => {
+    const peopleId = normalizeOptionalIntegerInput(row.set_by_people_id);
+    if (!peopleId) return;
+
+    const peopleKey = String(peopleId);
+    if (!allocationsByPeopleId.has(peopleKey)) {
+      allocationsByPeopleId.set(peopleKey, []);
+    }
+
+    allocationsByPeopleId.get(peopleKey).push(row);
+  });
+
+  const normalizeMatchText = (value) => normalizeOptionalTextInput(value)?.toLowerCase() || "";
+
+  const pickBestAllocationMatch = (row, allocations = []) => {
+    const legacyKpiId = normalizeOptionalIntegerInput(row.kpi_id);
+    const legacyGroup = normalizeMatchText(row.indicator_title);
+    const legacyName = normalizeMatchText(row.indicator_sub_title);
+    const legacyUnit = normalizeMatchText(row.unit);
+
+    let bestMatch = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    allocations.forEach((allocation) => {
+      const allocationKpiId = normalizeOptionalIntegerInput(allocation.kpi_id);
+      const allocationGroup = normalizeMatchText(allocation.kpi_group);
+      const allocationName = normalizeMatchText(allocation.kpi_name);
+      const allocationUnit = normalizeMatchText(allocation.target_unit || allocation.kpi_unit);
+
+      const exactIdMatch =
+        Number.isInteger(legacyKpiId) &&
+        Number.isInteger(allocationKpiId) &&
+        legacyKpiId === allocationKpiId;
+      const exactNameMatch = Boolean(legacyName && allocationName && legacyName === allocationName);
+      const exactGroupMatch = Boolean(legacyGroup && allocationGroup && legacyGroup === allocationGroup);
+      const exactUnitMatch = Boolean(legacyUnit && allocationUnit && legacyUnit === allocationUnit);
+
+      let score = Number.POSITIVE_INFINITY;
+
+      if (exactIdMatch && exactNameMatch && exactGroupMatch) score = 0;
+      else if (exactNameMatch && exactGroupMatch && exactUnitMatch) score = 1;
+      else if (exactIdMatch && exactNameMatch) score = 2;
+      else if (exactIdMatch && exactGroupMatch) score = 3;
+      else if (exactNameMatch && exactUnitMatch) score = 4;
+      else if (exactNameMatch) score = 5;
+      else if (exactIdMatch) score = 6;
+      else if (exactGroupMatch && exactUnitMatch) score = 7;
+      else if (exactGroupMatch) score = 8;
+
+      if (score < bestScore) {
+        bestMatch = allocation;
+        bestScore = score;
+      }
+    });
+
+    return Number.isFinite(bestScore) ? bestMatch : null;
+  };
+
+  const rowsWithAllocations = reportRows.map((row) => {
+    const responsibleId = normalizeOptionalIntegerInput(row.responsible_id);
+    const peopleId = responsibleId
+      ? peopleIdByResponsibleId.get(String(responsibleId)) || null
+      : null;
+    const matchedAllocation = peopleId
+      ? pickBestAllocationMatch(row, allocationsByPeopleId.get(String(peopleId)) || [])
+      : null;
+
+    return {
+      ...row,
+      kpi_target_allocation_id:
+        normalizeOptionalIntegerInput(matchedAllocation?.kpi_target_allocation_id) || null,
+      action_plan_kpi_id:
+        normalizeOptionalIntegerInput(matchedAllocation?.kpi_id) || null
+    };
+  });
+
+  const matchedAllocationRows = rowsWithAllocations
+    .filter((row) =>
+      Number.isInteger(normalizeOptionalIntegerInput(row.kpi_target_allocation_id)) &&
+      Number.isInteger(normalizeOptionalIntegerInput(row.action_plan_kpi_id))
+    )
+    .map((row) => ({
+      kpi_target_allocation_id: row.kpi_target_allocation_id,
+      kpi_values_id: row.kpi_target_allocation_id,
+      kpi_id: row.action_plan_kpi_id
+    }));
+
+  if (!matchedAllocationRows.length) {
+    return {
+      rows: rowsWithAllocations,
+      currentByAllocationId: {},
+      historyByAllocationId: {}
+    };
+  }
+
+  const {
+    currentByAllocationId,
+    historyByAllocationId
+  } = await loadActionPlanCorrectiveActionMaps(matchedAllocationRows, currentPeriodLabel);
+
+  return {
+    rows: rowsWithAllocations,
+    currentByAllocationId,
+    historyByAllocationId
+  };
+};
+
 
 const getDepartmentKPIReport = async (plantId, week) => {
   try {
     const plantRes = await pool.query(
-      `SELECT p.plant_id, p.name AS plant_name, p.manager, p.manager_email
-       FROM public."Plant" p WHERE p.plant_id = $1 AND p.manager_email IS NOT NULL`,
+      `
+      SELECT
+        u.unit_id AS plant_id,
+        u.unit_name AS plant_name,
+        NULLIF(TRIM(CONCAT_WS(' ', COALESCE(m.first_name, ''), COALESCE(m.name, ''))), '') AS manager,
+        m.email AS manager_email
+      FROM public.unit u
+      LEFT JOIN public.people m
+        ON m.people_id = u.manager_id
+      WHERE u.unit_id = $1
+      `,
       [plantId]
     );
     const plant = plantRes.rows[0];
-    if (!plant || !plant.manager_email) return null;
+    if (!plant) return null;
 
     const kpiRes = await pool.query(
-      `WITH LatestKPIValues AS (
-         SELECT h.kpi_id, h.responsible_id, r.name AS responsible_name, h.week, h.new_value,
-                h.updated_at, h.comment, r.department_id, d.name AS department_name,
-                k.indicator_title, k.indicator_sub_title, k.unit, k.target, k.min, k.max,
-                k.high_limit, k.low_limit,
-                ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.responsible_id, h.week ORDER BY h.updated_at DESC) as rn
-         FROM public.kpi_values_hist26 h
-         JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
-         JOIN public."Department" d ON r.department_id = d.department_id
-         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-         WHERE r.plant_id = $1 AND h.week = $2
-           AND h.new_value IS NOT NULL AND h.new_value != ''
-           AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$'
-       )
-       SELECT lkv.*,
-              ca.root_cause, ca.implemented_solution, ca.evidence, ca.status AS ca_status,
-              ca.due_date AS ca_due_date, ca.week AS ca_week
-       FROM LatestKPIValues lkv
-       LEFT JOIN LATERAL (
-         SELECT root_cause, implemented_solution, evidence, status, due_date, week
-         FROM public.corrective_actions
-         WHERE kpi_id = lkv.kpi_id
-           AND responsible_id = lkv.responsible_id
-         ORDER BY
-           CASE
-             WHEN week = lkv.week
-              AND (
-                NULLIF(BTRIM(COALESCE(root_cause, '')), '') IS NOT NULL
-                OR NULLIF(BTRIM(COALESCE(implemented_solution, '')), '') IS NOT NULL
-                OR NULLIF(BTRIM(COALESCE(evidence, '')), '') IS NOT NULL
-                OR due_date IS NOT NULL
-              ) THEN 0
-             WHEN
-                NULLIF(BTRIM(COALESCE(root_cause, '')), '') IS NOT NULL
-                OR NULLIF(BTRIM(COALESCE(implemented_solution, '')), '') IS NOT NULL
-                OR NULLIF(BTRIM(COALESCE(evidence, '')), '') IS NOT NULL
-                OR due_date IS NOT NULL THEN 1
-             WHEN week = lkv.week THEN 2
-             ELSE 3
-           END,
-           COALESCE(updated_date, created_date) DESC,
-           corrective_action_id DESC
-         LIMIT 1
-       ) ca ON TRUE
-       WHERE lkv.rn = 1 ORDER BY lkv.indicator_title`,
+      `
+      WITH plant_allocations AS (
+        SELECT
+          kta.kpi_target_allocation_id,
+          kta.kpi_id,
+          owner.people_id AS responsible_id,
+          NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS responsible_name
+        FROM public.kpi_target_allocation kta
+        LEFT JOIN public.people owner
+          ON owner.people_id = kta.set_by_people_id
+        WHERE COALESCE(kta.plant_id, owner.work_at_unit_id) = $1
+      ),
+      latest_kpi_values AS (
+        SELECT
+          pa.kpi_target_allocation_id,
+          pa.kpi_id,
+          pa.responsible_id,
+          pa.responsible_name,
+          COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')) AS week,
+          kr.raw_value AS new_value,
+          kr.recorded_at AS updated_at,
+          kr.comments AS comment,
+          kr.unit AS result_unit,
+          kr.target_value AS result_target_value,
+          kr.upper_limit AS result_high_limit,
+          kr.lower_limit AS result_low_limit,
+          ROW_NUMBER() OVER (
+            PARTITION BY pa.kpi_target_allocation_id
+            ORDER BY kr.recorded_at DESC, kr.kpi_result_id DESC
+          ) AS rn
+        FROM plant_allocations pa
+        JOIN public.kpi_result kr
+          ON kr.kpi_target_allocation_id = pa.kpi_target_allocation_id
+        WHERE ($2::text IS NULL OR kr.period_label = $2 OR kr.week = $2)
+          AND kr.raw_value IS NOT NULL
+          AND kr.raw_value != ''
+          AND CAST(kr.raw_value AS TEXT) ~ '^[0-9.]+$'
+      )
+      SELECT
+        lkv.kpi_target_allocation_id,
+        lkv.kpi_id,
+        lkv.responsible_id,
+        lkv.responsible_name,
+        lkv.week,
+        lkv.new_value,
+        lkv.updated_at,
+        lkv.comment,
+        COALESCE(k.kpi_sub_title, subject_link.subject_name, k.kpi_name, 'KPI') AS indicator_title,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'Untitled KPI') AS indicator_sub_title,
+        COALESCE(lkv.result_unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(lkv.result_target_value, kta.target_value, k.target_value) AS target,
+        k.min_value AS min,
+        k.max_value AS max,
+        COALESCE(lkv.result_high_limit, k.high_limit) AS high_limit,
+        COALESCE(lkv.result_low_limit, k.low_limit) AS low_limit,
+        ''::text AS department_name,
+        k.target_direction
+      FROM latest_kpi_values lkv
+      JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = lkv.kpi_target_allocation_id
+      JOIN public.kpi k
+        ON k.kpi_id = lkv.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = lkv.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE lkv.rn = 1
+      ORDER BY indicator_title, indicator_sub_title, lkv.kpi_target_allocation_id
+      `,
       [plantId, week]
     );
 
     if (!kpiRes.rows.length) return null;
 
+    const {
+      rows: kpiReportRows,
+      currentByAllocationId,
+      historyByAllocationId
+    } = await resolveManagerReportActionPlanContext(kpiRes.rows, week);
+
     const weeklyTrendRes = await pool.query(
-      `WITH WeeklyKPIData AS (
-         SELECT k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit,
-                k.target, k.min, k.max, k.high_limit, k.low_limit,
-                h.week, AVG(CAST(h.new_value AS NUMERIC)) as avg_value,
-                CAST(SPLIT_PART(h.week, 'Week', 2) AS INTEGER) as week_num
-         FROM public.kpi_values_hist26 h
-         JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-         JOIN public."Responsible" r ON h.responsible_id = r.responsible_id
-         WHERE r.plant_id = $1 AND h.new_value IS NOT NULL AND h.new_value != ''
-           AND CAST(h.new_value AS TEXT) ~ '^[0-9.]+$' AND h.week LIKE '2026-Week%'
-         GROUP BY k.kpi_id, k.indicator_title, k.indicator_sub_title, k.unit,
-                  k.target, k.min, k.max, k.high_limit, k.low_limit, h.week
-       )
-       SELECT * FROM WeeklyKPIData ORDER BY kpi_id, week_num DESC LIMIT 500`,
+      `
+      WITH plant_allocations AS (
+        SELECT
+          kta.kpi_target_allocation_id,
+          kta.kpi_id,
+          owner.people_id AS responsible_id,
+          NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS responsible_name
+        FROM public.kpi_target_allocation kta
+        LEFT JOIN public.people owner
+          ON owner.people_id = kta.set_by_people_id
+        WHERE COALESCE(kta.plant_id, owner.work_at_unit_id) = $1
+      )
+      SELECT
+        pa.kpi_target_allocation_id,
+        pa.kpi_id,
+        pa.responsible_id,
+        pa.responsible_name,
+        COALESCE(k.kpi_sub_title, subject_link.subject_name, k.kpi_name, 'KPI') AS indicator_title,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'Untitled KPI') AS indicator_sub_title,
+        COALESCE(kr.unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(kr.target_value, kta.target_value, k.target_value) AS target,
+        k.min_value AS min,
+        k.max_value AS max,
+        COALESCE(kr.upper_limit, k.high_limit) AS high_limit,
+        COALESCE(kr.lower_limit, k.low_limit) AS low_limit,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')) AS week,
+        CAST(kr.raw_value AS NUMERIC) AS avg_value
+      FROM plant_allocations pa
+      JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = pa.kpi_target_allocation_id
+      JOIN public.kpi_result kr
+        ON kr.kpi_target_allocation_id = pa.kpi_target_allocation_id
+      JOIN public.kpi k
+        ON k.kpi_id = pa.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = pa.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE kr.raw_value IS NOT NULL
+        AND kr.raw_value != ''
+        AND CAST(kr.raw_value AS TEXT) ~ '^[0-9.]+$'
+      ORDER BY pa.kpi_target_allocation_id ASC, week ASC
+      `,
       [plantId]
     );
 
     const extractDept = (t) => {
       if (!t) return 'Other';
+      if (t.includes(' / ')) return t.split(' / ')[0].trim() || 'Other';
+      if (t.includes('/')) return t.split('/')[0].trim() || 'Other';
       if (t.includes('Actual - ')) {
         const ex = t.split('Actual - ')[1];
         if (ex.includes('/')) return ex.split('/')[0].trim();
@@ -20914,16 +21886,18 @@ const getDepartmentKPIReport = async (plantId, week) => {
 
     // Accumulate weekly values grouped into months
     weeklyTrendRes.rows.forEach(row => {
-      const key = `${row.kpi_id}_${row.indicator_title}`;
+      const key = String(row.kpi_target_allocation_id || `${row.kpi_id}_${row.responsible_id || ''}`);
       const dept = extractDept(row.indicator_title);
       const month = weekToMonthLabel(row.week); // e.g. "Feb 2026"
 
       if (!weeklyDataByKPI[key]) {
         weeklyDataByKPI[key] = {
+          allocation_id: row.kpi_target_allocation_id,
           kpi_id: row.kpi_id, title: row.indicator_title, subtitle: row.indicator_sub_title || '',
           unit: row.unit || '', target: row.target, min: row.min, max: row.max,
           high_limit: row.high_limit, low_limit: row.low_limit,
           department: dept,
+          responsible: row.responsible_name || '',
           _monthlyMap: {},  // { "Feb 2026": { sum, count } }
           weeks: [], values: []
         };
@@ -20944,11 +21918,13 @@ const getDepartmentKPIReport = async (plantId, week) => {
       delete kpi._monthlyMap;
     });
 
-    kpiRes.rows.forEach(row => {
+    kpiReportRows.forEach(row => {
       const dept = extractDept(row.indicator_title);
-      const key = `${row.kpi_id}_${row.indicator_title}`;
+      const key = String(row.kpi_target_allocation_id || `${row.kpi_id}_${row.responsible_id || ''}`);
       if (!kpisByDepartment[dept]) kpisByDepartment[dept] = [];
-      let existing = kpisByDepartment[dept].find(k => k.id === row.kpi_id && k.title === row.indicator_title);
+      let existing = kpisByDepartment[dept].find(
+        (k) => String(k.allocationId || '') === String(row.kpi_target_allocation_id || '')
+      );
       if (!existing) {
         existing = {
           id: row.kpi_id, title: row.indicator_title, subtitle: row.indicator_sub_title || '',
@@ -20958,20 +21934,31 @@ const getDepartmentKPIReport = async (plantId, week) => {
           currentValue: parseFloat(row.new_value),
           weeklyData: weeklyDataByKPI[key] || { weeks: [], values: [] },
           lastUpdated: row.updated_at, responsible: row.responsible_name || '',
+          allocationId: row.kpi_target_allocation_id || null,
+          kpiTargetAllocationId: row.kpi_target_allocation_id || null,
           comments: [], correctiveAction: null
         };
         kpisByDepartment[dept].push(existing);
       }
       if (row.comment && row.comment.trim())
         existing.comments.push({ week: row.week, text: row.comment.trim() });
-      if (!existing.correctiveAction && (row.root_cause || row.implemented_solution || row.evidence || row.ca_due_date)) {
+
+      const allocationKey = String(row.kpi_target_allocation_id || "").trim();
+      const selectedCorrectiveAction = allocationKey
+        ? selectManagerReportCorrectiveAction({
+          currentActions: currentByAllocationId[allocationKey] || [],
+          historyActions: historyByAllocationId[allocationKey] || []
+        })
+        : null;
+
+      if (!existing.correctiveAction && selectedCorrectiveAction) {
         existing.correctiveAction = {
-          rootCause: (row.root_cause || '').trim(),
-          implementedSolution: (row.implemented_solution || '').trim(),
-          evidence: (row.evidence || '').trim(),
-          dueDate: row.ca_due_date || null,
-          week: row.ca_week || null,
-          status: row.ca_status || ''
+          rootCause: normalizeOptionalTextInput(selectedCorrectiveAction.root_cause) || '',
+          implementedSolution: normalizeOptionalTextInput(selectedCorrectiveAction.implemented_solution) || '',
+          evidence: '',
+          dueDate: selectedCorrectiveAction.due_date || null,
+          week: selectedCorrectiveAction.week || selectedCorrectiveAction.period_label || null,
+          status: normalizeOptionalTextInput(selectedCorrectiveAction.status) || ''
         };
       }
     });
@@ -20998,8 +21985,14 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     const reportWeek = currentWeek;
     const reportData = await getDepartmentKPIReport(plantId, reportWeek);
     if (!reportData || reportData.stats.totalKPIs === 0) return null;
+    const deliveryRecipient =
+      normalizeOptionalTextInput(CEO_REPORT_RECIPIENT_EMAIL) ||
+      normalizeOptionalTextInput(reportData.plant?.manager_email);
 
-    const emailHtml = generateManagerReportHtml(reportData);
+    const emailHtml = generateManagerReportHtml({
+      ...reportData,
+      deliveryRecipient
+    });
 
     // â”€â”€ Generate plant-wide recommendations PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let pdfAttachment = null;
@@ -21024,17 +22017,78 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     const transporter = createTransporter();
     await transporter.sendMail({
       from: '"AVOCarbon Plant Analytics" <administration.STS@avocarbon.com>',
-      to: reportData.plant.manager_email,
+      to: deliveryRecipient,
       subject: `Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${reportWeek.replace('2026-Week', '')}`,
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
     });
 
-    console.log(`KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${reportData.plant.manager_email}`);
+    console.log(`KPI report${pdfAttachment ? ' + recommendations PDF' : ''} sent to ${deliveryRecipient}`);
+    return {
+      plant: reportData.plant,
+      week: reportWeek,
+      recipientEmail: deliveryRecipient
+    };
   } catch (error) {
     console.error(`Failed to send report for plant ${plantId}:`, error.message);
+    throw error;
   }
 };
+
+app.get("/ceo-report/plants/:plantId", async (req, res) => {
+  try {
+    const plantId = normalizeOptionalIntegerInput(req.params.plantId);
+    const reportWeek = normalizeOptionalTextInput(req.query?.week) || getCurrentWeek();
+
+    if (!plantId) {
+      return res.status(400).send("Invalid plantId");
+    }
+
+    const reportData = await getDepartmentKPIReport(plantId, reportWeek);
+    if (!reportData || reportData.stats.totalKPIs === 0) {
+      return res.status(404).send("No KPI report data available for this plant and week.");
+    }
+
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(generateManagerReportHtml({
+      ...reportData,
+      deliveryRecipient: CEO_REPORT_RECIPIENT_EMAIL
+    }));
+  } catch (error) {
+    console.error("CEO report preview error:", error.message);
+    res.status(500).send("Failed to generate CEO report preview.");
+  }
+});
+
+app.post("/api/ceo-report/plants/:plantId/send", async (req, res) => {
+  try {
+    const plantId = normalizeOptionalIntegerInput(req.params.plantId);
+    const reportWeek =
+      normalizeOptionalTextInput(req.body?.week ?? req.query?.week) ||
+      getCurrentWeek();
+
+    if (!plantId) {
+      return res.status(400).json({ error: "Invalid plantId" });
+    }
+
+    const result = await sendDepartmentKPIReportEmail(plantId, reportWeek);
+    if (!result) {
+      return res.status(404).json({
+        error: "No KPI report data available for this plant and week."
+      });
+    }
+
+    res.json({
+      success: true,
+      plant_id: plantId,
+      week: result.week,
+      recipient_email: result.recipientEmail
+    });
+  } catch (error) {
+    console.error("CEO report send error:", error.message);
+    res.status(500).json({ error: "Failed to send CEO report email." });
+  }
+});
 
 // ---------- Cron: corrective action escalation reminders ----------
 let correctiveActionEscalationCronRunning = false;
@@ -21058,47 +22112,56 @@ cron.schedule("35 9 * * *", async () => {
 }, { scheduled: true, timezone: "Africa/Tunis" });
 
 // ---------- Cron: weekly manager/plant report ----------
-// let managerCronRunning = false;
-// cron.schedule("18 17 * * *", async () => {
-//   const lockId = "department_report_job";
-//   const lock = await acquireJobLock(lockId);
-//   if (!lock.acquired) return;
-//   try {
-//     if (managerCronRunning) return;
-//     managerCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const currentWeek = `${year}-Week${weekNumber}`;
-//     console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
-//     const plantsRes = await pool.query(
-//       `SELECT plant_id, name, manager_email FROM public."Plant"
-//        WHERE manager_email IS NOT NULL AND manager_email != ''`
-//     );
-//     console.log(`ðŸ“‹ Found ${plantsRes.rows.length} plants with manager emails`);
-//     for (const plant of plantsRes.rows) {
-//       try {
-//         await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-//         console.log(`Report sent for plant: ${plant.name}`);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
-//       } catch (err) {
-//         console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
-//       }
-//     }
-//     console.log(`[Manager Report] All plant reports sent`);
-//   } catch (error) {
-//     console.error("âŒ [Manager Report] Cron error:", error.message);
-//   } finally {
-//     managerCronRunning = false;
-//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-//   }
-// }, { scheduled: true, timezone: "Africa/Tunis" });
+let managerCronRunning = false;
+cron.schedule("07 11 * * *", async () => {
+  const lockId = "department_report_job";
+  const lock = await acquireJobLock(lockId);
+  if (!lock.acquired) return;
+  try {
+    if (managerCronRunning) return;
+    managerCronRunning = true;
+    const now = new Date();
+    const year = now.getFullYear();
+    const getWeekNumber = (date) => {
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+      const yearStart = new Date(d.getFullYear(), 0, 1);
+      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+    const weekNumber = getWeekNumber(now);
+    const currentWeek = `${year}-Week${weekNumber}`;
+    console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
+    const plantsRes = await pool.query(
+      `
+      SELECT DISTINCT
+        u.unit_id AS plant_id,
+        u.unit_name AS name
+      FROM public.kpi_target_allocation kta
+      LEFT JOIN public.people owner
+        ON owner.people_id = kta.set_by_people_id
+      JOIN public.unit u
+        ON u.unit_id = COALESCE(kta.plant_id, owner.work_at_unit_id)
+      ORDER BY u.unit_name ASC, u.unit_id ASC
+      `
+    );
+    console.log(`ðŸ“‹ Found ${plantsRes.rows.length} units with KPI allocations`);
+    for (const plant of plantsRes.rows) {
+      try {
+        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
+        console.log(`Report sent for plant: ${plant.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (err) {
+        console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
+      }
+    }
+    console.log(`[Manager Report] All plant reports sent`);
+  } catch (error) {
+    console.error("âŒ [Manager Report] Cron error:", error.message);
+  } finally {
+    managerCronRunning = false;
+    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+  }
+}, { scheduled: true, timezone: "Africa/Tunis" });
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
