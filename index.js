@@ -1863,34 +1863,54 @@ app.get("/kpi-admin", async (req, res) => {
 
       .row-actions {
         display: flex;
-        gap: 10px;
+        gap: 12px;
         flex-wrap: wrap;
       }
 
       .icon-btn {
-        border: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
         border-radius: 12px;
-        padding: 10px 14px;
-        font-size: 12px;
-        font-weight: 800;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(15,23,42,0.08);
         cursor: pointer;
-        transition: all 0.18s ease;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      }
+
+      .icon-btn svg {
+        width: 18px;
+        height: 18px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       .icon-btn:hover {
         transform: translateY(-1px);
+        box-shadow: 0 14px 30px rgba(15,23,42,0.12);
+      }
+
+      .icon-btn:focus-visible {
+        outline: 2px solid rgba(37,99,235,0.20);
+        outline-offset: 3px;
       }
 
       .edit-btn {
-        background: rgba(37,99,235,0.08);
-        color: #1d4ed8;
-        border: 1px solid rgba(37,99,235,0.10);
+        background: #ffffff;
+        color: #2563eb;
+        border: 1px solid rgba(37,99,235,0.18);
       }
 
       .delete-btn {
-        background: rgba(239,68,68,0.08);
-        color: #dc2626;
-        border: 1px solid rgba(239,68,68,0.10);
+        background: #ffffff;
+        color: #ef4444;
+        border: 1px solid rgba(239,68,68,0.18);
       }
 
       .drawer {
@@ -2323,8 +2343,33 @@ app.get("/kpi-admin", async (req, res) => {
             <td><span class="pill pill-gold">\${escapeHtml(row.tolerance_type || '-')}</span></td>
             <td>
               <div class="row-actions">
-                <button class="icon-btn edit-btn" onclick="openEditDrawer(\${row.kpi_id})">Edit</button>
-                <button class="icon-btn delete-btn" onclick="deleteRowQuick(\${row.kpi_id})">Delete</button>
+                <button
+                  type="button"
+                  class="icon-btn edit-btn"
+                  onclick="openEditDrawer(\${row.kpi_id})"
+                  aria-label="Edit KPI"
+                  title="Edit KPI"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
+                    <path d="M13.5 6.5l4 4"></path>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="icon-btn delete-btn"
+                  onclick="deleteRowQuick(\${row.kpi_id})"
+                  aria-label="Delete KPI"
+                  title="Delete KPI"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M8 6V4h8v2"></path>
+                    <path d="M19 6l-1 14H6L5 6"></path>
+                    <path d="M10 11v6"></path>
+                    <path d="M14 11v6"></path>
+                  </svg>
+                </button>
               </div>
             </td>
           </tr>
@@ -4669,12 +4714,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: inline-flex;
         align-items: center;
         justify-content: flex-end;
-        gap: 10px;
+        gap: 12px;
       }
 
       .parameter-action-btn {
-        min-width: 84px;
-        justify-content: center;
+        min-width: 38px;
       }
 
       .parameter-matrix-footer {
@@ -4883,12 +4927,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: inline-flex;
         align-items: center;
         justify-content: flex-end;
-        gap: 10px;
+        gap: 12px;
       }
 
       .kpi-matrix-action-btn {
-        min-width: 84px;
-        justify-content: center;
+        min-width: 38px;
       }
 
       .kpi-matrix-footer {
@@ -4916,29 +4959,49 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .action-btn {
-        border: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
         border-radius: 12px;
-        padding: 10px 13px;
-        font-size: 12px;
-        font-weight: 800;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(15,23,42,0.08);
         cursor: pointer;
-        transition: 0.18s ease;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      }
+
+      .action-btn svg {
+        width: 18px;
+        height: 18px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       .action-btn:hover {
         transform: translateY(-1px);
+        box-shadow: 0 14px 30px rgba(15,23,42,0.12);
+      }
+
+      .action-btn:focus-visible {
+        outline: 2px solid rgba(37,99,235,0.20);
+        outline-offset: 3px;
       }
 
       .edit-btn {
-        background: rgba(37,99,235,0.08);
-        color: #1d4ed8;
-        border: 1px solid rgba(37,99,235,0.10);
+        background: #ffffff;
+        color: #2563eb;
+        border: 1px solid rgba(37,99,235,0.18);
       }
 
       .delete-btn {
-        background: rgba(239,68,68,0.08);
-        color: #dc2626;
-        border: 1px solid rgba(239,68,68,0.10);
+        background: #ffffff;
+        color: #ef4444;
+        border: 1px solid rgba(239,68,68,0.18);
       }
 
       .empty {
@@ -8329,8 +8392,33 @@ function renderKpis(rows) {
                 </td>
                 <td class="parameter-table-actions">
                   <div class="kpi-matrix-actions">
-                    <button type="button" class="action-btn edit-btn kpi-matrix-action-btn" onclick="openEditModal(\${row.kpi_id})">Edit</button>
-                    <button type="button" class="action-btn delete-btn kpi-matrix-action-btn" onclick="deleteKpi(\${row.kpi_id})">Delete</button>
+                    <button
+                      type="button"
+                      class="action-btn edit-btn kpi-matrix-action-btn"
+                      onclick="openEditModal(\${row.kpi_id})"
+                      aria-label="Edit KPI"
+                      title="Edit KPI"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
+                        <path d="M13.5 6.5l4 4"></path>
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="action-btn delete-btn kpi-matrix-action-btn"
+                      onclick="deleteKpi(\${row.kpi_id})"
+                      aria-label="Delete KPI"
+                      title="Delete KPI"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 6h18"></path>
+                        <path d="M8 6V4h8v2"></path>
+                        <path d="M19 6l-1 14H6L5 6"></path>
+                        <path d="M10 11v6"></path>
+                        <path d="M14 11v6"></path>
+                      </svg>
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -8544,8 +8632,33 @@ function renderKpis(rows) {
                       </td>
                       <td class="parameter-table-actions">
                         <div class="parameter-actions">
-                          <button type="button" class="action-btn edit-btn parameter-action-btn" onclick="openEditParameterModal(\${row.kpi_target_allocation_id})">Edit</button>
-                          <button type="button" class="action-btn delete-btn parameter-action-btn" onclick="deleteParameterKpi(\${row.kpi_target_allocation_id})">Delete</button>
+                          <button
+                            type="button"
+                            class="action-btn edit-btn parameter-action-btn"
+                            onclick="openEditParameterModal(\${row.kpi_target_allocation_id})"
+                            aria-label="Edit allocation"
+                            title="Edit allocation"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
+                              <path d="M13.5 6.5l4 4"></path>
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            class="action-btn delete-btn parameter-action-btn"
+                            onclick="deleteParameterKpi(\${row.kpi_target_allocation_id})"
+                            aria-label="Delete allocation"
+                            title="Delete allocation"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M3 6h18"></path>
+                              <path d="M8 6V4h8v2"></path>
+                              <path d="M19 6l-1 14H6L5 6"></path>
+                              <path d="M10 11v6"></path>
+                              <path d="M14 11v6"></path>
+                            </svg>
+                          </button>
                         </div>
                       </td>
                     </tr>
