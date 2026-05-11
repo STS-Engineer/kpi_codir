@@ -702,14 +702,14 @@ const loadSubjectHierarchyData = async () => {
 
 const loadRoleOptions = async () => {
   const result = await pool.query(`
-    SELECT role_id, role_name, role_code
+    SELECT role_id, role_name
     FROM public.role
     ORDER BY role_name, role_id
   `);
 
   return result.rows.map((row) => ({
     value: String(row.role_id),
-    label: [normalizeOptionalTextInput(row.role_name), normalizeOptionalTextInput(row.role_code)]
+    label: [normalizeOptionalTextInput(row.role_name)]
       .filter(Boolean)
       .join(" · ") || `Role ${row.role_id}`
   }));
