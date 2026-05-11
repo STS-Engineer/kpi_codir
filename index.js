@@ -13399,12 +13399,16 @@ app.post("/kpi-ai-assistant", async (req, res) => {
     let responsible = null;
     if (responsible_id) {
       const responsibleRes = await pool.query(
-        `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-                p.name AS plant_name, d.name AS department_name
-         FROM public."Responsible" r
-         JOIN public."Plant" p ON r.plant_id = p.plant_id
-         JOIN public."Department" d ON r.department_id = d.department_id
-         WHERE r.responsible_id = $1`,
+        `SELECT
+           p.people_id        AS responsible_id,
+           p.name,
+           p.first_name,
+           p.email,
+           p.work_at_unit_id,
+           u.unit_name             AS plant_name
+         FROM public.people p
+         LEFT JOIN public.unit u ON u.unit_id = p.work_at_unit_id
+         WHERE p.people_id = $1`,
         [responsible_id]
       );
       responsible = responsibleRes.rows[0] || null;
