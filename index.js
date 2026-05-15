@@ -96,23 +96,109 @@ const prepareKpiWritePayload = (payload = {}) => {
   const highLimit = normalizeOptionalNumericInput(rawHighLimit);
   const lowLimit = normalizeOptionalNumericInput(rawLowLimit);
   const calculationMode = normalizeOptionalTextInput(payload.calculation_mode);
+  const calculationOn = normalizeOptionalTextInput(payload.calculation_on);
+  const frequency = normalizeOptionalTextInput(payload.frequency);
+  const targetDirection = normalizeOptionalTextInput(payload.target_direction || payload.direction);
+  const toleranceType = normalizeOptionalTextInput(payload.tolerance_type);
+  const displayTrend = normalizeOptionalTextInput(payload.display_trend);
+  const regression = normalizeOptionalTextInput(payload.regression);
+  const minType = normalizeOptionalTextInput(payload.min_type);
+  const maxType = normalizeOptionalTextInput(payload.max_type);
+  const nombrePeriode = normalizeOptionalTextInput(payload.nombre_periode);
+  const targetAutoAdjustment = normalizeOptionalTextInput(payload.target_auto_adjustment);
   const referenceKpiId = rawReferenceKpiId === null ? null : Number(rawReferenceKpiId);
   const ownerRoleId = rawOwnerRoleId === null ? null : Number(rawOwnerRoleId);
   const kpiName = normalizeOptionalTextInput(payload.kpi_name ?? payload.indicator_sub_title);
   const unit = normalizeOptionalTextInput(payload.unit);
+  const subject = normalizeOptionalTextInput(payload.subject);
   const explanation = normalizeOptionalTextInput(payload.kpi_explanation ?? payload.definition);
   const status = normalizeOptionalTextInput(payload.status) || "Active";
+  const normalizedCalculationMode = String(calculationMode || "").toLowerCase();
+  const normalizedDisplayTrend = String(displayTrend || "").toLowerCase();
+  const normalizedToleranceType = String(toleranceType || "").toLowerCase();
 
   if (!kpiName) {
     throw createHttpError(400, "KPI name is required.");
+  }
+
+  if (!frequency) {
+    throw createHttpError(400, "Frequency is required.");
   }
 
   if (!unit) {
     throw createHttpError(400, "Unit is required.");
   }
 
+  if (!targetDirection) {
+    throw createHttpError(400, "Direction is required.");
+  }
+
   if (!explanation) {
     throw createHttpError(400, "Definition is required.");
+  }
+
+  if (!calculationOn) {
+    throw createHttpError(400, "Calculation On is required.");
+  }
+
+  if (!nombrePeriode) {
+    throw createHttpError(400, "Nombre periode is required.");
+  }
+
+  if (!calculationMode) {
+    throw createHttpError(400, "Calculation mode is required.");
+  }
+
+  if (!displayTrend) {
+    throw createHttpError(400, "Display trend is required.");
+  }
+
+  if (normalizedDisplayTrend === "yes" && !regression) {
+    throw createHttpError(400, "Regression is required when display trend is Yes.");
+  }
+
+  if (!minType) {
+    throw createHttpError(400, "Min selection is required.");
+  }
+
+  if (!maxType) {
+    throw createHttpError(400, "Max selection is required.");
+  }
+
+  if (String(minType).toLowerCase() === "valeur a entrer" && rawMinValue === null) {
+    throw createHttpError(400, "Min value is required.");
+  }
+
+  if (String(maxType).toLowerCase() === "valeur a entrer" && rawMaxValue === null) {
+    throw createHttpError(400, "Max value is required.");
+  }
+
+  if (!toleranceType) {
+    throw createHttpError(400, "Tolerance type is required.");
+  }
+
+  if (normalizedToleranceType === "relative" && rawUpTolerance === null) {
+    throw createHttpError(400, "Up tolerance is required.");
+  }
+
+  if (normalizedToleranceType === "relative" && rawLowTolerance === null) {
+    throw createHttpError(400, "Low tolerance is required.");
+  }
+
+  if (normalizedToleranceType === "absolute" && rawHighLimit === null) {
+    throw createHttpError(400, "High limit is required.");
+  }
+
+  if (normalizedToleranceType === "absolute" && rawLowLimit === null) {
+    throw createHttpError(400, "Low limit is required.");
+  }
+
+  if (!targetAutoAdjustment) {
+    throw createHttpError(400, "Target auto adjust is required.");
+  }
+
+  if (ownerRoleId === null) {
+    throw createHttpError(400, "Owner role is required.");
   }
 
   if (rawSubjectNodeId !== null && (!Number.isInteger(subjectNodeId) || subjectNodeId <= 0)) {
@@ -151,7 +237,7 @@ const prepareKpiWritePayload = (payload = {}) => {
     throw createHttpError(400, "Reference KPI_ID must be a valid integer.");
   }
 
-  if (String(calculationMode || "").toLowerCase() === "ratio" && referenceKpiId === null) {
+  if (normalizedCalculationMode === "ratio" && referenceKpiId === null) {
     throw createHttpError(400, "Reference KPI_ID is required for Ratio mode.");
   }
 
@@ -168,30 +254,29 @@ const prepareKpiWritePayload = (payload = {}) => {
     kpi_code: normalizeOptionalTextInput(payload.kpi_code),
     kpi_formula: normalizeOptionalTextInput(payload.kpi_formula),
     unit,
-    subject: normalizeOptionalTextInput(payload.subject),
+    subject,
     definition: explanation,
     kpi_explanation: explanation,
-    frequency: normalizeOptionalTextInput(payload.frequency),
+    frequency,
     target: targetValue === null ? null : Number(targetValue),
     target_value: targetValue === null ? null : Number(targetValue),
-    target_direction: normalizeOptionalTextInput(payload.target_direction),
-    tolerance_type: normalizeOptionalTextInput(payload.tolerance_type),
+    target_direction: targetDirection,
+    tolerance_type: toleranceType,
     up_tolerance: rawUpTolerance === null ? null : rawUpTolerance.replace(/\s+/g, ""),
     low_tolerance: rawLowTolerance === null ? null : rawLowTolerance.replace(/\s+/g, ""),
     max: maxValue === null ? null : Number(maxValue),
     max_value: maxValue === null ? null : Number(maxValue),
     min: minValue === null ? null : Number(minValue),
     min_value: minValue === null ? null : Number(minValue),
-    target_direction: normalizeOptionalTextInput(payload.target_direction || payload.direction),
-    nombre_periode: normalizeOptionalTextInput(payload.nombre_periode),
+    nombre_periode: nombrePeriode,
     calculation_mode: calculationMode,
-    display_trend: normalizeOptionalTextInput(payload.display_trend),
-    regression: normalizeOptionalTextInput(payload.regression),
-    min_type: normalizeOptionalTextInput(payload.min_type),
-    max_type: normalizeOptionalTextInput(payload.max_type),
-    calculation_on: normalizeOptionalTextInput(payload.calculation_on),
-    target_auto_adjustment: normalizeOptionalTextInput(payload.target_auto_adjustment),
-    reference_kpi_id: String(calculationMode || "").toLowerCase() === "ratio" ? referenceKpiId : null,
+    display_trend: displayTrend,
+    regression,
+    min_type: minType,
+    max_type: maxType,
+    calculation_on: calculationOn,
+    target_auto_adjustment: targetAutoAdjustment,
+    reference_kpi_id: normalizedCalculationMode === "ratio" ? referenceKpiId : null,
     owner_role_id: ownerRoleId,
     status,
     comments: normalizeOptionalTextInput(payload.comments),
@@ -207,6 +292,26 @@ const normalizeOptionalDateInput = (value) => {
 
   const parsed = new Date(`${text}T00:00:00Z`);
   return Number.isNaN(parsed.getTime()) ? null : text;
+};
+
+const formatDateOnlyValue = (value = new Date()) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const normalizedText = value.trim();
+    const dateOnlyMatch = normalizedText.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (dateOnlyMatch) {
+      return `${dateOnlyMatch[1]}-${dateOnlyMatch[2]}-${dateOnlyMatch[3]}`;
+    }
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 const prepareResponsibleParameterKpiPayload = (payload = {}) => {
@@ -251,7 +356,7 @@ const prepareResponsibleParameterKpiPayload = (payload = {}) => {
   }
 
   if (!localCurrency) {
-    throw createHttpError(400, "Local currency is required.");
+    throw createHttpError(400, "Sell Currency is required.");
   }
 
   if (!kpiType) {
@@ -352,7 +457,65 @@ const ensureResponsibleParameterKpiSchema = async () => {
 
 const ensureKpiObjectSchema = async () => {
   if (!kpiObjectSchemaPromise) {
-    kpiObjectSchemaPromise = Promise.resolve().catch((error) => {
+    kpiObjectSchemaPromise = (async () => {
+      await pool.query(`
+        ALTER TABLE public.kpi_target_allocation
+        ADD COLUMN IF NOT EXISTS unit_type_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_target_allocation
+        ADD COLUMN IF NOT EXISTS role_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_target_allocation
+        ADD COLUMN IF NOT EXISTS created_by_people_id INTEGER
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'fk_kpi_target_allocation_unit_type'
+          ) THEN
+            ALTER TABLE public.kpi_target_allocation
+            ADD CONSTRAINT fk_kpi_target_allocation_unit_type
+            FOREIGN KEY (unit_type_id)
+            REFERENCES public.unit_type (unit_type_id)
+            ON UPDATE NO ACTION
+            ON DELETE NO ACTION;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'fk_kpi_target_allocation_role'
+          ) THEN
+            ALTER TABLE public.kpi_target_allocation
+            ADD CONSTRAINT fk_kpi_target_allocation_role
+            FOREIGN KEY (role_id)
+            REFERENCES public.role (role_id)
+            ON UPDATE NO ACTION
+            ON DELETE NO ACTION;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_target_allocation_created_by
+        ON public.kpi_target_allocation (created_by_people_id)
+      `);
+    })().catch((error) => {
       kpiObjectSchemaPromise = null;
       throw error;
     });
@@ -498,11 +661,14 @@ const prepareKpiObjectPayload = (payload = {}) => {
   const rawPlantId = normalizeOptionalTextInput(payload.plant_id);
   const rawZoneId = normalizeOptionalTextInput(payload.zone_id);
   const rawUnitId = normalizeOptionalTextInput(payload.unit_id);
+  const rawUnitTypeId = normalizeOptionalTextInput(payload.unit_type_id);
+  const rawRoleId = normalizeOptionalTextInput(payload.role_id);
   const rawProductId = normalizeOptionalTextInput(payload.product_id);
   const rawProductLineId = normalizeOptionalTextInput(payload.product_line_id);
   const rawMarketId = normalizeOptionalTextInput(payload.market_id);
   const rawCustomerId = normalizeOptionalTextInput(payload.customer_id);
   const rawSetByPeopleId = normalizeOptionalTextInput(payload.set_by_people_id);
+  const rawCreatedByPeopleId = normalizeOptionalTextInput(payload.created_by_people_id);
   const rawApprovedByPeopleId = normalizeOptionalTextInput(payload.approved_by_people_id);
   const rawTargetValue = normalizeOptionalTextInput(payload.target_value ?? payload.target);
   const rawLastBestTarget = normalizeOptionalTextInput(payload.last_best_target ?? payload.best_new_target);
@@ -514,17 +680,22 @@ const prepareKpiObjectPayload = (payload = {}) => {
   const plantId = rawPlantId === null ? null : Number(rawPlantId);
   const zoneId = rawZoneId === null ? null : Number(rawZoneId);
   const unitId = rawUnitId === null ? null : Number(rawUnitId);
+  const unitTypeId = rawUnitTypeId === null ? null : Number(rawUnitTypeId);
+  const roleId = rawRoleId === null ? null : Number(rawRoleId);
   const productId = rawProductId === null ? null : Number(rawProductId);
   const productLineId = rawProductLineId === null ? null : Number(rawProductLineId);
   const marketId = rawMarketId === null ? null : Number(rawMarketId);
   const customerId = rawCustomerId === null ? null : Number(rawCustomerId);
   const setByPeopleId = rawSetByPeopleId === null ? null : Number(rawSetByPeopleId);
+  const createdByPeopleId = rawCreatedByPeopleId === null ? null : Number(rawCreatedByPeopleId);
   const approvedByPeopleId = rawApprovedByPeopleId === null ? null : Number(rawApprovedByPeopleId);
 
   const normalizedTargetValue = normalizeOptionalNumericInput(rawTargetValue);
   const normalizedLastBestTarget = normalizeOptionalNumericInput(rawLastBestTarget);
   const normalizedPreviousTargetValue = normalizeOptionalNumericInput(rawPreviousTargetValue);
-  const normalizedTargetSetupDate = normalizeOptionalDateInput(rawTargetSetupDate);
+  const normalizedTargetSetupDate =
+    normalizeOptionalDateInput(rawTargetSetupDate) ||
+    formatDateOnlyValue(new Date());
   const normalizedTargetStartDate = normalizeOptionalDateInput(rawTargetStartDate);
   const normalizedTargetEndDate = normalizeOptionalDateInput(rawTargetEndDate);
 
@@ -533,7 +704,7 @@ const prepareKpiObjectPayload = (payload = {}) => {
   }
 
   if (rawTargetValue === null || normalizedTargetValue === null) {
-    throw createHttpError(400, "Target value is required and must be numeric.");
+    throw createHttpError(400, "Target  is required and must be numeric.");
   }
 
   if (rawLastBestTarget !== null && normalizedLastBestTarget === null) {
@@ -541,11 +712,11 @@ const prepareKpiObjectPayload = (payload = {}) => {
   }
 
   if (rawPreviousTargetValue !== null && normalizedPreviousTargetValue === null) {
-    throw createHttpError(400, "Previous target value must be numeric.");
+    throw createHttpError(400, "Previous Target  must be numeric.");
   }
 
-  if (rawTargetSetupDate === null || normalizedTargetSetupDate === null) {
-    throw createHttpError(400, "Target setup date is required and must use YYYY-MM-DD format.");
+  if (rawTargetSetupDate !== null && normalizeOptionalDateInput(rawTargetSetupDate) === null) {
+    throw createHttpError(400, "Target setup date must use YYYY-MM-DD format.");
   }
 
   if (rawTargetStartDate !== null && normalizedTargetStartDate === null) {
@@ -574,11 +745,14 @@ const prepareKpiObjectPayload = (payload = {}) => {
     ["Plant", rawPlantId, plantId],
     ["Zone", rawZoneId, zoneId],
     ["Unit", rawUnitId, unitId],
+    ["Unit type", rawUnitTypeId, unitTypeId],
+    ["Role", rawRoleId, roleId],
     ["Product", rawProductId, productId],
     ["Product line", rawProductLineId, productLineId],
     ["Market", rawMarketId, marketId],
     ["Customer", rawCustomerId, customerId],
     ["Set by people", rawSetByPeopleId, setByPeopleId],
+    ["Created by people", rawCreatedByPeopleId, createdByPeopleId],
     ["Approved by people", rawApprovedByPeopleId, approvedByPeopleId]
   ]) {
     if (rawValue !== null && (!Number.isInteger(numericValue) || numericValue <= 0)) {
@@ -592,6 +766,8 @@ const prepareKpiObjectPayload = (payload = {}) => {
     plant_id: plantId,
     zone_id: zoneId,
     unit_id: unitId,
+    unit_type_id: unitTypeId,
+    role_id: roleId,
     function: functionName,
     product_id: productId,
     product_line_id: productLineId,
@@ -607,6 +783,7 @@ const prepareKpiObjectPayload = (payload = {}) => {
     previous_target_value: normalizedPreviousTargetValue === null ? null : Number(normalizedPreviousTargetValue),
     target_status: targetStatus,
     set_by_people_id: setByPeopleId,
+    created_by_people_id: createdByPeopleId,
     approved_by_people_id: approvedByPeopleId,
     comments: normalizeOptionalTextInput(payload.comments)
   };
@@ -709,7 +886,7 @@ const loadRoleOptions = async () => {
 
   return result.rows.map((row) => ({
     value: String(row.role_id),
-    label: [normalizeOptionalTextInput(row.role_name)]
+    label: [normalizeOptionalTextInput(row.role_name), normalizeOptionalTextInput(row.role_code)]
       .filter(Boolean)
       .join(" · ") || `Role ${row.role_id}`
   }));
@@ -718,20 +895,35 @@ const loadRoleOptions = async () => {
 const loadKpiTargetAllocationLookups = async () => {
   const [
     unitsResult,
+    unitTypesResult,
     zonesResult,
     productLinesResult,
     productsResult,
     marketsResult,
     customersResult,
-    peopleResult
+    peopleResult,
+    multisiteAssignmentsResult
   ] = await Promise.all([
     pool.query(`
-      SELECT unit_id, unit_name, unit_type_id
-      FROM public.unit
-      ORDER BY unit_name, unit_id
+      SELECT
+        u.unit_id,
+        u.unit_name,
+        u.unit_type_id,
+        ut.unit_type_name,
+        u.selling_currency,
+        u.operating_currency
+      FROM public.unit u
+      LEFT JOIN public.unit_type ut
+        ON ut.unit_type_id = u.unit_type_id
+      ORDER BY ut.unit_type_name, u.unit_name, u.unit_id
     `),
     pool.query(`
-      SELECT zone_id, zone_name
+      SELECT unit_type_id, unit_type_name
+      FROM public.unit_type
+      ORDER BY unit_type_name, unit_type_id
+    `),
+    pool.query(`
+      SELECT zone_id, zone_name, responsable_zone
       FROM public.zone
       ORDER BY zone_name, zone_id
     `),
@@ -759,20 +951,105 @@ const loadKpiTargetAllocationLookups = async () => {
       SELECT people_id, name, first_name
       FROM public.people
       ORDER BY name, first_name, people_id
+    `),
+    pool.query(`
+      SELECT
+        u.unit_id,
+        u.unit_name,
+        u.unit_type_id,
+        ut.unit_type_name,
+        u.selling_currency,
+        u.operating_currency,
+        p.people_id,
+        p.name,
+        p.first_name,
+        pra.role_id,
+        COALESCE(r.role_name, '') AS role_name,
+        COALESCE(pra.is_primary, false) AS is_primary
+      FROM public.unit u
+      LEFT JOIN public.unit_type ut
+        ON ut.unit_type_id = u.unit_type_id
+      LEFT JOIN public.people p
+        ON p.work_at_unit_id = u.unit_id
+      LEFT JOIN public.people_role_assignment pra
+        ON pra.people_id = p.people_id
+       AND pra.assignment_status = 'ACTIVE'
+      LEFT JOIN public.role r
+        ON r.role_id = pra.role_id
+      ORDER BY
+        ut.unit_type_name,
+        u.unit_name,
+        r.role_name,
+        pra.is_primary DESC,
+        p.name,
+        p.first_name,
+        p.people_id
     `)
   ]);
 
   const unitOptions = unitsResult.rows.map((row) => ({
     value: String(row.unit_id),
-    label: normalizeOptionalTextInput(row.unit_name) || `Unit ${row.unit_id}`
+    label: normalizeOptionalTextInput(row.unit_name) || `Unit ${row.unit_id}`,
+    unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+    unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+    selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+    operating_currency: normalizeOptionalTextInput(row.operating_currency) || ""
   }));
+  const multisiteAssignmentsMap = new Map(
+    unitOptions.map((unit) => [
+      String(unit.value),
+      {
+        value: String(unit.value),
+        label: unit.label,
+        unit_type_id: unit.unit_type_id,
+        unit_type_name: unit.unit_type_name,
+        selling_currency: unit.selling_currency,
+        operating_currency: unit.operating_currency,
+        responsibles: []
+      }
+    ])
+  );
+
+  multisiteAssignmentsResult.rows.forEach((row) => {
+    const unitId = normalizeOptionalIntegerInput(row.unit_id);
+    if (!unitId) return;
+
+    const unitKey = String(unitId);
+    if (!multisiteAssignmentsMap.has(unitKey)) {
+      multisiteAssignmentsMap.set(unitKey, {
+        value: unitKey,
+        label: normalizeOptionalTextInput(row.unit_name) || `Unit ${unitKey}`,
+        unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id),
+        unit_type_name: normalizeOptionalTextInput(row.unit_type_name) || "",
+        selling_currency: normalizeOptionalTextInput(row.selling_currency) || "",
+        operating_currency: normalizeOptionalTextInput(row.operating_currency) || "",
+        responsibles: []
+      });
+    }
+
+    if (!normalizeOptionalIntegerInput(row.people_id)) return;
+
+    multisiteAssignmentsMap.get(unitKey).responsibles.push({
+      people_id: String(row.people_id),
+      label: getPeopleDisplayName(row) || `Person ${row.people_id}`,
+      role_id: normalizeOptionalIntegerInput(row.role_id),
+      role_name: normalizeOptionalTextInput(row.role_name) || "",
+      is_primary: Boolean(row.is_primary)
+    });
+  });
 
   return {
     plants: unitOptions,
     units: unitOptions,
+    unitTypes: unitTypesResult.rows.map((row) => ({
+      value: String(row.unit_type_id),
+      label: normalizeOptionalTextInput(row.unit_type_name) || `Unit type ${row.unit_type_id}`
+    })),
+    multisiteAssignments: Array.from(multisiteAssignmentsMap.values()),
     zones: zonesResult.rows.map((row) => ({
       value: String(row.zone_id),
-      label: normalizeOptionalTextInput(row.zone_name) || `Zone ${row.zone_id}`
+      label: normalizeOptionalTextInput(row.zone_name) || `Zone ${row.zone_id}`,
+      responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || ""
     })),
     productLines: productLinesResult.rows.map((row) => ({
       value: String(row.product_line_id),
@@ -859,7 +1136,10 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
   const subjectHierarchy = await loadSubjectHierarchyData();
   const searchText = normalizeOptionalTextInput(search) || "";
   const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
-  const params = [searchText, `%${searchText}%`, kpiId, normalizedResponsibleId];
+  const params =
+  normalizedResponsibleId === null
+    ? [searchText, `%${searchText}%`, kpiId]
+    : [searchText, `%${searchText}%`, kpiId, normalizedResponsibleId];
 
   const result = await pool.query(
     `
@@ -904,8 +1184,9 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       set_by_people.name AS set_by_people_name,
       set_by_people.first_name AS set_by_people_first_name
     FROM public.kpi k
+
     ${normalizedResponsibleId === null ? "" : `
-    JOIN LATERAL (
+    LEFT JOIN LATERAL (
       SELECT
         a.kpi_target_allocation_id,
         a.target_value,
@@ -921,17 +1202,20 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
     LEFT JOIN public.people set_by_people
       ON set_by_people.people_id = assignment.set_by_people_id
     `}
+
     ${normalizedResponsibleId === null ? `
     LEFT JOIN LATERAL (
-      SELECT NULL::integer AS kpi_target_allocation_id,
-             NULL::numeric AS target_value,
-             NULL::varchar AS target_unit,
-             NULL::varchar AS target_status,
-             NULL::integer AS set_by_people_id
+      SELECT
+        NULL::integer AS kpi_target_allocation_id,
+        NULL::numeric AS target_value,
+        NULL::varchar AS target_unit,
+        NULL::varchar AS target_status,
+        NULL::integer AS set_by_people_id
     ) assignment ON TRUE
     LEFT JOIN public.people set_by_people
       ON 1 = 0
     ` : ""}
+
     LEFT JOIN LATERAL (
       SELECT sk.subject_id
       FROM public.subject_kpi sk
@@ -939,9 +1223,9 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
       LIMIT 1
     ) primary_subject ON TRUE
+
     WHERE
       ($3::integer IS NULL OR k.kpi_id = $3)
-      AND ($4::integer IS NULL OR assignment.kpi_target_allocation_id IS NOT NULL)
       AND (
         $1 = ''
         OR COALESCE(k.kpi_name, '') ILIKE $2
@@ -958,6 +1242,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
             AND COALESCE(s2.subject_name, '') ILIKE $2
         )
       )
+
     ORDER BY k.kpi_id DESC
     `,
     params
@@ -1053,10 +1338,16 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       a.kpi_id,
       a.plant_id,
       plant.unit_name AS plant_name,
+      plant.unit_type_id AS plant_unit_type_id,
       a.zone_id,
       zone.zone_name,
+      zone.responsable_zone,
       a.unit_id,
       unit_scope.unit_name AS unit_name,
+      a.unit_type_id,
+      unit_type.unit_type_name,
+      a.role_id,
+      role.role_name,
       a.function,
       a.product_id,
       product.product_name,
@@ -1070,15 +1361,18 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       a.target_unit,
       a.local_currency,
       a.kpi_type,
-      a.target_setup_date,
-      a.target_start_date,
-      a.target_end_date,
+      TO_CHAR(a.target_setup_date, 'YYYY-MM-DD') AS target_setup_date,
+      TO_CHAR(a.target_start_date, 'YYYY-MM-DD') AS target_start_date,
+      TO_CHAR(a.target_end_date, 'YYYY-MM-DD') AS target_end_date,
       a.last_best_target,
       a.previous_target_value,
       a.target_status,
       a.set_by_people_id,
+      a.created_by_people_id,
       set_by_people.name AS set_by_people_name,
       set_by_people.first_name AS set_by_people_first_name,
+      created_by_people.name AS created_by_people_name,
+      created_by_people.first_name AS created_by_people_first_name,
       a.approved_by_people_id,
       approved_by_people.name AS approved_by_people_name,
       approved_by_people.first_name AS approved_by_people_first_name,
@@ -1093,10 +1387,14 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       ON k.kpi_id = a.kpi_id
     LEFT JOIN public.unit plant
       ON plant.unit_id = a.plant_id
+    LEFT JOIN public.unit_type unit_type
+      ON unit_type.unit_type_id = a.unit_type_id
     LEFT JOIN public.zone zone
       ON zone.zone_id = a.zone_id
     LEFT JOIN public.unit unit_scope
       ON unit_scope.unit_id = a.unit_id
+    LEFT JOIN public.role role
+      ON role.role_id = a.role_id
     LEFT JOIN public.product product
       ON product.product_id = a.product_id
     LEFT JOIN public.product_line product_line
@@ -1107,6 +1405,8 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       ON customer.customer_id = a.customer_id
     LEFT JOIN public.people set_by_people
       ON set_by_people.people_id = a.set_by_people_id
+    LEFT JOIN public.people created_by_people
+      ON created_by_people.people_id = a.created_by_people_id
     LEFT JOIN public.people approved_by_people
       ON approved_by_people.people_id = a.approved_by_people_id
     LEFT JOIN LATERAL (
@@ -1117,7 +1417,11 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       LIMIT 1
     ) primary_subject ON TRUE
     WHERE ($1::integer IS NULL OR a.kpi_target_allocation_id = $1)
-      AND ($2::integer IS NULL OR a.set_by_people_id = $2)
+      AND (
+        $2::integer IS NULL
+        OR a.set_by_people_id = $2
+        OR a.created_by_people_id = $2
+      )
     ORDER BY a.created_at DESC, a.kpi_target_allocation_id DESC
     `,
     [allocationId, normalizedResponsibleId]
@@ -1125,17 +1429,211 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
 
   return result.rows.map((row) => ({
     ...row,
+    unit_type_id: row.unit_type_id ?? row.plant_unit_type_id ?? null,
+    unit_type_name: row.unit_type_name || "",
+    role_name: row.role_name || "",
+    responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || "",
     kpi_subject: row.subject_id ? subjectHierarchy.pathById.get(String(row.subject_id)) || "" : "",
     kpi_group: row.kpi_sub_title || "",
     set_by_people_display_name: getPeopleDisplayName({
       name: row.set_by_people_name,
       first_name: row.set_by_people_first_name
+    }) || normalizeOptionalTextInput(row.responsable_zone) || "",
+    created_by_people_display_name: getPeopleDisplayName({
+      name: row.created_by_people_name,
+      first_name: row.created_by_people_first_name
     }) || "",
     approved_by_people_display_name: getPeopleDisplayName({
       name: row.approved_by_people_name,
       first_name: row.approved_by_people_first_name
     }) || ""
   }));
+};
+
+const buildPreparedKpiObjectRows = (
+  payload = {},
+  defaultSetByPeopleId = null,
+  defaultCreatedByPeopleId = null
+) => {
+  const payloadHasSetByPeopleId = Object.prototype.hasOwnProperty.call(payload, "set_by_people_id");
+  const payloadHasCreatedByPeopleId = Object.prototype.hasOwnProperty.call(payload, "created_by_people_id");
+  const basePayload = {
+    ...payload,
+    set_by_people_id: payloadHasSetByPeopleId
+      ? payload.set_by_people_id
+      : defaultSetByPeopleId,
+    created_by_people_id: payloadHasCreatedByPeopleId
+      ? payload.created_by_people_id
+      : defaultCreatedByPeopleId
+  };
+  const requestedRows = Array.isArray(payload.unit_allocations)
+    ? payload.unit_allocations.filter(
+      (row) => normalizeOptionalTextInput(row?.target_value ?? row?.target) !== null
+    )
+    : [];
+
+  if (!requestedRows.length) {
+    return [prepareKpiObjectPayload(basePayload)];
+  }
+
+  return requestedRows.map((row) =>
+    prepareKpiObjectPayload({
+      ...basePayload,
+      ...row,
+      kpi_id: row.kpi_id ?? payload.kpi_id,
+      kpi_type: row.kpi_type ?? payload.kpi_type,
+      plant_id: row.plant_id ?? row.unit_id ?? payload.plant_id,
+      zone_id: row.zone_id ?? payload.zone_id,
+      unit_id: row.unit_id ?? payload.unit_id,
+      unit_type_id: row.unit_type_id ?? payload.unit_type_id,
+      role_id: row.role_id ?? payload.role_id,
+      function: row.function ?? payload.function,
+      product_id: row.product_id ?? payload.product_id,
+      product_line_id: row.product_line_id ?? payload.product_line_id,
+      market_id: row.market_id ?? payload.market_id,
+      customer_id: row.customer_id ?? payload.customer_id,
+      target_value: row.target_value ?? payload.target_value,
+      target_unit: row.target_unit ?? payload.target_unit,
+      local_currency: row.local_currency ?? payload.local_currency,
+      target_setup_date: row.target_setup_date ?? payload.target_setup_date,
+      target_start_date: row.target_start_date ?? payload.target_start_date,
+      target_end_date: row.target_end_date ?? payload.target_end_date,
+      last_best_target: row.last_best_target ?? payload.last_best_target,
+      previous_target_value: row.previous_target_value ?? payload.previous_target_value,
+      target_status: row.target_status ?? payload.target_status,
+      set_by_people_id: Object.prototype.hasOwnProperty.call(row, "set_by_people_id")
+        ? row.set_by_people_id
+        : (payloadHasSetByPeopleId ? payload.set_by_people_id : defaultSetByPeopleId),
+      created_by_people_id: Object.prototype.hasOwnProperty.call(row, "created_by_people_id")
+        ? row.created_by_people_id
+        : (payloadHasCreatedByPeopleId ? payload.created_by_people_id : defaultCreatedByPeopleId),
+      approved_by_people_id: row.approved_by_people_id ?? payload.approved_by_people_id,
+      comments: row.comments ?? payload.comments
+    })
+  );
+};
+
+const getKpiObjectInsertValues = (payload = {}) => ([
+  payload.kpi_id,
+  payload.plant_id,
+  payload.zone_id,
+  payload.unit_id,
+  payload.function,
+  payload.product_id,
+  payload.product_line_id,
+  payload.market_id,
+  payload.customer_id,
+  payload.target_value,
+  payload.target_unit,
+  payload.local_currency,
+  payload.kpi_type,
+  payload.unit_type_id,
+  payload.role_id,
+  payload.target_setup_date,
+  payload.target_start_date,
+  payload.target_end_date,
+  payload.last_best_target,
+  payload.previous_target_value,
+  payload.target_status,
+  payload.set_by_people_id,
+  payload.created_by_people_id,
+  payload.approved_by_people_id,
+  payload.comments
+]);
+
+const getKpiTargetAllocationScopeKey = (row = {}) => {
+  const normalizedZoneId = normalizeOptionalIntegerInput(row.zone_id);
+  if (normalizedZoneId) {
+    return `zone:${normalizedZoneId}`;
+  }
+
+  const normalizedUnitId = normalizeOptionalIntegerInput(row.plant_id ?? row.unit_id);
+  if (normalizedUnitId) {
+    return `unit:${normalizedUnitId}`;
+  }
+
+  return "";
+};
+
+const getKpiTargetAllocationGroupIds = async (allocationId) => {
+  const normalizedAllocationId = normalizeOptionalIntegerInput(allocationId);
+  if (!normalizedAllocationId) return [];
+
+  const anchorResult = await pool.query(
+    `
+    SELECT
+      kpi_target_allocation_id,
+      kpi_id,
+      kpi_type,
+      unit_type_id,
+      role_id,
+      "function",
+      product_id,
+      product_line_id,
+      market_id,
+      customer_id,
+      created_at
+    FROM public.kpi_target_allocation
+    WHERE kpi_target_allocation_id = $1
+    LIMIT 1
+    `,
+    [normalizedAllocationId]
+  );
+
+  const anchorRow = anchorResult.rows[0];
+  if (!anchorRow) return [];
+
+  const siblingResult = await pool.query(
+    `
+    SELECT kpi_target_allocation_id
+    FROM public.kpi_target_allocation
+    WHERE kpi_id = $1
+      AND COALESCE(kpi_type, '') = COALESCE($2, '')
+      AND COALESCE(unit_type_id, 0) = COALESCE($3, 0)
+      AND COALESCE(role_id, 0) = COALESCE($4, 0)
+      AND COALESCE("function", '') = COALESCE($5, '')
+      AND COALESCE(product_id, 0) = COALESCE($6, 0)
+      AND COALESCE(product_line_id, 0) = COALESCE($7, 0)
+      AND COALESCE(market_id, 0) = COALESCE($8, 0)
+      AND COALESCE(customer_id, 0) = COALESCE($9, 0)
+      AND created_at = $10
+    ORDER BY kpi_target_allocation_id ASC
+    `,
+    [
+      anchorRow.kpi_id,
+      anchorRow.kpi_type,
+      anchorRow.unit_type_id,
+      anchorRow.role_id,
+      anchorRow.function,
+      anchorRow.product_id,
+      anchorRow.product_line_id,
+      anchorRow.market_id,
+      anchorRow.customer_id,
+      anchorRow.created_at
+    ]
+  );
+
+  const groupIds = siblingResult.rows
+    .map((row) => normalizeOptionalIntegerInput(row.kpi_target_allocation_id))
+    .filter((value) => Number.isInteger(value));
+
+  return groupIds.length ? groupIds : [normalizedAllocationId];
+};
+
+const loadKpiTargetAllocationGroupRowsForUi = async (allocationId) => {
+  const groupIds = await getKpiTargetAllocationGroupIds(allocationId);
+  if (!groupIds.length) return [];
+
+  const rowCollections = await Promise.all(
+    groupIds.map((groupAllocationId) =>
+      loadKpiTargetAllocationRowsForUi({ allocationId: groupAllocationId, responsibleId: null })
+    )
+  );
+
+  return rowCollections
+    .flat()
+    .filter(Boolean)
+    .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
 };
 
 app.use(cors());
@@ -1148,8 +1646,53 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.get("/api/kpis", async (req, res) => {
   try {
     await ensureKpiRatioSchema();
-    const rows = await loadKpiRowsForUi({ search: req.query.search || "" });
-    res.json(rows);
+
+    const searchText = normalizeOptionalTextInput(req.query.search) || "";
+
+    const result = await pool.query(
+      `
+      SELECT
+        k.kpi_id,
+        k.kpi_name,
+        k.kpi_sub_title,
+        k.kpi_code,
+        k.unit,
+        k.target_value,
+        k.status,
+        primary_subject.subject_id
+      FROM public.kpi k
+      LEFT JOIN LATERAL (
+        SELECT sk.subject_id
+        FROM public.subject_kpi sk
+        WHERE sk.kpi_id = k.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) primary_subject ON TRUE
+      WHERE
+        $1 = ''
+        OR COALESCE(k.kpi_name, '') ILIKE $2
+        OR COALESCE(k.kpi_sub_title, '') ILIKE $2
+        OR COALESCE(k.kpi_code, '') ILIKE $2
+      ORDER BY k.kpi_name ASC
+      `,
+      [searchText, `%${searchText}%`]
+    );
+
+    const subjectHierarchy = await loadSubjectHierarchyData();
+
+    res.json(result.rows.map((row) => ({
+      kpi_id: row.kpi_id,
+      kpi_name: row.kpi_name || "",
+      indicator_sub_title: row.kpi_name || "",
+      indicator_title: row.kpi_sub_title || "",
+      kpi_code: row.kpi_code || "",
+      unit: row.unit || "",
+      target: row.target_value,
+      status: row.status || "Active",
+      subject: row.subject_id
+        ? subjectHierarchy.pathById.get(String(row.subject_id)) || "Other KPIs"
+        : "Other KPIs"
+    })));
   } catch (err) {
     console.error("GET /api/kpis error:", err.message);
     res.status(500).json({ error: err.message });
@@ -2948,32 +3491,6 @@ VALUES (
     const newKpi = insertKpi.rows[0];
     await upsertPrimarySubjectKpiLink(client, newKpi.kpi_id, resolvedSubjectId);
 
-    await client.query(
-      `
-      INSERT INTO public.kpi_target_allocation (
-        kpi_id,
-        target_value,
-        target_unit,
-        local_currency,
-        kpi_type,
-        target_setup_date,
-        target_status,
-        set_by_people_id,
-        comments
-      )
-      VALUES ($1, $2, $3, $4, $5, CURRENT_DATE, $6, $7, $8)
-      `,
-      [
-        newKpi.kpi_id,
-        newKpi.target_value ?? 0,
-        newKpi.unit || null,
-        null,
-        null,
-        "Draft",
-        responsiblePeopleId,
-        "Auto-created from KPI creation."
-      ]
-    );
 
     await client.query("COMMIT");
     const rows = await loadKpiRowsForUi({
@@ -3364,106 +3881,97 @@ app.post("/api/responsibles/:responsibleId/parameter-kpis", async (req, res) => 
 
 app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
   const { responsibleId } = req.params;
+  let client;
   try {
     await ensureKpiObjectSchema();
     const responsiblePeopleContext = await loadPeopleContextByPeopleId(responsibleId);
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
-    const {
-      kpi_id,
-      plant_id,
-      zone_id,
-      unit_id,
-      function: functionName,
-      product_id,
-      product_line_id,
-      market_id,
-      customer_id,
-      target_value,
-      target_unit,
-      local_currency,
-      kpi_type,
-      target_setup_date,
-      target_start_date,
-      target_end_date,
-      last_best_target,
-      previous_target_value,
-      target_status,
-      set_by_people_id,
-      approved_by_people_id,
-      comments
-    } = prepareKpiObjectPayload({
+    const createdByPeopleId =
+      normalizeOptionalIntegerInput(req.body.created_by_people_id) ||
+      normalizedResponsiblePeopleId;
+    const preparedRows = buildPreparedKpiObjectRows({
       ...req.body,
-      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId
-    });
+      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId,
+      created_by_people_id: req.body.created_by_people_id || createdByPeopleId
+    }, normalizedResponsiblePeopleId, createdByPeopleId);
 
-    const result = await pool.query(
-      `
-      INSERT INTO public.kpi_target_allocation (
-      kpi_id,
-      plant_id,
-      zone_id,
-      unit_id,
-      "function",
-      product_id,
-      product_line_id,
-      market_id,
-      customer_id,
-      target_value,
-      target_unit,
-      local_currency,
-      kpi_type,
-      target_setup_date,
-      target_start_date,
-      target_end_date,
-      last_best_target,
-      previous_target_value,
-      target_status,
-      set_by_people_id,
-      approved_by_people_id,
-      comments
-     )
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-      RETURNING *
-      `,
-      [
-        kpi_id,
-        plant_id,
-        zone_id,
-        unit_id,
-        functionName,
-        product_id,
-        product_line_id,
-        market_id,
-        customer_id,
-        target_value,
-        target_unit,
-        local_currency,
-        kpi_type,
-        target_setup_date,
-        target_start_date,
-        target_end_date,
-        last_best_target,
-        previous_target_value,
-        target_status,
-        set_by_people_id,
-        approved_by_people_id,
-        comments
-      ]
+    if (!preparedRows.length) {
+      throw createHttpError(400, "Enter at least one unit Target .");
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const insertedIds = [];
+
+    for (const preparedRow of preparedRows) {
+      const result = await client.query(
+        `
+        INSERT INTO public.kpi_target_allocation (
+          kpi_id,
+          plant_id,
+          zone_id,
+          unit_id,
+          "function",
+          product_id,
+          product_line_id,
+          market_id,
+          customer_id,
+          target_value,
+          target_unit,
+          local_currency,
+          kpi_type,
+          unit_type_id,
+          role_id,
+          target_setup_date,
+          target_start_date,
+          target_end_date,
+          last_best_target,
+          previous_target_value,
+          target_status,
+          set_by_people_id,
+          created_by_people_id,
+          approved_by_people_id,
+          comments
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+        RETURNING kpi_target_allocation_id
+        `,
+        getKpiObjectInsertValues(preparedRow)
+      );
+
+      if (result.rows[0]?.kpi_target_allocation_id) {
+        insertedIds.push(result.rows[0].kpi_target_allocation_id);
+      }
+    }
+
+    await client.query("COMMIT");
+
+    const rows = await Promise.all(
+      insertedIds.map((allocationId) =>
+        loadKpiTargetAllocationRowsForUi({
+          allocationId,
+          responsibleId: normalizedResponsiblePeopleId || responsibleId
+        })
+      )
     );
 
-    const rows = await loadKpiTargetAllocationRowsForUi({
-      allocationId: result.rows[0]?.kpi_target_allocation_id,
-      responsibleId: normalizedResponsiblePeopleId || responsibleId
-    });
-
-    res.status(201).json(rows[0] || result.rows[0]);
+    const createdRows = rows.flat().filter(Boolean);
+    res.status(201).json(createdRows.length === 1 ? createdRows[0] : createdRows);
   } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
     console.error("POST KPI object error:", error);
     res.status(error.statusCode || 500).json({
       error: error.statusCode ? error.message : "Failed to create KPI target allocation"
     });
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 
@@ -3472,6 +3980,9 @@ app.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
   try {
     await ensureKpiObjectSchema();
     const rows = await loadKpiTargetAllocationRowsForUi({ responsibleId });
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
     res.json(rows);
   } catch (error) {
     console.error("GET KPI objects error:", error);
@@ -3484,16 +3995,28 @@ app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
   try {
     await ensureKpiObjectSchema();
-    const rows = await loadKpiTargetAllocationRowsForUi({
+    const anchorRows = await loadKpiTargetAllocationRowsForUi({
       allocationId: Number(kpiObjectId),
       responsibleId
     });
 
-    if (!rows.length) {
+    if (!anchorRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
-    res.json(rows[0]);
+    const relatedAllocations = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const primaryRow =
+      relatedAllocations.find(
+        (row) => Number(row.kpi_target_allocation_id) === Number(kpiObjectId)
+      ) || relatedAllocations[0] || anchorRows[0];
+
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    res.json({
+      ...(primaryRow || anchorRows[0]),
+      related_allocations: relatedAllocations.length ? relatedAllocations : anchorRows
+    });
   } catch (error) {
     console.error("GET one KPI object error:", error);
     res.status(500).json({ error: "Failed to load KPI target allocation" });
@@ -3502,6 +4025,8 @@ app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
 app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
   const { responsibleId, kpiObjectId } = req.params;
+  let client;
+  let transactionCompleted = false;
 
   try {
     await ensureKpiObjectSchema();
@@ -3509,106 +4034,202 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
-    const {
-      kpi_id,
-      plant_id,
-      zone_id,
-      unit_id,
-      function: functionName,
-      product_id,
-      product_line_id,
-      market_id,
-      customer_id,
-      target_value,
-      target_unit,
-      local_currency,
-      kpi_type,
-      target_setup_date,
-      target_start_date,
-      target_end_date,
-      last_best_target,
-      previous_target_value,
-      target_status,
-      set_by_people_id,
-      approved_by_people_id,
-      comments
-    } = prepareKpiObjectPayload({
-      ...req.body,
-      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId
-    });
+    const existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
 
-    const result = await pool.query(
-      `
-      UPDATE public.kpi_target_allocation
-      SET
-        kpi_id = $1,
-        plant_id = $2,
-        zone_id = $3,
-        unit_id = $4,
-        "function" = $5,
-        product_id = $6,
-        product_line_id = $7,
-        market_id = $8,
-        customer_id = $9,
-        target_value = $10,
-        target_unit = $11,
-        local_currency = $12,
-        kpi_type = $13,
-        target_setup_date = $14,
-        target_start_date = $15,
-        target_end_date = $16,
-        last_best_target = $17,
-        previous_target_value = $18,
-        target_status = $19,
-        set_by_people_id = $20,
-        approved_by_people_id = $21,
-        comments = $22,
-        updated_at = NOW()
-      WHERE kpi_target_allocation_id = $23
-      RETURNING *
-      `,
-      [
-        kpi_id,
-        plant_id,
-        zone_id,
-        unit_id,
-        functionName,
-        product_id,
-        product_line_id,
-        market_id,
-        customer_id,
-        target_value,
-        target_unit,
-        local_currency,
-        kpi_type,
-        target_setup_date,
-        target_start_date,
-        target_end_date,
-        last_best_target,
-        previous_target_value,
-        target_status,
-        set_by_people_id,
-        approved_by_people_id,
-        comments,
-        kpiObjectId,
-      ]
-    );
-
-    if (!result.rows.length) {
+    if (!existingGroupRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
-    const rows = await loadKpiTargetAllocationRowsForUi({
-      allocationId: Number(kpiObjectId),
-      responsibleId: normalizedResponsiblePeopleId || responsibleId
-    });
+    const preservedCreatedByPeopleId =
+      normalizeOptionalIntegerInput(req.body.created_by_people_id) ||
+      normalizeOptionalIntegerInput(existingGroupRows[0]?.created_by_people_id) ||
+      normalizedResponsiblePeopleId;
+    const preservedGroupCreatedAt =
+      existingGroupRows[0]?.created_at || new Date().toISOString();
+    const normalizedExistingGroupType = String(existingGroupRows[0]?.kpi_type || "")
+      .trim()
+      .toLowerCase();
+    const shouldPreserveMissingRows =
+      normalizedExistingGroupType === "multisite" ||
+      normalizedExistingGroupType === "zone" ||
+      existingGroupRows.length > 1;
+    const preparedRows = buildPreparedKpiObjectRows({
+      ...req.body,
+      set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId,
+      created_by_people_id: req.body.created_by_people_id || preservedCreatedByPeopleId
+    }, normalizedResponsiblePeopleId, preservedCreatedByPeopleId);
 
-    res.json(rows[0] || result.rows[0]);
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const existingRowsByScopeKey = new Map(
+      existingGroupRows
+        .map((row) => [getKpiTargetAllocationScopeKey(row), row])
+        .filter(([scopeKey]) => Boolean(scopeKey))
+    );
+    const preparedRowsByScopeKey = new Map(
+      preparedRows
+        .map((row) => [getKpiTargetAllocationScopeKey(row), row])
+        .filter(([scopeKey]) => Boolean(scopeKey))
+    );
+    const resultingAllocationIds = [];
+
+    for (const [scopeKey, preparedRow] of preparedRowsByScopeKey.entries()) {
+      const existingRow = existingRowsByScopeKey.get(scopeKey);
+
+      if (existingRow?.kpi_target_allocation_id) {
+        const updateResult = await client.query(
+          `
+          UPDATE public.kpi_target_allocation
+          SET
+            kpi_id = $1,
+            plant_id = $2,
+            zone_id = $3,
+            unit_id = $4,
+            "function" = $5,
+            product_id = $6,
+            product_line_id = $7,
+            market_id = $8,
+            customer_id = $9,
+            target_value = $10,
+            target_unit = $11,
+            local_currency = $12,
+            kpi_type = $13,
+            unit_type_id = $14,
+            role_id = $15,
+            target_setup_date = $16,
+            target_start_date = $17,
+            target_end_date = $18,
+            last_best_target = $19,
+            previous_target_value = $20,
+            target_status = $21,
+            set_by_people_id = $22,
+            created_by_people_id = $23,
+            approved_by_people_id = $24,
+            comments = $25,
+            updated_at = NOW()
+          WHERE kpi_target_allocation_id = $26
+          RETURNING kpi_target_allocation_id
+          `,
+          [
+            ...getKpiObjectInsertValues(preparedRow),
+            existingRow.kpi_target_allocation_id,
+          ]
+        );
+
+        if (updateResult.rows[0]?.kpi_target_allocation_id) {
+          resultingAllocationIds.push(updateResult.rows[0].kpi_target_allocation_id);
+        }
+        continue;
+      }
+
+      const insertResult = await client.query(
+        `
+        INSERT INTO public.kpi_target_allocation (
+          kpi_id,
+          plant_id,
+          zone_id,
+          unit_id,
+          "function",
+          product_id,
+          product_line_id,
+          market_id,
+          customer_id,
+          target_value,
+          target_unit,
+          local_currency,
+          kpi_type,
+          unit_type_id,
+          role_id,
+          target_setup_date,
+          target_start_date,
+          target_end_date,
+          last_best_target,
+          previous_target_value,
+          target_status,
+          set_by_people_id,
+          created_by_people_id,
+          approved_by_people_id,
+          comments,
+          created_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+        RETURNING kpi_target_allocation_id
+        `,
+        [
+          ...getKpiObjectInsertValues(preparedRow),
+          preservedGroupCreatedAt
+        ]
+      );
+
+      if (insertResult.rows[0]?.kpi_target_allocation_id) {
+        resultingAllocationIds.push(insertResult.rows[0].kpi_target_allocation_id);
+      }
+    }
+
+    for (const [scopeKey, existingRow] of existingRowsByScopeKey.entries()) {
+      if (preparedRowsByScopeKey.has(scopeKey)) continue;
+
+      if (shouldPreserveMissingRows) {
+        if (existingRow?.kpi_target_allocation_id) {
+          resultingAllocationIds.push(existingRow.kpi_target_allocation_id);
+        }
+        continue;
+      }
+
+      await client.query(
+        `
+        DELETE FROM public.kpi_target_allocation
+        WHERE kpi_target_allocation_id = $1
+        `,
+        [existingRow.kpi_target_allocation_id]
+      );
+    }
+
+    await client.query("COMMIT");
+    transactionCompleted = true;
+
+    const refreshedRowIds = Array.from(
+      new Set(
+        resultingAllocationIds
+          .map((allocationId) => Number(allocationId))
+          .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
+      )
+    );
+
+    const refreshedRows = await Promise.all(
+      refreshedRowIds.map((allocationId) =>
+        loadKpiTargetAllocationRowsForUi({
+          allocationId: Number(allocationId),
+          responsibleId: null
+        })
+      )
+    );
+    const relatedAllocations = refreshedRows
+      .flat()
+      .filter(Boolean)
+      .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
+    const primaryRow =
+      relatedAllocations.find(
+        (row) => Number(row.kpi_target_allocation_id) === Number(kpiObjectId)
+      ) || relatedAllocations[0] || null;
+
+    res.json({
+      ...(primaryRow || {}),
+      related_allocations: relatedAllocations
+    });
   } catch (error) {
     console.error("PUT KPI object error:", error);
     res.status(error.statusCode || 500).json({
       error: error.statusCode ? error.message : "Failed to update KPI target allocation"
     });
+  } finally {
+    if (client) {
+      if (!transactionCompleted) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      client.release();
+    }
   }
 });
 
@@ -3617,20 +4238,30 @@ app.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
 
   try {
     await ensureKpiObjectSchema();
+    const groupIds = await getKpiTargetAllocationGroupIds(kpiObjectId);
+    if (!groupIds.length) {
+      return res.status(404).json({ error: "KPI target allocation not found" });
+    }
+
     const result = await pool.query(
       `
       DELETE FROM public.kpi_target_allocation
-      WHERE kpi_target_allocation_id = $1
+      WHERE kpi_target_allocation_id = ANY($1::int[])
       RETURNING kpi_target_allocation_id
       `,
-      [kpiObjectId]
+      [groupIds]
     );
 
     if (!result.rows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
-    res.json({ success: true });
+    res.json({
+      success: true,
+      deleted_ids: result.rows
+        .map((row) => Number(row.kpi_target_allocation_id))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    });
   } catch (error) {
     console.error("DELETE KPI object error:", error);
     res.status(500).json({ error: "Failed to delete KPI target allocation" });
@@ -3808,6 +4439,45 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
   }
 });
 
+//get manufacturing data
+app.get("/api/manufacturing-strategy/zone", async (req, res) => {
+  const { unit_id, product_id } = req.query;
+
+  if (!unit_id || !product_id) {
+    return res.json({ zones: [] });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT DISTINCT
+        ms.zone_id,
+        z.zone_name,
+        z.responsable_zone
+      FROM public.manufacturing_strategy ms
+      LEFT JOIN public.zone z
+        ON z.zone_id = ms.zone_id
+      WHERE ms.plant_id = $1
+        AND ms.product_id = $2
+        AND ms.strategy_status = 'active'
+        AND ms.zone_id IS NOT NULL
+      ORDER BY z.zone_name, ms.zone_id
+      `,
+      [unit_id, product_id]
+    );
+
+    res.json({
+      zones: result.rows.map((row) => ({
+        zone_id: row.zone_id,
+        zone_name: row.zone_name || `Zone ${row.zone_id}`,
+        responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || ""
+      }))
+    });
+  } catch (err) {
+    console.error("manufacturing-strategy/zone error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
     
 app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   const { responsibleId } = req.params;
@@ -4014,6 +4684,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       .content {
         padding: 24px;
       }
+        
 
       .topbar {
         display: flex;
@@ -4097,6 +4768,56 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         top: -120px;
         right: -80px;
       }
+
+/* Main KPI modal */
+.kpi-modal,
+.modal-content {
+    width: 96%;
+    max-width: 1650px;
+
+    height: 96vh;        /* increase height */
+    max-height: 96vh;
+
+    border-radius: 20px;
+    overflow: hidden;
+
+    display: flex;
+    flex-direction: column;
+}
+
+/* Scrollable content */
+.modal-body,
+.kpi-modal-body {
+    flex: 1;
+    overflow-y: auto;
+
+    padding: 24px 28px;
+}
+
+/* Footer fixed at bottom */
+.modal-footer {
+    padding: 18px 24px;
+    border-top: 1px solid #e5e7eb;
+    background: white;
+}
+
+/* Bigger sections */
+.form-section {
+    padding: 18px;
+    margin-bottom: 16px;
+}
+
+/* Better input height */
+input,
+select,
+textarea {
+    min-height: 48px;
+}
+
+/* Definition textarea */
+textarea {
+    min-height: 110px;
+}
 
       .hero-panel::after {
         content: "";
@@ -5235,6 +5956,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         display: none;
       }
 
+      .is-hidden {
+        display: none !important;
+      }
+
       .tree-select {
         position: relative;
         width: 100%;
@@ -5273,12 +5998,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .hierarchy-tree-field .tree-select-panel {
-        display: block;
         margin-top: 14px;
       }
 
       .hierarchy-tree-field .tree-select-chevron {
-        display: none;
+        display: inline-flex;
       }
 
       .tree-select-trigger:hover,
@@ -5307,6 +6031,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         line-height: 1.35;
       }
 
+      .tree-select-meta:empty {
+        display: none;
+      }
+
       .tree-select-chevron {
         font-size: 12px;
         color: #64748b;
@@ -5326,7 +6054,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       }
 
       .tree-select.open .tree-select-panel {
-        display: block;
+        display: flex;
+        flex-direction: column;
       }
 
       .tree-select-toolbar {
@@ -6463,12 +7192,17 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 }
 
 .kpi-attributes-modal .tree-select-panel {
-  display: block !important;
+  display: none !important;
+  flex-direction: column !important;
   border-radius: 22px !important;
   overflow: hidden !important;
   background: #ffffff !important;
   border: 1px solid rgba(148,163,184,0.20) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.9) !important;
+}
+
+.kpi-attributes-modal .tree-select.open .tree-select-panel {
+  display: flex !important;
 }
 
 .kpi-attributes-modal .tree-list {
@@ -6747,6 +7481,10 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   gap: 14px !important;
 }
 
+.parameter-modal #parameterAllocationFieldsSection.is-individual-layout .form-grid {
+  grid-template-columns: repeat(21, minmax(0, 1fr)) !important;
+}
+
 .parameter-modal .field label {
   font-size: 10px !important;
   font-weight: 900 !important;
@@ -6808,6 +7546,444 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   background: linear-gradient(135deg, #fb7185, #ef4444) !important;
   color: white !important;
   box-shadow: 0 14px 28px rgba(239,68,68,0.22) !important;
+}
+
+.parameter-modal .multisite-matrix-field {
+  gap: 18px;
+}
+
+.parameter-modal .multisite-matrix-shell {
+  border: 1px solid rgba(148,163,184,0.16);
+  border-radius: 28px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at top left, rgba(37,99,235,0.10), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(6,182,212,0.10), transparent 28%),
+    linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(244,248,255,0.98) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.92),
+    0 24px 46px rgba(15,23,42,0.08);
+}
+
+.parameter-modal .multisite-matrix-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+  padding: 2px 2px 12px;
+  border-bottom: 1px solid rgba(226,232,240,0.82);
+}
+
+.parameter-modal .multisite-matrix-copy {
+  font-size: 13px;
+  line-height: 1.72;
+  color: #475569;
+  max-width: 760px;
+}
+
+.parameter-modal .multisite-matrix-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(6,182,212,0.12));
+  border: 1px solid rgba(37,99,235,0.14);
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  box-shadow: 0 10px 18px rgba(37,99,235,0.08);
+}
+
+.parameter-modal .multisite-unit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.parameter-modal .multisite-unit-card {
+  border: 1px solid rgba(191,219,254,0.72);
+  border-radius: 20px;
+  padding: 14px;
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 12px 28px rgba(15,23,42,0.05);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.parameter-modal .multisite-unit-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96,165,250,0.85);
+  box-shadow: 0 18px 34px rgba(37,99,235,0.12);
+}
+
+.parameter-modal .multisite-unit-card.is-selected {
+  border-color: rgba(37,99,235,0.85);
+  background:
+    radial-gradient(circle at top right, rgba(59,130,246,0.14), transparent 36%),
+    linear-gradient(180deg, rgba(239,246,255,0.98) 0%, rgba(255,255,255,0.98) 100%);
+  box-shadow: 0 20px 38px rgba(37,99,235,0.16);
+}
+
+.parameter-modal .multisite-unit-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.parameter-modal .multisite-unit-kicker {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.parameter-modal .multisite-unit-name {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.parameter-modal .multisite-unit-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.55;
+}
+
+.parameter-modal .multisite-unit-select-btn {
+  border: none;
+  border-radius: 14px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(14,165,233,0.12));
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.parameter-modal .multisite-unit-select-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(37,99,235,0.12);
+}
+
+.parameter-modal .multisite-unit-card.is-selected .multisite-unit-select-btn {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  color: #ffffff;
+}
+
+.parameter-modal .multisite-unit-people {
+  display: grid;
+  gap: 10px;
+}
+
+.parameter-modal .multisite-person-chip {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(248,250,252,0.92);
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.parameter-modal .multisite-person-chip:hover {
+  transform: translateX(2px);
+  border-color: rgba(96,165,250,0.65);
+  background: rgba(239,246,255,0.96);
+}
+
+.parameter-modal .multisite-person-chip.is-selected {
+  border-color: rgba(37,99,235,0.72);
+  background: linear-gradient(135deg, rgba(219,234,254,0.98), rgba(224,242,254,0.98));
+  box-shadow: 0 10px 24px rgba(37,99,235,0.14);
+}
+
+.parameter-modal .multisite-person-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.4;
+}
+
+.parameter-modal .multisite-person-role {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.parameter-modal .multisite-person-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.parameter-modal .multisite-primary-badge,
+.parameter-modal .multisite-selected-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.parameter-modal .multisite-primary-badge {
+  background: rgba(16,185,129,0.12);
+  color: #047857;
+}
+
+.parameter-modal .multisite-selected-badge {
+  background: rgba(37,99,235,0.12);
+  color: #1d4ed8;
+}
+
+
+.multisite-table-wrap {
+  overflow: auto;
+  padding: 10px;
+  border-radius: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background:
+    radial-gradient(circle at top right, rgba(37,99,235,0.08), transparent 28%),
+    radial-gradient(circle at bottom left, rgba(6,182,212,0.08), transparent 24%),
+    linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(245,249,255,0.98) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.92),
+    0 20px 40px rgba(15, 23, 42, 0.08);
+}
+
+.multisite-table {
+  width: 100%;
+  min-width: 1290px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.multisite-table textarea {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(148,163,184,0.24);
+  border-radius: 16px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  background: rgba(255,255,255,0.98);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+}
+
+.multisite-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 18px 16px;
+  background:
+    linear-gradient(180deg, #fdfefe 0%, #edf4ff 100%);
+  color: #475569;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  border-bottom: 1px solid rgba(226,232,240,0.95);
+  box-shadow: inset 0 -1px 0 rgba(226,232,240,0.95);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.multisite-table tbody tr {
+  transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.multisite-table tbody tr:nth-child(even) td {
+  background: linear-gradient(180deg, rgba(249,251,255,0.98) 0%, rgba(246,249,255,0.98) 100%);
+}
+
+.multisite-table tbody tr:hover td {
+  background: linear-gradient(180deg, #fbfdff 0%, #eef6ff 100%);
+}
+
+.multisite-table td {
+  padding: 18px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(252,253,255,0.98) 100%);
+  border-top: 1px solid rgba(226,232,240,0.88);
+  border-bottom: 1px solid rgba(226,232,240,0.88);
+  color: #0f172a;
+  font-size: 13px;
+  vertical-align: top;
+}
+
+.multisite-table tbody tr td:first-child {
+  border-left: 1px solid rgba(226,232,240,0.88);
+  border-top-left-radius: 18px;
+  border-bottom-left-radius: 18px;
+}
+
+.multisite-table tbody tr td:last-child {
+  border-right: 1px solid rgba(226,232,240,0.88);
+  border-top-right-radius: 18px;
+  border-bottom-right-radius: 18px;
+}
+
+.multisite-table td:first-child {
+  font-weight: 850;
+  color: #0f172a;
+  min-width: 220px;
+}
+
+.multisite-table input,
+.multisite-table select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(148,163,184,0.24);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.98);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #0f172a;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+
+.multisite-table .readonly-input {
+  background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+  color: #334155;
+  border-color: #d9e4f2;
+  cursor: default;
+  font-weight: 800;
+}
+
+.multisite-table .parameter-unit-responsible-input {
+  min-width: 210px;
+}
+
+.multisite-table .parameter-unit-responsible-input.is-empty {
+  color: #94a3b8;
+  border-style: dashed;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.98);
+}
+
+.multisite-table .readonly-input:focus {
+  border-color: #d9e4f2;
+  box-shadow: none;
+  transform: none;
+}
+
+.multisite-table input:focus,
+.multisite-table select:focus {
+  border-color: rgba(37,99,235,0.55);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+  transform: translateY(-1px);
+}
+
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(6,182,212,0.10));
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.role-empty {
+  background: rgba(148,163,184,0.14);
+  color: #64748b;
+}
+
+.parameter-unit-name {
+  font-size: 15px;
+  font-weight: 900;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.parameter-unit-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.parameter-unit-cell-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148,163,184,0.16);
+  background: rgba(248,250,252,0.88);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.82);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.parameter-unit-cell-note.is-linked {
+  border-color: rgba(37,99,235,0.14);
+  background: linear-gradient(135deg, rgba(219,234,254,0.50), rgba(236,253,245,0.58));
+  color: #476178;
+}
+
+.parameter-unit-cell-note.is-warning {
+  border-color: rgba(245,158,11,0.18);
+  background: linear-gradient(135deg, rgba(255,247,237,0.95), rgba(248,250,252,0.96));
+  color: #8a5a12;
+}
+
+.parameter-kpi-unit-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(236,243,255,0.95));
+  border: 1px solid rgba(148,163,184,0.20);
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+}
+
+.parameter-table-empty {
+  padding: 34px 26px;
+  border-radius: 24px;
+  border: 1px dashed rgba(148,163,184,0.28);
+  background:
+    radial-gradient(circle at top right, rgba(37,99,235,0.10), transparent 34%),
+    radial-gradient(circle at bottom left, rgba(6,182,212,0.08), transparent 28%),
+    rgba(248,250,252,0.97);
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.8;
+  text-align: center;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.88),
+    0 16px 30px rgba(15,23,42,0.05);
 }
 
 @keyframes parameterModalIn {
@@ -6943,14 +8119,14 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <div class="parameter-matrix-hero">
               <div class="parameter-matrix-title">
                 <h2>KPI Matrix</h2>
-                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and target value.</p>
+                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and Target .</p>
               </div>
               <button class="btn btn-primary parameter-matrix-add-btn" type="button" onclick="openCreateParameterModal()">+ Add Target Allocation</button>
             </div>
 
             <div class="parameter-matrix-toolbar">
               <div class="search-wrap parameter-matrix-search">
-                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or target value..." />
+                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or Target ..." />
               </div>
               <div class="parameter-results-meta" id="parameterResultsMeta">0 allocations</div>
             </div>
@@ -6976,6 +8152,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
       <div class="modal-body">
           <input type="hidden" id="kpi_id" />
+          <input type="hidden" id="indicator_title" />
+          <input type="hidden" id="subject_path_display" />
+          <input type="hidden" id="kpi_code" />
+          <input type="hidden" id="kpi_formula" />
+          <input type="hidden" id="status" value="Active" />
+          <input type="hidden" id="comments" />
+          <input type="hidden" id="target" />
 
        
 
@@ -6988,7 +8171,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
               <div class="tree-select" id="subjectTreeSelect">
                 <button type="button" class="tree-select-trigger" id="subjectTreeTrigger" onclick="toggleSubjectTree()">
                   <span class="tree-select-value">
-                    <span class="tree-select-label" id="subjectTreeLabel">Select subject from tree</span>
+                    <span class="tree-select-label" id="subjectTreeLabel">Selectdv subject from tree</span>
                     <span class="tree-select-meta" id="subjectTreeMeta">Open the visual hierarchy to choose a subject and follow its branch.</span>
                   </span>
                   <span class="tree-select-chevron" id="subjectTreeChevron">▾</span>
@@ -7004,15 +8187,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             oninput="onSubjectTreeSearch(this.value)"
             autocomplete="off"
             />
-           <div class="vtree-toolbar-actions">
-            <button type="button" class="v-tree-action-btn" onclick="resetSubjectFlow()">&#10006; Reset</button>
+            <div class="vtree-toolbar-actions">
+             <button type="button" class="v-tree-action-btn" onclick="resetSubjectFlow()">&#10006; Reset</button>
+            </div>
            </div>
-          </div>
-         <div class="tree-select-current-path" id="subjectTreeCurrentPath">Selected path: No subject selected yet.</div>
-          </div>
-                <div class="tree-select-fit" id="subjectTreeFitMeta">Flow view</div>
-                  </div>
+           </div>
                   <div class="tree-list" id="subjectTreeList"></div>
+                </div>
                 </div>
               </div>
             </div>
@@ -7023,19 +8204,14 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
            <div class="form-section">     
            <div class="form-grid kpi-inline-row">
-             <div class="field col-4">
+             <div class="field col-5">
               <label><span>KPI Name</span><span class="hint">Required KPI label</span></label>
-              <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" />
-              </div>
-
-              <div class="field col-2">
-              <label><span>KPI Code</span><span class="hint">Optional reference</span></label>
-              <input id="kpi_code" placeholder="e.g. KPI-001" />
+              <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
               </div>
 
               <div class="field col-2">
               <label><span>Unit</span><span class="hint">Measure</span></label>
-               <select id="unit">
+               <select id="unit" required>
                <option value="%">%</option>
                <option value="Pieces">Pieces</option>
                <option value="PPM">PPM</option>
@@ -7045,7 +8221,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
            <div class="field col-2">
             <label><span>Frequency</span><span class="hint">Rhythm</span></label>
-            <select id="frequency">
+            <select id="frequency" required>
             <option value="By Monthly">By Monthly</option>
             <option value="Monthly">Monthly</option>
             <option value="By Weekly">By Weekly</option>
@@ -7057,26 +8233,11 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
            <div class="field col-2">
             <label><span>Direction</span><span class="hint">Trend direction</span></label>
-           <select id="direction">
+           <select id="direction" required>
            <option value="Up">Up</option>
              <option value="Down">Down</option>
              </select>
             </div>
-
-           <div class="field col-2">
-            <label><span>Status</span><span class="hint">Lifecycle state</span></label>
-            <select id="status">
-             <option value="Active">Active</option>
-             <option value="Draft">Draft</option>
-             <option value="Inactive">Inactive</option>
-             <option value="Archived">Archived</option>
-             </select>
-             </div>
-
-              <div class="field col-5">
-                <label><span>Definition</span><span class="hint">Explain clearly</span></label>
-                <textarea id="definition" placeholder="Write a clear KPI definition..."></textarea>
-              </div>
            
             </div>
          </div>
@@ -7086,14 +8247,14 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
        
          <div class="field col-3">
                <label><span>Calculation On</span><span class="hint">Basis</span></label>
-               <select id="calculation_on" onchange="handleCalculationOnChange()">
+               <select id="calculation_on" onchange="handleCalculationOnChange()" required>
                <option value="Value">Value</option>
                <option value="Average">Average</option>
                </select>
               </div>
               <div class="field col-2" id="wrap_nombre_periode">
              <label><span>Nombre periode</span><span class="hint">Period</span></label>
-             <select id="nombre_periode">
+             <select id="nombre_periode" required>
              <option value="1 week">1 week</option>
              <option value="2 weeks">2 weeks</option>
              <option value="3 weeks">3 weeks</option>
@@ -7102,7 +8263,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
              </div>
               <div class="field col-2">
                 <label><span>Calculation Mode</span><span class="hint">Mode</span></label>
-                  <select id="calculation_mode" onchange="handleCalculationModeChange()">
+                  <select id="calculation_mode" onchange="handleCalculationModeChange()" required>
                   <option value="Direct">Direct</option>
                   <option value="Ratio">Ratio</option>
                   </select>
@@ -7116,7 +8277,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
               </div>
               <div class="field col-2">
               <label><span>Display Trend</span><span class="hint">Yes / No</span></label>
-             <select id="display_trend" onchange="handleDisplayTrendChange()">
+             <select id="display_trend" onchange="handleDisplayTrendChange()" required>
              <option value="No">No</option>
              <option value="Yes">Yes</option>
             </select>
@@ -7134,8 +8295,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
 
   
           <div class="field col-2">
-          <label><span>Min</span><span class="hint">Optional</span></label>
-          <select id="min_type" onchange="handleMinTypeChange()">
+          <label><span>Min</span><span class="hint">Required</span></label>
+          <select id="min_type" onchange="handleMinTypeChange()" required>
            <option value="Null">Null</option>
            <option value="0">0</option>
            <option value="Valeur a entrer">Valeur a entrer</option>
@@ -7145,17 +8306,9 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                 <label><span>Min Value</span><span class="hint">Enter value</span></label>
                 <input id="min" placeholder="Min value" />
               </div>
-            
-              <div class="field col-3">
-                <label><span>Target Auto Adjust</span><span class="hint">Optional</span></label>
-                <select id="target_auto_adjustment">
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </div>
               <div class="field col-2">
-                <label><span>Max</span><span class="hint">Optional</span></label>
-                <select id="max_type" onchange="handleMaxTypeChange()">
+                <label><span>Max</span><span class="hint">Required</span></label>
+                <select id="max_type" onchange="handleMaxTypeChange()" required>
                   <option value="Null">Null</option>
                   <option value="0">0</option>
                   <option value="Valeur a entrer">Valeur a entrer</option>
@@ -7166,11 +8319,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                 <input id="max" placeholder="Max value" />
               </div>
 
-              <div class="field col-2">
-                <label><span>Formula</span><span class="hint">Optional calculation rule</span></label>
-                <textarea id="kpi_formula" placeholder="Describe the KPI formula or calculation logic..."></textarea>
+              <div class="field col-3">
+                <label><span>Target Auto Adjust</span><span class="hint">Required</span></label>
+                <select id="target_auto_adjustment" required>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
               </div>
-           
             </div>
           </div>
 
@@ -7179,7 +8334,7 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
             <div class="form-grid">
               <div class="field col-3">
                 <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
-                <select id="tolerance_type" onchange="handleToleranceTypeChange()">
+                <select id="tolerance_type" onchange="handleToleranceTypeChange()" required>
                   <option value="Relative">Relative</option>
                   <option value="Absolute">Absolute</option>
                 </select>
@@ -7206,16 +8361,17 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
               </div>
 
               <div class="field col-3">
-                <label><span>Owner Role</span><span class="hint">Optional accountability</span></label>
-                <select id="owner_role_id">
+                <label><span>Owner Role</span><span class="hint">Required accountability</span></label>
+                <select id="owner_role_id" required>
                   <option value="">Select owner role</option>
                 </select>
               </div>
-
-              <div class="field col-6">
-                <label><span>Comments</span><span class="hint">Optional extra notes</span></label>
-                <textarea id="comments" placeholder="Add context, ownership notes or implementation comments..."></textarea>
+              
+               <div class="field col-5">
+                <label><span>Definition</span><span class="hint">Explain clearly</span></label>
+                <textarea id="definition" placeholder="Write a clear KPI definition..." required></textarea>
               </div>
+
               </div>
             </div>
           </div>
@@ -7254,8 +8410,8 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                 <label><span>KPI Name</span><span class="hint">Last subject above each KPI name</span></label>
                 <select id="parameter_kpi_id"></select>
               </div>
-              <div class="field col-3">
-                <label><span>KPI Type</span><span class="hint">Optional classification</span></label>
+              <div class="field col-2">
+                <label><span>KPI Type</span><span class="hint">Allocation classification</span></label>
                 <select id="parameter_kpi_type">
                   <option value="">Select KPI Type</option>
                   <option value="Multisite">Multisite</option>
@@ -7263,42 +8419,106 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                   <option value="Zone">Zone</option>
                 </select>
               </div>
-         
-              <div class="field col-4" id="parameter_plant_field">
-                <label><span>Unit</span></label>
+              <div class="field col-2" id="parameter_unit_type_field">
+                <label><span>Unit Type</span><span class="hint">Loaded from unit type</span></label>
+                <select id="parameter_unit_type_id"></select>
+              </div>
+        <div class="field col-2" id="parameter_role_field">
+                <label><span>Role</span><span class="hint">Loaded from role table</span></label>
+                <select id="parameter_role_id"></select>
+              </div>
+
+              <div class="field col-3 is-hidden" id="parameter_zone_unit_field">
+                <label><span>Unit</span><span class="hint">Select unit first</span></label>
+                <select id="parameter_zone_unit_id">
+                  <option value="">Select unit</option>
+                </select>
+              </div>
+
+              <div class="field col-3 is-hidden" id="parameter_zone_product_field">
+                <label><span>Product</span><span class="hint">Then select product</span></label>
+                <select id="parameter_zone_product_id">
+                  <option value="">Select product</option>
+                </select>
+              </div>
+
+              <div class="field col-3 is-hidden" id="parameter_zone_resolved_field">
+                <label><span>Matched Zone</span><span class="hint">Resolved automatically</span></label>
+                <input id="parameter_zone_resolved_display" class="readonly-input" readonly placeholder="Select unit and product first" />
+              </div>
+
+           
+              <div class="field col-4 is-hidden" id="parameter_plant_field">
+                <label><span>Unit</span><span class="hint">Filtered by selected unit type</span></label>
                 <select id="parameter_plant_id"></select>
               </div>
-              <div class="field col-4" id="parameter_zone_field">
+              <div class="field col-12 multisite-matrix-field" id="parameter_multisite_matrix_field">
+                <label><span id="parameter_scope_table_label">Unit Target Table</span><span class="hint" id="parameter_scope_table_hint">Enter a target for each unit inside the selected unit type</span></label>
+                <div class="multisite-matrix-shell">
+                  <div class="multisite-matrix-intro">
+                  
+                    <div class="multisite-matrix-badge" id="parameter_scope_table_badge">Unit Type View</div>
+                  </div>
+                  <div id="parameterMultisiteMatrix"></div>
+                </div>
+              </div>
+              <div class="field col-4 is-hidden" id="parameter_zone_field">
                 <label><span>Zone</span><span class="hint">Optional zone scope</span></label>
                 <select id="parameter_zone_id"></select>
               </div>
-              <div class="field col-4" id="parameter_function_field">
+              <div class="field col-4 is-hidden" id="parameter_function_field">
                 <label><span id="parameter_function_label">Function</span><span class="hint" id="parameter_function_hint">Optional business function</span></label>
                 <input id="parameter_function" placeholder="Manufacturing, Finance, Quality..." />
               </div>
-              <div class="field col-3">
-                <label><span>Product Line</span><span class="hint">Optional scope</span></label>
-                <select id="parameter_product_line_id"></select>
-              </div>
-              <div class="field col-3">
-                <label><span>Product</span><span class="hint">Optional product scope</span></label>
-                <select id="parameter_product_id"></select>
-              </div>
-
-              <div class="field col-3">
-                <label><span>Market</span><span class="hint">Optional market scope</span></label>
-                <select id="parameter_market_id"></select>
-              </div>
-          
+           
             </div>
 
           </div>
 
-          <div class="form-section">
+          <div class="form-section is-hidden" id="parameterAllocationFieldsSection">
             <div class="form-grid">
-
               <div class="field col-3">
-                <label><span>Target Status</span><span class="hint">Required workflow status</span></label>
+                <label><span>Target  <span style="color:#ef4444;">*</span></span><span class="hint">Required</span></label>
+                <input id="parameter_target_value" type="number" step="any" placeholder="Enter Target " required />
+              </div>
+              <div class="field col-3">
+                <label><span>Setup Date</span><span class="hint">Effective setup date</span></label>
+                <input id="parameter_target_setup_date" type="date" />
+              </div>
+              <div class="field col-3">
+                <label><span>KPI Unit</span><span class="hint">Loaded from KPI</span></label>
+                <input id="parameter_target_unit" class="readonly-input" readonly />
+              </div>
+              <div class="field col-3">
+                <label><span>Sell Currency</span><span class="hint">Loaded from unit</span></label>
+                <input id="parameter_local_currency" class="readonly-input" readonly />
+              </div>
+              <div class="field col-3">
+                <label><span>Last Best Target</span><span class="hint">Optional benchmark</span></label>
+                <input id="parameter_last_best_target" type="number" step="any" placeholder="3400" />
+              </div>
+              <div class="field col-3" id="parameter_previous_target_field">
+                <label><span>Previous Target</span><span class="hint">Optional reference</span></label>
+                <input id="parameter_previous_target_value" type="number" step="any" placeholder="Optional previous target" />
+              </div>
+              <div class="field col-3">
+                <label><span id="parameter_set_by_people_label">Responsible</span><span class="hint" id="parameter_set_by_people_hint">Assigned from selected unit and role</span></label>
+                <select id="parameter_set_by_people_id"></select>
+              </div>
+              <div class="field col-3">
+                <label><span>Approved By</span><span class="hint">Optional approver</span></label>
+                <select id="parameter_approved_by_people_id"></select>
+              </div>
+              <div class="field col-3" id="parameter_target_start_date_field">
+                <label><span>Target Start Date</span><span class="hint">Optional start</span></label>
+                <input id="parameter_target_start_date" type="date" />
+              </div>
+              <div class="field col-3" id="parameter_target_end_date_field">
+                <label><span>Target End Date</span><span class="hint">Optional end</span></label>
+                <input id="parameter_target_end_date" type="date" />
+              </div>
+              <div class="field col-3" id="parameter_target_status_field">
+                <label><span>Target Status</span><span class="hint">Lifecycle status</span></label>
                 <select id="parameter_target_status">
                   <option value="Draft">Draft</option>
                   <option value="Active">Active</option>
@@ -7306,58 +8526,9 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
                   <option value="Closed">Closed</option>
                 </select>
               </div>
-              <div class="field col-3">
-                <label><span>Target Value</span><span class="hint">Required allocation target</span></label>
-                <input id="parameter_target_value" type="number" step="any" placeholder="3000" />
-              </div>
-              <div class="field col-3">
-                <label><span>Target Unit</span><span class="hint">Usually copied from KPI</span></label>
-                <select id="parameter_target_unit">
-                  <option value="">Select target unit</option>
-                  <option value="%">%</option>
-                  <option value="PPM">PPM</option>
-                  <option value="Pieces">Pieces</option>
-                  <option value="Number">Number</option>
-                </select>
-              </div>
-              <div class="field col-3">
-                <label><span>Local Currency</span><span class="hint">USD, EUR, MAD, NGN</span></label>
-                <input id="parameter_local_currency" placeholder="USD" />
-              </div>
-              <div class="field col-3">
-                <label><span>Last Best Target</span><span class="hint">Optional benchmark</span></label>
-                <input id="parameter_last_best_target" type="number" step="any" placeholder="3400" />
-              </div>
-
-              <div class="field col-3">
-                <label><span>Previous Target</span><span class="hint">Earlier allocation value</span></label>
-                <input id="parameter_previous_target_value" type="number" step="any" placeholder="2800" />
-              </div>
-              <div class="field col-3">
-                <label><span>Setup Date</span><span class="hint">Required setup date</span></label>
-                <input id="parameter_target_setup_date" type="date" />
-              </div>
-              <div class="field col-3">
-                <label><span>Target Start Date</span><span class="hint">Optional effective date</span></label>
-                <input id="parameter_target_start_date" type="date" />
-              </div>
-              <div class="field col-3">
-                <label><span>Target End Date</span><span class="hint">Optional end date</span></label>
-                <input id="parameter_target_end_date" type="date" />
-              </div>
-
-              <div class="field col-3">
-                <label><span id="parameter_set_by_people_label">Responsible</span><span class="hint" id="parameter_set_by_people_hint">Assigned from current dashboard</span></label>
-                <select id="parameter_set_by_people_id"></select>
-              </div>
-              <div class="field col-3">
-                <label><span>Approved By</span><span class="hint">Optional approver</span></label>
-                <select id="parameter_approved_by_people_id"></select>
-              </div>
-
-              <div class="field col-3">
-                <label><span>Comments</span><span class="hint">Optional allocation notes</span></label>
-                <textarea id="parameter_comments" placeholder="Add approval notes, scope details or rollout comments..."></textarea>
+              <div class="field col-12" id="parameter_comments_field">
+                <label><span>Comments</span><span class="hint">Optional note</span></label>
+                <textarea id="parameter_comments" placeholder="Add context, assumptions, or approval notes..."></textarea>
               </div>
             </div>
           </div>
@@ -7386,6 +8557,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
       let currentParameterRows = [];
       let parameterSourceRows = [];
       let parameterKpiCatalog = [];
+      let parameterUnitTargetState = {};
+      let parameterLockedUnitId = "";
+      let parameterLockedZoneId = "";
+      let parameterLockedZoneIds = [];
+      let parameterResolvedZoneId = "";
+      let parameterZoneLookupPending = false;
+      let parameterEditMode = false;
       let chartsLoaded = false;
       let chartInstances = [];
 
@@ -7419,6 +8597,13 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         const normalizedUnitValue = String(unitValue || "").trim();
         if (!targetUnitSelect || !normalizedUnitValue) return;
 
+        if (String(targetUnitSelect.tagName || "").toUpperCase() !== "SELECT") {
+          if (!String(targetUnitSelect.value || "").trim()) {
+            targetUnitSelect.value = normalizedUnitValue;
+          }
+          return;
+        }
+
         const alreadyExists = Array.from(targetUnitSelect.options).some(
           (option) => String(option.value || "").trim() === normalizedUnitValue
         );
@@ -7437,13 +8622,190 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
         return (parameterKpiCatalog || []).find(kpi => String(kpi.kpi_id) === String(kpiId)) || null;
       }
 
+      function getParameterAllocationUnits() {
+        const assignmentUnits = Array.isArray(allocationLookups.multisiteAssignments)
+          ? allocationLookups.multisiteAssignments
+          : [];
+
+        if (assignmentUnits.length) {
+          return assignmentUnits;
+        }
+
+        const plainUnits = Array.isArray(allocationLookups.units)
+          ? allocationLookups.units
+          : [];
+
+        return plainUnits.map((unitEntry) => ({
+          value: unitEntry.value,
+          label: unitEntry.label,
+          unit_type_id: unitEntry.unit_type_id ?? null,
+          unit_type_name: unitEntry.unit_type_name || "",
+          selling_currency: unitEntry.selling_currency || "",
+          operating_currency: unitEntry.operating_currency || "",
+          responsibles: []
+        }));
+      }
+
+      function getParameterUnitById(unitId) {
+        const normalizedUnitId = String(unitId || "").trim();
+        if (!normalizedUnitId) return null;
+
+        return getParameterAllocationUnits().find(
+          (unitEntry) => String(unitEntry.value || "") === normalizedUnitId
+        ) || null;
+      }
+
+      function getParameterSelectedKpiUnit() {
+        return String(getParameterKpiById(getParameterFieldValue("parameter_kpi_id"))?.unit || "").trim();
+      }
+
+      function getParameterRoleLabel(roleId) {
+        const normalizedRoleId = String(roleId || "").trim();
+        if (!normalizedRoleId) return "";
+
+        const matchedRole = (roleOptions || []).find(
+          (option) => String(option.value || "") === normalizedRoleId
+        );
+
+        return String(matchedRole?.label || "").split(" · ")[0].trim();
+      }
+
+      function getParameterSelectedUnitTypeLabel() {
+        const selectedUnitTypeId = String(getParameterFieldValue("parameter_unit_type_id") || "").trim();
+        if (!selectedUnitTypeId) return "";
+
+        const matchedUnitType = (allocationLookups.unitTypes || []).find(
+          (option) => String(option.value || "") === selectedUnitTypeId
+        );
+
+        return String(
+          matchedUnitType?.label ||
+          matchedUnitType?.unit_type_name ||
+          ""
+        ).trim();
+      }
+
+      function getParameterZoneUnitOptions() {
+        const hiddenZoneUnits = new Set([
+          "avocarbon group",
+          "france",
+          "china",
+          "tunisia",
+          "germany",
+          "europe",
+          "americas",
+          "asia"
+        ]);
+
+        const rawOptions = allocationLookups.units || allocationLookups.plants || [];
+
+        return rawOptions.filter((option) => {
+          const normalizedLabel = String(option?.label || "")
+            .trim()
+            .toLowerCase();
+
+          return normalizedLabel && !hiddenZoneUnits.has(normalizedLabel);
+        });
+      }
+
+      function isIndividualParameterScope() {
+        return String(getParameterFieldValue("parameter_kpi_type") || "").trim().toLowerCase() === "individual";
+      }
+
+      function syncParameterPlantOptions(preferredValue = "") {
+        const plantSelect = document.getElementById("parameter_plant_id");
+        if (!plantSelect) return;
+
+        const unitOptions = getParameterVisibleUnitRows()
+          .filter((entry) => String(entry.row_kind || "unit") === "unit")
+          .map((entry) => ({
+            value: String(entry.value || ""),
+            label: entry.label || "",
+            unit_type_id: entry.unit_type_id ?? null,
+            unit_type_name: entry.unit_type_name || "",
+            selling_currency: entry.selling_currency || "",
+            operating_currency: entry.operating_currency || ""
+          }));
+
+        const selectedValue =
+          preferredValue ||
+          parameterLockedUnitId ||
+          String(plantSelect.value || "").trim();
+
+        setLookupSelectOptions("parameter_plant_id", unitOptions, "Select unit", selectedValue);
+      }
+
+      function getParameterScopeKind() {
+        return String(getParameterFieldValue("parameter_kpi_type") || "").trim().toLowerCase() === "zone"
+          ? "zone"
+          : "unit";
+      }
+
+      function getParameterRowStateKey(scopeType, scopeId) {
+        const normalizedScopeType = String(scopeType || "unit").trim().toLowerCase() || "unit";
+        const normalizedScopeId = String(scopeId || "").trim();
+        if (!normalizedScopeId) return "";
+
+        return normalizedScopeType + ":" + normalizedScopeId;
+      }
+
+      function getParameterUnitState(scopeType, scopeId) {
+        const key = scopeId === undefined
+          ? String(scopeType || "").trim()
+          : getParameterRowStateKey(scopeType, scopeId);
+
+        return parameterUnitTargetState[key] || {};
+      }
+
+      function setParameterUnitState(scopeType, scopeId, patch = {}) {
+        const key = scopeId === undefined
+          ? getParameterRowStateKey("unit", scopeType)
+          : getParameterRowStateKey(scopeType, scopeId);
+
+        if (!key) return;
+
+        parameterUnitTargetState[key] = {
+          ...parameterUnitTargetState[key],
+          ...patch
+        };
+      }
+
+      function resetParameterUnitTargetState() {
+        parameterUnitTargetState = {};
+      }
+
+      function initializeParameterUnitTargetState(rows = []) {
+        resetParameterUnitTargetState();
+
+        (Array.isArray(rows) ? rows : []).forEach((row) => {
+          const scopeType = row?.zone_id ? "zone" : "unit";
+          const scopeId = row?.zone_id ?? row?.plant_id ?? row?.unit_id;
+          if (!scopeId) return;
+
+          setParameterUnitState(scopeType, scopeId, {
+            target_value: row.target_value ?? "",
+            local_currency: row.local_currency ?? "",
+            target_setup_date: normalizeParameterDateValue(row?.target_setup_date) || getLocalDateInputValue(),
+            set_by_people_id: row.set_by_people_id ?? "",
+            responsible_id: row.set_by_people_id ?? "",
+            last_best_target: row.last_best_target ?? "",
+            approved_by_id: row.approved_by_people_id ?? ""
+          });
+        });
+      }
+
       function updateParameterKpiSummary() {
         const selectedKpi = getParameterKpiById(getParameterFieldValue("parameter_kpi_id"));
         const targetUnitInput = document.getElementById("parameter_target_unit");
-        if (selectedKpi && targetUnitInput && !String(targetUnitInput.value || "").trim()) {
+        if (selectedKpi && targetUnitInput) {
           ensureParameterTargetUnitOption(selectedKpi.unit || "");
           targetUnitInput.value = selectedKpi.unit || "";
         }
+        if (isIndividualParameterScope()) {
+          syncIndividualParameterFields();
+          return;
+        }
+        renderMultisiteUnitMatrix();
       }
 
       async function loadKpiNames(selectedValue = "") {
@@ -7495,6 +8857,52 @@ app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
       }
+
+const KPI_MODAL_FIELD_IDS = new Set([
+  "kpi_id",
+  "indicator_title",
+  "indicator_sub_title",
+  "subject",
+  "subject_node_id",
+  "subject_path_display",
+  "kpi_code",
+  "kpi_formula",
+  "unit",
+  "definition",
+  "frequency",
+  "target",
+  "tolerance_type",
+  "up_tolerance",
+  "low_tolerance",
+  "max",
+  "min",
+  "calculation_on",
+  "target_auto_adjustment",
+  "high_limit",
+  "low_limit",
+  "direction",
+  "nombre_periode",
+  "calculation_mode",
+  "reference_kpi_id",
+  "display_trend",
+  "regression",
+  "min_type",
+  "max_type",
+  "status",
+  "comments",
+  "owner_role_id"
+]);
+
+function getKpiFieldElement(id) {
+  if (!id) return null;
+
+  if (!KPI_MODAL_FIELD_IDS.has(id)) {
+    return document.getElementById(id);
+  }
+
+  const modalRoot = document.getElementById("modalBackdrop");
+  return modalRoot?.querySelector("#" + id) || document.getElementById(id);
+}
 
   function splitMultiValue(value) {
   return String(value || "")
@@ -7580,7 +8988,7 @@ function dedupeLookupOptionsByLabel(options, selectedValue = "", cleanLabelOptio
 }
 
 function setLookupSelectOptions(selectId, options, placeholder, selectedValue = "") {
-  const selectEl = document.getElementById(selectId);
+  const selectEl = getKpiFieldElement(selectId);
   if (!selectEl) return;
 
   const baseOptions = Array.isArray(options)
@@ -7629,7 +9037,7 @@ function populateRoleOptions(selectedValue = "") {
   setLookupSelectOptions("owner_role_id", roleOptions, "Select owner role", selectedValue);
 }
 
-function toggleScopedParameterField(fieldId, shouldShow) {
+function toggleScopedParameterField(fieldId, shouldShow, { clearOnHide = true } = {}) {
   const field = document.getElementById(fieldId);
   if (!field) return;
 
@@ -7639,90 +9047,285 @@ function toggleScopedParameterField(fieldId, shouldShow) {
   if (!input) return;
 
   input.disabled = !shouldShow;
-  if (!shouldShow) {
+  if (!shouldShow && clearOnHide) {
     input.value = "";
   }
 }
 
-function handleParameterKpiTypeChange() {
-  const kpiType = getParameterFieldValue("parameter_kpi_type").toLowerCase();
-  const isIndividual = kpiType === "individual";
+function updateMultisiteResponsibleHint(unitEntry, responsibleEntry = null) {
+  const setByHint = document.getElementById("parameter_set_by_people_hint");
+  if (!setByHint) return;
 
-  toggleScopedParameterField("parameter_plant_field", kpiType === "multisite");
-  toggleScopedParameterField("parameter_zone_field", kpiType === "zone");
-  toggleScopedParameterField("parameter_function_field", isIndividual);
-
-  const functionField = document.getElementById("parameter_function_field");
-  const functionLabel = document.getElementById("parameter_function_label");
-  const functionHint = document.getElementById("parameter_function_hint");
-  const functionInput = document.getElementById("parameter_function");
-
-  if (functionField) {
-    functionField.classList.toggle("col-8", isIndividual);
-    functionField.classList.toggle("col-4", !isIndividual);
+  const normalizedKpiType = getParameterFieldValue("parameter_kpi_type").toLowerCase();
+  if (normalizedKpiType !== "multisite") {
+    syncDashboardResponsibleAssignment();
+    return;
   }
 
-  if (functionLabel) {
-    functionLabel.textContent = isIndividual
-      ? "Function / Department Concerned"
-      : "Function";
+  if (!unitEntry) {
+    setByHint.textContent = "Choose a unit card to assign its related responsible.";
+    return;
   }
 
-  if (functionHint) {
-    functionHint.textContent = isIndividual
-      ? "Use this when no specific unit is used"
-      : "Optional business function";
+  if (responsibleEntry) {
+    setByHint.textContent =
+      "Linked to " + unitEntry.label + ": " + responsibleEntry.label +
+      (responsibleEntry.role_name ? " · " + responsibleEntry.role_name : "") + ".";
+    return;
   }
 
-  if (functionInput) {
-    functionInput.placeholder = isIndividual
-      ? "Department concerned if no specific unit is used"
-      : "Manufacturing, Finance, Quality...";
+  if (Array.isArray(unitEntry.responsibles) && unitEntry.responsibles.length) {
+    setByHint.textContent = "Select one of the related responsibles for " + unitEntry.label + ".";
+    return;
+  }
+
+  setByHint.textContent = "No related responsible is mapped to " + unitEntry.label + " yet.";
+}
+
+function selectMultisiteResponsible(unitId, peopleId = "") {
+  const unitEntry = getMultisiteUnitAssignment(unitId);
+  const plantSelect = document.getElementById("parameter_plant_id");
+  const setBySelect = document.getElementById("parameter_set_by_people_id");
+
+  if (plantSelect) {
+    plantSelect.value = unitEntry ? String(unitEntry.value || "") : "";
+  }
+
+  let responsibleEntry = peopleId
+    ? getMultisiteResponsibleEntry(unitEntry, peopleId)
+    : getMultisiteResponsibleEntry(unitEntry, getParameterFieldValue("parameter_set_by_people_id"));
+
+  if (!responsibleEntry) {
+    responsibleEntry = getDefaultMultisiteResponsible(unitEntry);
+  }
+
+  if (setBySelect) {
+    setBySelect.value = responsibleEntry ? String(responsibleEntry.people_id || "") : "";
+  }
+
+  renderMultisiteUnitMatrix();
+  if (typeof updateParameterOverview === "function") {
+    updateParameterOverview();
   }
 }
 
-const multisiteUnitResponsibleMap = {
-  "Site-Anhui": "Allan RIEGEL",
-  "Site-France-Poitiers": "Florence PARADIS",
-  "Site-Germany": "Dagmar ANSINN",
-  "Site-India": "Sridhar BOOVARAGHAVAN",
-  "Site-Korea": "Samtak JOO",
-  "Site-Kunshan": "Allan RIEGEL",
-  "Site-Mexico": "Hector OLIVARES",
-  "Site-Tianjin": "Yang YANG",
-  "Site-Tunisia-SAME": "Imed Ben ALAYA",
-  "Site-Tunisia-SameService": "Fethi CHAOUACHI",
-  "Site-Tunisia-SCEET": "Imed Ben ALAYA"
-};
+function selectMultisiteUnitCard(unitId) {
+  const unitEntry = getMultisiteUnitAssignment(unitId);
+  const plantSelect = document.getElementById("parameter_plant_id");
+  const setBySelect = document.getElementById("parameter_set_by_people_id");
+
+  if (plantSelect) {
+    plantSelect.value = unitEntry ? String(unitEntry.value || "") : "";
+  }
+
+  if (setBySelect) {
+    const currentResponsible = getMultisiteResponsibleEntry(unitEntry, setBySelect.value);
+    if (!currentResponsible) {
+      setBySelect.value = "";
+    }
+  }
+
+  renderMultisiteUnitMatrix();
+  if (typeof updateParameterOverview === "function") {
+    updateParameterOverview();
+  }
+}
+
+function renderMultisiteUnitMatrix() {
+  const matrixEl = document.getElementById("parameterMultisiteMatrix");
+  if (!matrixEl) return;
+ 
+  const scopeKind       = getParameterScopeKind();
+  const selectedKpiId   = getParameterFieldValue("parameter_kpi_id");
+  const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
+  const selectedKpiUnit = getParameterSelectedKpiUnit();
+  const scopeLabel      = scopeKind === "zone" ? "Zone" : "Unit";
+ 
+  if (!selectedKpiId) {
+    renderParameterTableEmptyState("Select a KPI name to load the KPI unit and available target rows.");
+    return;
+  }
+ 
+  if (scopeKind !== "zone" && !selectedUnitTypeId && !parameterLockedUnitId) {
+    renderParameterTableEmptyState("Select a unit type to display the units that should receive targets.");
+    return;
+  }
+ 
+  const visibleRows = getParameterVisibleUnitRows();
+  if (!visibleRows.length) {
+    renderParameterTableEmptyState(
+      scopeKind === "zone"
+        ? "No zones were found in the zone table."
+        : "No units were found for the selected unit type."
+    );
+    return;
+  }
+ 
+  /* Build people <option> list once, reused for Responsible + Approved By */
+  const peopleOptions =
+    '<option value="">Select…</option>' +
+    (allocationLookups.people || [])
+      .map(p =>
+        '<option value="' + escapeHtml(p.value) + '">' +
+        escapeHtml(p.label) +
+        '</option>'
+      )
+      .join('');
+ 
+  matrixEl.innerHTML =
+    '<div class="multisite-table-wrap">' +
+      '<table class="multisite-table">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>' + escapeHtml(scopeLabel) + '</th>' +
+            '<th>Sell Currency</th>' +
+            '<th>Target </th>' +
+            '<th>Setup Date</th>' +
+            '<th>KPI Unit</th>' +
+            '<th>Responsible</th>' +
+            '<th>Last Best Target</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          visibleRows.map(function(scopeEntry) {
+            const scopeId       = String(scopeEntry.value || "");
+            const scopeEntryKind = scopeEntry.row_kind || "unit";
+            const state         = getParameterUnitState(scopeEntryKind, scopeId);
+            const dk            = escapeHtml(scopeEntryKind);
+            const ds            = escapeHtml(scopeId);
+ 
+            return '' +
+              '<tr>' +
+                /* ── Unit / Zone name ── */
+                '<td>' +
+                  '<div class="parameter-unit-name">' + escapeHtml(scopeEntry.label || "") + '</div>' +
+                  '<div class="parameter-unit-meta">' + escapeHtml(getParameterUnitMetaText(scopeEntry) || (scopeLabel + " target row")) + '</div>' +
+                '</td>' +
+ 
+                /* ── Sell Currency (read-only pill) ── */
+                '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(scopeEntry.local_currency || "-") + '</span></td>' +
+ 
+                /* ── Target  ── */
+                '<td>' +
+                  '<input class="parameter-unit-target-input"' +
+                    ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '"' +
+                    ' type="number" step="any" placeholder="Enter Target "' +
+                    ' value="' + escapeHtml(state.target_value ?? "") + '" />' +
+                '</td>' +
+ 
+                /* ── Setup Date ── */
+                '<td>' +
+                  '<input class="parameter-unit-setup-date-input"' +
+                    ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '"' +
+                    ' type="date"' +
+                    ' value="' + escapeHtml(
+                      normalizeParameterDateValue(
+                        state.target_setup_date ?? getParameterFieldValue("parameter_target_setup_date")
+                      ) || getLocalDateInputValue()
+                    ) + '" />' +
+                '</td>' +
+ 
+                /* ── KPI Unit (read-only pill) ── */
+                '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(selectedKpiUnit || "-") + '</span></td>' +
+ 
+                /* ── Responsible ── */
+                '<td>' +
+                  '<select class="parameter-unit-responsible-select"' +
+                    ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '">' +
+                    peopleOptions +
+                  '</select>' +
+                '</td>' +
+ 
+                /* ── Last Best Target ── */
+                '<td>' +
+                  '<input class="parameter-unit-last-best-input"' +
+                    ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '"' +
+                    ' type="number" step="any" placeholder="e.g. 3400"' +
+                    ' value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
+                '</td>' +
+ 
+              
+ 
+              '</tr>';
+          }).join("") +
+        '</tbody>' +
+      '</table>' +
+    '</div>';
+ 
+  /* ── Restore select values saved in state (must happen after innerHTML) ── */
+  visibleRows.forEach(function(scopeEntry) {
+    const scopeId        = String(scopeEntry.value || "");
+    const scopeEntryKind = scopeEntry.row_kind || "unit";
+    const state          = getParameterUnitState(scopeEntryKind, scopeId);
+ 
+    const respSel = matrixEl.querySelector(
+      '.parameter-unit-responsible-select[data-scope-id="' + scopeId + '"]'
+    );
+    if (respSel && state.responsible_id)    respSel.value = state.responsible_id;
+ 
+    const appSel = matrixEl.querySelector(
+      '.parameter-unit-approved-by-select[data-scope-id="' + scopeId + '"]'
+    );
+    if (appSel && state.approved_by_id)     appSel.value = state.approved_by_id;
+  });
+ 
+  /* ── Event listeners ── */
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-target-input")).forEach(function(input) {
+    input.addEventListener("input", function(event) {
+      const sk = event.target.getAttribute("data-scope-kind");
+      const si = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(sk, si, { target_value: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+ 
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-setup-date-input")).forEach(function(input) {
+    input.addEventListener("change", function(event) {
+      const sk = event.target.getAttribute("data-scope-kind");
+      const si = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(sk, si, { target_setup_date: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+ 
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-responsible-select")).forEach(function(sel) {
+    sel.addEventListener("change", function(event) {
+      const sk = event.target.getAttribute("data-scope-kind");
+      const si = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(sk, si, { responsible_id: event.target.value });
+    });
+  });
+ 
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-last-best-input")).forEach(function(input) {
+    input.addEventListener("input", function(event) {
+      const sk = event.target.getAttribute("data-scope-kind");
+      const si = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(sk, si, { last_best_target: event.target.value });
+    });
+  });
+ 
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-approved-by-select")).forEach(function(sel) {
+    sel.addEventListener("change", function(event) {
+      const sk = event.target.getAttribute("data-scope-kind");
+      const si = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(sk, si, { approved_by_id: event.target.value });
+    });
+  });
+ 
+  syncPrimaryParameterFieldsFromTable();
+}
 
 function autoFillSetByFromUnit() {
   const normalizedKpiType = getParameterFieldValue("parameter_kpi_type").toLowerCase();
-  const plantSelect = document.getElementById("parameter_plant_id");
-  const setBySelect = document.getElementById("parameter_set_by_people_id");
-  const setByHint = document.getElementById("parameter_set_by_people_hint");
-  if (!plantSelect || !setBySelect || normalizedKpiType !== "multisite") return;
+  if (normalizedKpiType !== "multisite") return;
 
-  const selectedUnitText =
-    plantSelect.options[plantSelect.selectedIndex]?.textContent?.trim() || "";
-  const personName = multisiteUnitResponsibleMap[selectedUnitText];
-  if (!personName) return;
-
-  const normalizeLabel = (value) =>
-    String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
-  const matchingOption = Array.from(setBySelect.options).find(
-    (option) => normalizeLabel(option.textContent) === normalizeLabel(personName)
-  );
-
-  if (matchingOption) {
-    setBySelect.value = matchingOption.value;
-    setBySelect.dataset.autoAssignedFromUnit = "true";
-    if (setByHint) {
-      setByHint.textContent = "Auto-filled from selected unit: " + personName + ". You can still change it.";
-    }
-    if (typeof updateParameterOverview === "function") {
-      updateParameterOverview();
-    }
+  const selectedUnitId = getParameterFieldValue("parameter_plant_id");
+  if (!selectedUnitId) {
+    renderMultisiteUnitMatrix();
+    return;
   }
+
+  selectMultisiteUnitCard(selectedUnitId);
 }
 
 function syncDashboardResponsibleAssignment() {
@@ -7730,54 +9333,966 @@ function syncDashboardResponsibleAssignment() {
   const setByHint = document.getElementById("parameter_set_by_people_hint");
   if (!setBySelect) return;
 
-  const normalizedResponsibleId = String(responsibleId || "").trim();
-  const hasDashboardResponsible = normalizedResponsibleId !== "";
-
   setBySelect.dataset.lockedResponsible = "false";
+  setBySelect.disabled = false;
 
   if (setByHint) {
-    setByHint.textContent = hasDashboardResponsible
-      ? "Defaulted to " + (responsibleName || "current responsible") + ". You can change it."
-      : "Select the person who will own this KPI";
+    setByHint.textContent = "Responsible is resolved automatically from the selected unit and role.";
   }
-
-  if (!hasDashboardResponsible) {
-    setBySelect.disabled = false;
-    return;
-  }
-
-  const optionExists = Array.from(setBySelect.options).some(
-    (option) => String(option.value || "") === normalizedResponsibleId
-  );
-
-  if (!optionExists) {
-    setBySelect.insertAdjacentHTML(
-      "beforeend",
-      '<option value="' + escapeHtml(normalizedResponsibleId) + '">' +
-      escapeHtml(responsibleName || ("Person " + normalizedResponsibleId)) +
-      '</option>'
-    );
-  }
-
-  if (!String(setBySelect.value || "").trim()) {
-    setBySelect.value = normalizedResponsibleId;
-  }
-  setBySelect.disabled = false;
 }
 
 function populateAllocationLookupOptions(values = {}) {
   setLookupSelectOptions("parameter_plant_id", allocationLookups.plants, "Select unit", values.parameter_plant_id || values.plant_id || "");
   setLookupSelectOptions("parameter_zone_id", allocationLookups.zones, "Select zone", values.parameter_zone_id || values.zone_id || "");
+
+  setLookupSelectOptions(
+    "parameter_zone_unit_id",
+    getParameterZoneUnitOptions(),
+    "Select unit",
+    values.parameter_zone_unit_id || values.unit_id || values.plant_id || ""
+  );
+
+  setLookupSelectOptions(
+    "parameter_zone_product_id",
+    allocationLookups.products,
+    "Select product",
+    values.parameter_zone_product_id || values.product_id || ""
+  );
+
   setLookupSelectOptions("parameter_unit_id", allocationLookups.units, "Select unit", values.parameter_unit_id || values.unit_id || "");
+  setLookupSelectOptions("parameter_unit_type_id", allocationLookups.unitTypes, "Select unit type", values.parameter_unit_type_id || values.unit_type_id || "");
+  setLookupSelectOptions("parameter_role_id", roleOptions, "Select role", values.parameter_role_id || values.role_id || "");
   setLookupSelectOptions("parameter_product_line_id", allocationLookups.productLines, "Select product line", values.parameter_product_line_id || values.product_line_id || "");
   setLookupSelectOptions("parameter_product_id", allocationLookups.products, "Select product", values.parameter_product_id || values.product_id || "");
   setLookupSelectOptions("parameter_market_id", allocationLookups.markets, "Select market", values.parameter_market_id || values.market_id || "");
   setLookupSelectOptions("parameter_customer_id", allocationLookups.customers, "Select customer", values.parameter_customer_id || values.customer_id || "");
   setLookupSelectOptions("parameter_set_by_people_id", allocationLookups.people, "Select person", values.parameter_set_by_people_id || values.set_by_people_id || "");
   setLookupSelectOptions("parameter_approved_by_people_id", allocationLookups.people, "Select approver", values.parameter_approved_by_people_id || values.approved_by_people_id || "");
+
   ensureParameterTargetUnitOption(values.parameter_target_unit || values.target_unit || "");
+
   syncDashboardResponsibleAssignment();
+  syncParameterScopePresentation();
+  syncParameterPlantOptions(values.parameter_plant_id || values.plant_id || "");
+  syncIndividualParameterFields();
+  renderMultisiteUnitMatrix();
 }
+
+function getParameterVisibleUnitRows() {
+  const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
+  const selectedUnitTypeLabel = getParameterSelectedUnitTypeLabel().toLowerCase();
+  const filteredUnits = getParameterAllocationUnits()
+    .filter((unitEntry) => String(unitEntry.label || "").trim().toLowerCase() !== "avocarbon group")
+    .filter((unitEntry) => {
+      if (!selectedUnitTypeId) return true;
+
+      const entryTypeId = String(unitEntry.unit_type_id || "").trim();
+      const entryTypeName = String(unitEntry.unit_type_name || "").trim().toLowerCase();
+
+      return (
+        entryTypeId === String(selectedUnitTypeId) ||
+        (selectedUnitTypeLabel && entryTypeName === selectedUnitTypeLabel)
+      );
+    });
+
+  if (parameterLockedUnitId) {
+    return filteredUnits.filter(
+      (unitEntry) => String(unitEntry.value || "") === String(parameterLockedUnitId)
+    );
+  }
+
+  if (parameterEditMode) {
+    const savedScopeKeys = new Set(Object.keys(parameterUnitTargetState || {}));
+    const scopedEditedUnits = filteredUnits.filter((unitEntry) =>
+      savedScopeKeys.has(getParameterRowStateKey("unit", unitEntry.value))
+    );
+
+    if (scopedEditedUnits.length) {
+      return scopedEditedUnits;
+    }
+  }
+
+  return filteredUnits;
+}
+
+function getParameterMatchedResponsible(unitEntry, roleId = getParameterFieldValue("parameter_role_id")) {
+  if (!unitEntry || !Array.isArray(unitEntry.responsibles)) return null;
+
+  const normalizedRoleId = String(roleId || "").trim();
+  const responsibles = unitEntry.responsibles
+    .filter((entry) => entry && entry.people_id)
+    .sort((left, right) => Number(Boolean(right.is_primary)) - Number(Boolean(left.is_primary)));
+
+  if (!normalizedRoleId) {
+    return responsibles[0] || null;
+  }
+
+  return responsibles.find(
+    (entry) => String(entry.role_id || "") === normalizedRoleId
+  ) || null;
+}
+
+function getParameterUnitMetaText(unitEntry) {
+  if (!unitEntry) return "";
+
+  const parts = [];
+  const roleId = getParameterFieldValue("parameter_role_id");
+  const roleLabel = getParameterRoleLabel(roleId);
+  const matchedResponsible = getParameterMatchedResponsible(unitEntry, roleId);
+  const localCurrency = unitEntry.selling_currency || unitEntry.operating_currency || "";
+
+  if (unitEntry.unit_type_name) {
+    parts.push(unitEntry.unit_type_name);
+  }
+
+  if (localCurrency) {
+    parts.push(localCurrency + " currency");
+  }
+
+  if (matchedResponsible) {
+    parts.push((roleLabel || matchedResponsible.role_name || "Role") + ": " + matchedResponsible.label);
+  } else if (roleLabel) {
+    parts.push("No active " + roleLabel + " assigned");
+  }
+
+  return parts.filter(Boolean).join(" • ");
+}
+
+function getParameterUnitAllocationRows() {
+  const kpiUnit             = getParameterSelectedKpiUnit();
+  const sharedSetByPeopleId = getParameterFieldValue("parameter_set_by_people_id") || responsibleId || "";
+  const sharedRoleId        = getParameterFieldValue("parameter_role_id");
+  const sharedUnitTypeId    = getParameterFieldValue("parameter_unit_type_id");
+  const fallbackSetupDate   =
+    getParameterFieldValue("parameter_target_setup_date") ||
+    getLocalDateInputValue();
+ 
+  return getParameterVisibleUnitRows()
+    .map(function(scopeEntry) {
+      const scopeKind  = scopeEntry.row_kind || "unit";
+      const scopeId    = String(scopeEntry.value || "").trim();
+      const state      = getParameterUnitState(scopeKind, scopeId);
+      const targetValue      = String(state.target_value ?? "").trim();
+      const targetSetupDate  = String(state.target_setup_date ?? "").trim() || fallbackSetupDate;
+ 
+      if (!targetValue) return null;
+ 
+      /* Per-row responsible falls back to the shared dashboard responsible */
+      const rowResponsibleId =
+        String(state.responsible_id || "").trim() || sharedSetByPeopleId;
+ 
+      return {
+        plant_id:            scopeKind === "unit" ? scopeId : null,
+        zone_id:             scopeKind === "zone" ? scopeId : null,
+        unit_type_id:        scopeKind === "unit"
+                               ? (sharedUnitTypeId || String(scopeEntry.unit_type_id || ""))
+                               : null,
+        role_id:             scopeKind === "unit" ? sharedRoleId : null,
+        target_value:        targetValue,
+        target_setup_date:   targetSetupDate,
+        target_unit:         kpiUnit,
+        local_currency:      scopeKind === "unit" ? (scopeEntry.local_currency || "") : "",
+        set_by_people_id:    rowResponsibleId,
+        last_best_target:    String(state.last_best_target ?? "").trim() || null,
+        approved_by_people_id: String(state.approved_by_id ?? "").trim() || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function syncPrimaryParameterFieldsFromTable() {
+  const allocationRows = getParameterUnitAllocationRows();
+  const primaryRow = allocationRows[0] || null;
+
+  const plantInput = document.getElementById("parameter_plant_id");
+  const targetValueInput = document.getElementById("parameter_target_value");
+  const targetUnitInput = document.getElementById("parameter_target_unit");
+  const localCurrencyInput = document.getElementById("parameter_local_currency");
+
+  if (plantInput) {
+    plantInput.value = primaryRow?.plant_id || parameterLockedUnitId || "";
+  }
+
+  if (targetValueInput) {
+    targetValueInput.value = primaryRow?.target_value || "";
+  }
+
+  if (targetUnitInput) {
+    const kpiUnit = getParameterSelectedKpiUnit();
+    ensureParameterTargetUnitOption(primaryRow?.target_unit || kpiUnit);
+    targetUnitInput.value = primaryRow?.target_unit || kpiUnit || "";
+  }
+
+  if (localCurrencyInput) {
+    localCurrencyInput.value = primaryRow?.local_currency || "";
+  }
+}
+
+function renderParameterTableEmptyState(message) {
+  const matrixEl = document.getElementById("parameterMultisiteMatrix");
+  if (!matrixEl) return;
+
+  matrixEl.innerHTML = '<div class="parameter-table-empty">' + escapeHtml(message) + '</div>';
+}
+
+function handleParameterKpiTypeChange() {
+  renderMultisiteUnitMatrix();
+}
+
+
+function autoFillSetByFromUnit() {
+  if (isIndividualParameterScope()) {
+    syncIndividualParameterFields();
+    return;
+  }
+
+  renderMultisiteUnitMatrix();
+}
+
+
+
+function getParameterVisibleUnitRows() {
+  const scopeKind = getParameterScopeKind();
+
+if (scopeKind === "zone") {
+  const lockedZoneIds = Array.isArray(parameterLockedZoneIds)
+    ? parameterLockedZoneIds.map(String)
+    : [];
+
+  if (!lockedZoneIds.length && !parameterLockedZoneId) {
+    return [];
+  }
+
+  const zoneRows = Array.isArray(allocationLookups.zones)
+    ? allocationLookups.zones.map((zoneEntry) => ({
+        row_kind: "zone",
+        value: String(zoneEntry.value || ""),
+        label: zoneEntry.label || "",
+        local_currency: "",
+        responsable_zone: zoneEntry.responsable_zone || ""
+      }))
+    : [];
+
+  if (lockedZoneIds.length) {
+    return zoneRows.filter((zoneEntry) =>
+      lockedZoneIds.includes(String(zoneEntry.value || ""))
+    );
+  }
+
+  return zoneRows.filter(
+    (zoneEntry) => String(zoneEntry.value || "") === String(parameterLockedZoneId)
+  );
+}
+
+  const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
+  const selectedUnitTypeLabel = getParameterSelectedUnitTypeLabel().toLowerCase();
+  const filteredUnits = getParameterAllocationUnits()
+    .filter((unitEntry) => String(unitEntry.label || "").trim().toLowerCase() !== "avocarbon group")
+    .filter((unitEntry) => {
+      if (!selectedUnitTypeId) return true;
+
+      const entryTypeId = String(unitEntry.unit_type_id || "").trim();
+      const entryTypeName = String(unitEntry.unit_type_name || "").trim().toLowerCase();
+
+      return (
+        entryTypeId === String(selectedUnitTypeId) ||
+        (selectedUnitTypeLabel && entryTypeName === selectedUnitTypeLabel)
+      );
+    })
+    .map((unitEntry) => ({
+      ...unitEntry,
+      row_kind: "unit",
+      local_currency: unitEntry.selling_currency || unitEntry.operating_currency || ""
+    }));
+
+  if (parameterLockedUnitId) {
+    return filteredUnits.filter(
+      (unitEntry) => String(unitEntry.value || "") === String(parameterLockedUnitId)
+    );
+  }
+
+  if (parameterEditMode) {
+    const savedScopeKeys = new Set(Object.keys(parameterUnitTargetState || {}));
+    const scopedEditedUnits = filteredUnits.filter((unitEntry) =>
+      savedScopeKeys.has(getParameterRowStateKey("unit", unitEntry.value))
+    );
+
+    if (scopedEditedUnits.length) {
+      return scopedEditedUnits;
+    }
+  }
+
+  return filteredUnits;
+}
+
+function getParameterMatchedResponsible(unitEntry, roleId = getParameterFieldValue("parameter_role_id")) {
+  if (!unitEntry || unitEntry.row_kind === "zone" || !Array.isArray(unitEntry.responsibles)) return null;
+
+  const normalizedRoleId = String(roleId || "").trim();
+  const responsibles = unitEntry.responsibles
+    .filter((entry) => entry && entry.people_id)
+    .sort((left, right) => Number(Boolean(right.is_primary)) - Number(Boolean(left.is_primary)));
+
+  if (!normalizedRoleId) {
+    return null;
+  }
+
+  return responsibles.find(
+    (entry) => String(entry.role_id || "") === normalizedRoleId
+  ) || null;
+}
+
+function getParameterPeopleLabel(peopleId) {
+  const normalizedPeopleId = String(peopleId || "").trim();
+  if (!normalizedPeopleId) return "";
+
+  const matchedPerson = (allocationLookups.people || []).find(
+    (option) => String(option.value || "") === normalizedPeopleId
+  );
+
+  return String(matchedPerson?.label || ("Person " + normalizedPeopleId)).trim();
+}
+
+function resolveParameterResponsibleEntry(scopeEntry, state = null) {
+  if (!scopeEntry) return null;
+
+  const scopeKind = scopeEntry.row_kind || "unit";
+  const scopeId = String(scopeEntry.value || "").trim();
+  const roleId = getParameterFieldValue("parameter_role_id");
+  const rowState = state || getParameterUnitState(scopeKind, scopeId);
+  const matchedResponsible = getParameterMatchedResponsible(scopeEntry, roleId);
+
+  if (matchedResponsible?.people_id) {
+    return {
+      ...matchedResponsible,
+      people_id: String(matchedResponsible.people_id),
+      label:
+        matchedResponsible.label ||
+        getParameterPeopleLabel(matchedResponsible.people_id) ||
+        ("Person " + matchedResponsible.people_id),
+      source: "role"
+    };
+  }
+
+  if (scopeKind === "zone") {
+    const zoneResponsibleLabel = String(
+      scopeEntry.responsable_zone ||
+      rowState?.responsable_zone ||
+      ""
+    ).trim();
+
+    if (zoneResponsibleLabel) {
+      return {
+        people_id: "",
+        label: zoneResponsibleLabel,
+        source: "zone-table"
+      };
+    }
+
+    const explicitPeopleId = String(
+      rowState?.set_by_people_id ||
+      rowState?.responsible_id ||
+      ""
+    ).trim();
+
+    if (!explicitPeopleId) {
+      return null;
+    }
+
+    return {
+      people_id: explicitPeopleId,
+      label: getParameterPeopleLabel(explicitPeopleId) || ("Person " + explicitPeopleId),
+      source: "zone-explicit"
+    };
+  }
+
+  return null;
+}
+
+function getParameterResponsibleCellNote(scopeEntry, responsibleEntry) {
+  const roleLabel = getParameterRoleLabel(getParameterFieldValue("parameter_role_id"));
+
+  if (scopeEntry?.row_kind === "zone") {
+    return "";
+  }
+
+  if (!roleLabel) {
+    return "Enter the role please.";
+  }
+
+  if (responsibleEntry?.source === "role") {
+    return isIndividualParameterScope()
+      ? roleLabel + " matched automatically from the selected unit."
+      : "";
+  }
+
+  return "";
+}
+
+function syncIndividualParameterFields() {
+  const setBySelect = document.getElementById("parameter_set_by_people_id");
+  const setByHint = document.getElementById("parameter_set_by_people_hint");
+  const targetUnitInput = document.getElementById("parameter_target_unit");
+  const setupDateInput = document.getElementById("parameter_target_setup_date");
+
+  if (!isIndividualParameterScope()) {
+    if (setBySelect) {
+      setBySelect.disabled = false;
+      setBySelect.classList.remove("readonly-input");
+    }
+    return;
+  }
+
+  const kpiUnit = getParameterSelectedKpiUnit();
+
+  if (targetUnitInput) {
+    ensureParameterTargetUnitOption(kpiUnit);
+    targetUnitInput.value = getParameterFieldValue("parameter_target_unit") || kpiUnit || "";
+  }
+
+  if (setupDateInput && !String(setupDateInput.value || "").trim()) {
+    setupDateInput.value = getLocalDateInputValue();
+  }
+
+  if (setBySelect) {
+    setBySelect.disabled = false;
+    setBySelect.classList.remove("readonly-input");
+    setBySelect.dataset.autoResolved = "false";
+  }
+
+  if (setByHint) {
+    setByHint.textContent = "Select the responsible person for this individual target.";
+  }
+}
+
+function getParameterUnitMetaText(unitEntry) {
+  if (!unitEntry) return "";
+  return "";
+
+  if (unitEntry.row_kind === "zone") {
+    return "Zone from zone table";
+  }
+
+  const parts = [];
+  const roleId = getParameterFieldValue("parameter_role_id");
+  const roleLabel = getParameterRoleLabel(roleId);
+  const matchedResponsible = getParameterMatchedResponsible(unitEntry, roleId);
+  const localCurrency = unitEntry.selling_currency || unitEntry.operating_currency || "";
+
+  if (unitEntry.unit_type_name) {
+    parts.push(unitEntry.unit_type_name);
+  }
+
+  if (localCurrency) {
+    parts.push(localCurrency + " currency");
+  }
+
+  if (matchedResponsible) {
+    parts.push((roleLabel || matchedResponsible.role_name || "Role") + ": " + matchedResponsible.label);
+  } else if (roleLabel) {
+    parts.push("No active " + roleLabel + " assigned");
+  }
+
+  return parts.filter(Boolean).join(" • ");
+}
+
+function getParameterUnitAllocationRows() {
+  const kpiUnit = getParameterSelectedKpiUnit();
+  const sharedSetByPeopleId = getParameterFieldValue("parameter_set_by_people_id") || "";
+  const sharedRoleId = getParameterFieldValue("parameter_role_id");
+  const sharedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
+  const fallbackSetupDate = getParameterFieldValue("parameter_target_setup_date") || getLocalDateInputValue();
+
+  if (isIndividualParameterScope()) {
+    const plantId = String(getParameterFieldValue("parameter_plant_id") || parameterLockedUnitId || "").trim();
+    const unitEntry = getParameterUnitById(plantId);
+    const targetValue = String(getParameterFieldValue("parameter_target_value") || "").trim();
+    const selectedResponsibleId = String(getParameterFieldValue("parameter_set_by_people_id") || "").trim();
+
+    if (!targetValue) return [];
+
+    return [{
+      plant_id: plantId || null,
+      zone_id: null,
+      unit_type_id: sharedUnitTypeId || String(unitEntry?.unit_type_id || "").trim() || null,
+      role_id: sharedRoleId || null,
+      target_value: targetValue,
+      target_setup_date: normalizeParameterDateValue(getParameterFieldValue("parameter_target_setup_date")) || fallbackSetupDate,
+      target_unit: getParameterFieldValue("parameter_target_unit") || kpiUnit,
+      local_currency: getParameterFieldValue("parameter_local_currency") || unitEntry?.selling_currency || unitEntry?.operating_currency || "",
+      set_by_people_id: selectedResponsibleId || null,
+      last_best_target: getParameterFieldValue("parameter_last_best_target") || null,
+      approved_by_people_id: getParameterFieldValue("parameter_approved_by_people_id") || null
+      }];
+     }
+
+  return getParameterVisibleUnitRows()
+    .map((scopeEntry) => {
+      const scopeKind = scopeEntry.row_kind || "unit";
+      const scopeId = String(scopeEntry.value || "").trim();
+      const state = getParameterUnitState(scopeKind, scopeId);
+      const resolvedResponsible = resolveParameterResponsibleEntry(scopeEntry, state);
+      const rowResponsibleId = String(
+        scopeKind === "zone"
+          ? (resolvedResponsible?.people_id || "")
+          : (resolvedResponsible?.people_id || sharedSetByPeopleId || "")
+      ).trim();
+      const targetValue = String(state.target_value ?? "").trim();
+      const targetSetupDate = normalizeParameterDateValue(state.target_setup_date) || fallbackSetupDate;
+      if (!targetValue) return null;
+
+      return {
+      plant_id: scopeKind === "unit" ? scopeId : null,
+      zone_id: scopeKind === "zone" ? scopeId : null,
+
+     // important for Zone edit
+     unit_id: scopeKind === "zone"
+      ? getParameterFieldValue("parameter_zone_unit_id")
+      : null,
+
+     product_id: scopeKind === "zone"
+      ? getParameterFieldValue("parameter_zone_product_id")
+      : getParameterFieldValue("parameter_product_id"),
+        unit_type_id: scopeKind === "unit" ? (sharedUnitTypeId || String(scopeEntry.unit_type_id || "")) : null,
+        role_id: scopeKind === "unit" ? sharedRoleId : null,
+        target_value: targetValue,
+        target_setup_date: targetSetupDate,
+        target_unit: kpiUnit,
+        local_currency: scopeKind === "unit" ? (scopeEntry.local_currency || "") : "",
+        set_by_people_id: rowResponsibleId,
+        last_best_target: String(state.last_best_target ?? "").trim(),
+        approved_by_people_id: String(state.approved_by_id ?? "").trim() || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function syncPrimaryParameterFieldsFromTable() {
+  if (isIndividualParameterScope()) {
+    syncIndividualParameterFields();
+    return;
+  }
+
+  const allocationRows = getParameterUnitAllocationRows();
+  const primaryRow = allocationRows[0] || null;
+
+  const plantInput = document.getElementById("parameter_plant_id");
+  const zoneInput = document.getElementById("parameter_zone_id");
+  const targetValueInput = document.getElementById("parameter_target_value");
+  const targetUnitInput = document.getElementById("parameter_target_unit");
+  const localCurrencyInput = document.getElementById("parameter_local_currency");
+  const lastBestTargetInput = document.getElementById("parameter_last_best_target");
+  const targetSetupDateInput = document.getElementById("parameter_target_setup_date");
+  const setByInput = document.getElementById("parameter_set_by_people_id");
+  const approvedByInput = document.getElementById("parameter_approved_by_people_id");
+
+  if (plantInput) {
+    plantInput.value = primaryRow?.plant_id || parameterLockedUnitId || "";
+  }
+
+  if (zoneInput) {
+    zoneInput.value = primaryRow?.zone_id || parameterLockedZoneId || "";
+  }
+
+  if (targetValueInput) {
+    targetValueInput.value = primaryRow?.target_value || "";
+  }
+
+  if (targetUnitInput) {
+    const kpiUnit = getParameterSelectedKpiUnit();
+    ensureParameterTargetUnitOption(primaryRow?.target_unit || kpiUnit);
+    targetUnitInput.value = primaryRow?.target_unit || kpiUnit || "";
+  }
+
+  if (localCurrencyInput) {
+    localCurrencyInput.value = primaryRow?.local_currency || "";
+  }
+
+  if (lastBestTargetInput) {
+    lastBestTargetInput.value = primaryRow?.last_best_target ?? "";
+  }
+
+  if (targetSetupDateInput) {
+    targetSetupDateInput.value =
+      normalizeParameterDateValue(primaryRow?.target_setup_date) ||
+      normalizeParameterDateValue(targetSetupDateInput.value) ||
+      getLocalDateInputValue();
+  }
+
+  if (setByInput) {
+    setByInput.value = primaryRow?.set_by_people_id || setByInput.value || "";
+  }
+
+  if (approvedByInput) {
+    approvedByInput.value = primaryRow?.approved_by_people_id ?? "";
+  }
+}
+
+function renderParameterTableEmptyState(message) {
+  const matrixEl = document.getElementById("parameterMultisiteMatrix");
+  if (!matrixEl) return;
+
+  matrixEl.innerHTML = '<div class="parameter-table-empty">' + escapeHtml(message) + '</div>';
+}
+
+async function lookupZoneFromManufacturingStrategy() {
+  const unitId   = getParameterFieldValue("parameter_zone_unit_id");
+  const productId = getParameterFieldValue("parameter_zone_product_id");
+  const displayEl = document.getElementById("parameter_zone_resolved_display");
+
+  parameterZoneLookupPending = false;
+  parameterResolvedZoneId = "";
+  parameterLockedZoneId   = "";
+
+  if (!unitId || !productId) {
+    if (displayEl) {
+      displayEl.value = "";
+      displayEl.placeholder = unitId
+        ? "Now select a product..."
+        : "Select unit & product first...";
+    }
+    renderMultisiteUnitMatrix();
+    return;
+  }
+
+  if (displayEl) {
+    displayEl.value = "";
+    displayEl.placeholder = "Looking up zone...";
+  }
+
+  parameterZoneLookupPending = true;
+
+  try {
+    const res  = await fetch(
+      "/api/manufacturing-strategy/zone?unit_id=" +
+      encodeURIComponent(unitId) + "&product_id=" + encodeURIComponent(productId)
+    );
+    const data = await res.json();
+
+ const zones = Array.isArray(data.zones) ? data.zones : [];
+
+  if (zones.length) {
+   parameterLockedZoneIds = zones.map((z) => String(z.zone_id));
+   parameterResolvedZoneId = parameterLockedZoneIds[0] || "";
+   parameterLockedZoneId = parameterResolvedZoneId;
+
+      /* Resolve zone name from already-loaded allocationLookups.zones */
+    const firstZone = zones[0] || {};
+    const zoneEntry = (allocationLookups.zones || []).find(
+     z => String(z.value) === String(firstZone.zone_id)
+     );
+    const zoneName = zoneEntry?.label || firstZone.zone_name || ("Zone #" + firstZone.zone_id);
+
+      if (displayEl) {
+        displayEl.value       = zoneName;
+        displayEl.placeholder = "";
+      }
+    } else {
+      parameterResolvedZoneId = "";
+      parameterLockedZoneId   = "";
+
+      if (displayEl) {
+        displayEl.value       = "";
+        displayEl.placeholder = "No zone found for this unit + product";
+      }
+    }
+  } catch (err) {
+    parameterResolvedZoneId = "";
+    parameterLockedZoneId   = "";
+    if (displayEl) {
+      displayEl.value       = "";
+      displayEl.placeholder = "Error looking up zone";
+    }
+  }
+
+  parameterZoneLookupPending = false;
+  renderMultisiteUnitMatrix();
+}
+
+
+function syncParameterScopePresentation() {
+  const scopeKind   = getParameterScopeKind();
+  const isZoneScope = scopeKind === "zone";
+ 
+  const kpiType      = getParameterFieldValue("parameter_kpi_type").toLowerCase();
+  const isIndividual = kpiType === "individual";
+ 
+  const tableLabel = document.getElementById("parameter_scope_table_label");
+  const tableHint  = document.getElementById("parameter_scope_table_hint");
+  const tableCopy  = document.getElementById("parameter_scope_table_copy");
+  const tableBadge = document.getElementById("parameter_scope_table_badge");
+  const zoneDisplayEl = document.getElementById("parameter_zone_resolved_display");
+ 
+  /* ── bottom section: only for Individual ── */
+  const allocSection = document.getElementById("parameterAllocationFieldsSection");
+  if (allocSection) {
+    allocSection.classList.toggle("is-hidden", !isIndividual);
+    allocSection.classList.toggle("is-individual-layout", isIndividual);
+    allocSection.setAttribute("aria-hidden", String(!isIndividual));
+    Array.from(allocSection.querySelectorAll("input, select, textarea")).forEach((field) => {
+      field.disabled = !isIndividual;
+    });
+  }
+ 
+  /* ── matrix table: hidden for Individual, shown for Multisite / Zone ── */
+  toggleScopedParameterField("parameter_multisite_matrix_field", !isIndividual);
+ 
+  /* ── scope fields: Multisite only in the latest Individual layout ── */
+  toggleScopedParameterField("parameter_unit_type_field", !isZoneScope && !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_role_field",      !isZoneScope && !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_plant_field",     false, { clearOnHide: false });
+  toggleScopedParameterField("parameter_previous_target_field", !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_target_start_date_field", !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_target_end_date_field", !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_target_status_field", !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_comments_field", !isIndividual, { clearOnHide: false });
+ 
+/* ── always-hidden dropdowns ── */
+toggleScopedParameterField("parameter_zone_field", false, { clearOnHide: false });
+toggleScopedParameterField("parameter_function_field", false);
+toggleScopedParameterField("parameter_zone_unit_field", false, { clearOnHide: false });
+toggleScopedParameterField("parameter_zone_product_field", false, { clearOnHide: false });
+toggleScopedParameterField("parameter_zone_resolved_field", false, { clearOnHide: false });
+
+  if (!isZoneScope) {
+    parameterZoneLookupPending = false;
+    parameterResolvedZoneId = "";
+    parameterLockedZoneId   = "";
+    if (zoneDisplayEl) {
+      zoneDisplayEl.value = "";
+      zoneDisplayEl.placeholder = "Select unit and product first";
+    }
+  }
+ 
+  if (isIndividual) {
+    parameterLockedUnitId  = "";
+    parameterLockedZoneId  = "";
+    syncParameterPlantOptions();
+    syncIndividualParameterFields();
+    return;
+  }
+ 
+if (isZoneScope) {
+    parameterLockedUnitId = "";
+
+    /* Show Unit + Product pickers; hide Unit Type & Role */
+    toggleScopedParameterField("parameter_unit_type_field", false);
+    toggleScopedParameterField("parameter_role_field",      false);
+    toggleScopedParameterField("parameter_zone_unit_field",     true, { clearOnHide: false });
+    toggleScopedParameterField("parameter_zone_product_field",  true, { clearOnHide: false });
+    toggleScopedParameterField("parameter_zone_resolved_field", false);
+
+    /* Populate the Unit dropdown for Zone mode */
+    setLookupSelectOptions(
+      "parameter_zone_unit_id",
+      getParameterZoneUnitOptions(),
+      "Select unit",
+      getParameterFieldValue("parameter_zone_unit_id")
+    );
+
+    /* Populate the Product dropdown */
+    setLookupSelectOptions(
+      "parameter_zone_product_id",
+      allocationLookups.products || [],
+      "Select product",
+      getParameterFieldValue("parameter_zone_product_id")
+    );
+
+    if (tableLabel) tableLabel.textContent = "Zone Target Table";
+    if (tableHint)  tableHint.textContent  = "Select a unit and product to resolve the zone from manufacturing strategy.";
+    if (tableCopy)  tableCopy.textContent  =
+      "Select a unit and product. The matching zone from the manufacturing strategy table will appear automatically, and you can then enter its Target .";
+    if (tableBadge) tableBadge.textContent = "Zone View";
+    return;
+  }
+ 
+  parameterLockedZoneId = "";
+  if (tableLabel) tableLabel.textContent = "Unit Target Table";
+  if (tableHint)  tableHint.textContent  = "Enter target and last best target for each unit. Responsible is linked automatically from the selected role.";
+  if (tableCopy)  tableCopy.textContent  =
+    "Choose a KPI, KPI type, unit type and role. The table below will list matching units, resolve the related responsible automatically, and keep the KPI unit from the selected KPI.";
+  if (tableBadge) tableBadge.textContent = "Unit Type View";
+}
+
+function handleParameterKpiTypeChange() {
+  syncParameterScopePresentation();
+  syncParameterPlantOptions();
+  syncIndividualParameterFields();
+
+  if (!isIndividualParameterScope()) {
+    renderMultisiteUnitMatrix();
+  }
+}
+
+function renderMultisiteUnitMatrix() {
+  const matrixEl = document.getElementById("parameterMultisiteMatrix");
+  if (!matrixEl) return;
+
+  const scopeKind = getParameterScopeKind();
+  const selectedKpiId = getParameterFieldValue("parameter_kpi_id");
+  const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
+  const selectedRoleId = getParameterFieldValue("parameter_role_id");
+  const selectedZoneUnitId = getParameterFieldValue("parameter_zone_unit_id");
+  const selectedZoneProductId = getParameterFieldValue("parameter_zone_product_id");
+  const selectedKpiUnit = getParameterSelectedKpiUnit();
+  const scopeLabel = scopeKind === "zone" ? "Zone" : "Unit";
+
+  if (!selectedKpiId) {
+    renderParameterTableEmptyState("Select a KPI name to load the KPI unit and available target rows.");
+    return;
+  }
+
+  if (scopeKind !== "zone" && !selectedUnitTypeId && !parameterLockedUnitId) {
+    renderParameterTableEmptyState("Select a unit type to display the units that should receive targets.");
+    return;
+  }
+
+  if (scopeKind !== "zone" && !selectedRoleId) {
+    renderParameterTableEmptyState("Enter the role please to load the target table and resolve the related responsible for each unit.");
+    return;
+  }
+
+  if (scopeKind === "zone" && !selectedZoneUnitId) {
+    renderParameterTableEmptyState("Select a unit and product to display the matched zone.");
+    return;
+  }
+
+  if (scopeKind === "zone" && !selectedZoneProductId) {
+    renderParameterTableEmptyState("Select a product to display the matched zone.");
+    return;
+  }
+
+  if (scopeKind === "zone" && parameterZoneLookupPending) {
+    renderParameterTableEmptyState("Looking up the matched zone for the selected unit and product...");
+    return;
+  }
+
+  if (scopeKind === "zone" && !parameterLockedZoneId) {
+    renderParameterTableEmptyState("No matching zone was found for the selected unit and product.");
+    return;
+  }
+
+  const visibleRows = getParameterVisibleUnitRows();
+  if (!visibleRows.length) {
+    renderParameterTableEmptyState(
+      scopeKind === "zone"
+        ? "No matching zone was found for the selected unit and product."
+        : "No units were found for the selected unit type."
+    );
+    return;
+  }
+
+  matrixEl.innerHTML =
+    '<div class="multisite-table-wrap">' +
+      '<table class="multisite-table">' +
+        '<thead>' +
+          '<tr>' +
+            '<th>' + escapeHtml(scopeLabel) + '</th>' +
+            '<th>Sell Currency</th>' +
+            '<th>KPI Unit</th>' +
+            '<th>Target </th>' +
+            '<th>Last Best Target</th>' +
+            '<th>Setup Date</th>' +
+            '<th>Responsible</th>' +
+          '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+          visibleRows.map((scopeEntry) => {
+            const scopeId = String(scopeEntry.value || "");
+            const scopeEntryKind = scopeEntry.row_kind || "unit";
+            const state = getParameterUnitState(scopeEntryKind, scopeId);
+            const resolvedResponsible = resolveParameterResponsibleEntry(scopeEntry, state);
+            const responsibleLabel = resolvedResponsible?.label || "";
+            const responsibleNote = getParameterResponsibleCellNote(scopeEntry, resolvedResponsible);
+            const responsiblePlaceholder = scopeKind === "zone"
+              ? "No responsible assigned"
+              : (selectedRoleId ? "No responsible assigned" : "Enter the role please");
+            const responsibleInputClass =
+              "readonly-input parameter-unit-responsible-input" +
+              (responsibleLabel ? "" : " is-empty");
+            const responsibleNoteClass =
+              "parameter-unit-cell-note" +
+              (resolvedResponsible ? " is-linked" : " is-warning");
+            const responsibleNoteMarkup = responsibleNote
+              ? '<div class="' + responsibleNoteClass + '">' + escapeHtml(responsibleNote) + '</div>'
+              : "";
+            return '' +
+              '<tr>' +
+                '<td>' +
+                  '<div class="parameter-unit-name">' + escapeHtml(scopeEntry.label || "") + '</div>' +
+                  (getParameterUnitMetaText(scopeEntry)
+                    ? '<div class="parameter-unit-meta">' + escapeHtml(getParameterUnitMetaText(scopeEntry)) + '</div>'
+                    : '') +
+                '</td>' +
+                '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(scopeEntry.local_currency || "-") + '</span></td>' +
+                '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(selectedKpiUnit || "-") + '</span></td>' +
+                '<td>' +
+                  '<input class="parameter-unit-target-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="Enter Target " value="' + escapeHtml(state.target_value ?? "") + '" />' +
+                '</td>' +
+                '<td>' +
+                  '<input class="parameter-unit-last-best-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="e.g. 3400" value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
+                '</td>' +
+                '<td>' +
+                  '<input class="parameter-unit-setup-date-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="date" value="' + escapeHtml(normalizeParameterDateValue(state.target_setup_date ?? getParameterFieldValue("parameter_target_setup_date")) || getLocalDateInputValue()) + '" />' +
+                '</td>' +
+                '<td>' +
+                  '<input class="' + responsibleInputClass + '" type="text" readonly tabindex="-1" value="' + escapeHtml(responsibleLabel) + '" placeholder="' + escapeHtml(responsiblePlaceholder) + '" />' +
+                  responsibleNoteMarkup +
+                '</td>' +
+              '</tr>';
+          }).join("") +
+        '</tbody>' +
+      '</table>' +
+    '</div>';
+
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-target-input")).forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const scopeKind = event.target.getAttribute("data-scope-kind");
+      const scopeId = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(scopeKind, scopeId, { target_value: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-setup-date-input")).forEach((input) => {
+    input.addEventListener("change", (event) => {
+      const scopeKind = event.target.getAttribute("data-scope-kind");
+      const scopeId = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(scopeKind, scopeId, { target_setup_date: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-last-best-input")).forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const scopeKind = event.target.getAttribute("data-scope-kind");
+      const scopeId = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(scopeKind, scopeId, { last_best_target: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+
+  Array.from(matrixEl.querySelectorAll(".parameter-unit-approved-by-select")).forEach((select) => {
+    select.addEventListener("change", (event) => {
+      const scopeKind = event.target.getAttribute("data-scope-kind");
+      const scopeId = event.target.getAttribute("data-scope-id");
+      setParameterUnitState(scopeKind, scopeId, { approved_by_id: event.target.value });
+      syncPrimaryParameterFieldsFromTable();
+    });
+  });
+
+  syncPrimaryParameterFieldsFromTable();
+}
+
+function autoFillSetByFromUnit() {
+  if (isIndividualParameterScope()) {
+    syncIndividualParameterFields();
+    return;
+  }
+
+  renderMultisiteUnitMatrix();
+}
+
 function getFieldValue(id) {
   const el = document.getElementById(id);
   return el ? String(el.value || "").trim() : "";
@@ -7785,7 +10300,7 @@ function getFieldValue(id) {
 
 const subjectTreeNodeLookup = new Map();
 let subjectTreeExpandedIds = new Set();
-subjectTreeSelectedFlow = ["company_success"];
+let subjectTreeSelectedFlow = [];
 
 function getAllSubjectTreeIds(nodes = getSubjectTreeRoots(), target = new Set()) {
   (Array.isArray(nodes) ? nodes : []).forEach((node) => {
@@ -7843,9 +10358,7 @@ function updateSubjectTreeCurrentPath(node = null) {
   if (!currentPathEl) return;
 
   const pathText = node?.full_path || getFieldValue("subject_path_display") || "";
-  currentPathEl.textContent = pathText
-    ? "Selected path: " + pathText
-    : "Selected path: No subject selected yet.";
+  currentPathEl.textContent = pathText || "No subject selected yet.";
 }
 
 function updateSubjectTreeTrigger(node = null, fallbackLabel = "") {
@@ -7853,13 +10366,14 @@ function updateSubjectTreeTrigger(node = null, fallbackLabel = "") {
   const metaEl = document.getElementById("subjectTreeMeta");
   const chevronEl = document.getElementById("subjectTreeChevron");
   const treeSelect = document.getElementById("subjectTreeSelect");
+  const fallbackPath = getFieldValue("subject_path_display") || fallbackLabel || "";
 
   if (labelEl) {
-    labelEl.textContent = node?.name || fallbackLabel || "Select subject from tree";
+    labelEl.textContent = node?.full_path || fallbackPath || "Select subject from tree";
   }
 
   if (metaEl) {
-    metaEl.textContent = node?.full_path || "Open the visual hierarchy to choose a subject and follow its branch.";
+    metaEl.textContent = node?.full_path || fallbackPath ? "" : "Open the visual hierarchy to choose a subject and follow its branch.";
   }
 
   updateSubjectTreeCurrentPath(node);
@@ -8020,7 +10534,13 @@ function selectSubjectFlowNode(nodeId, level) {
   subjectTreeSelectedFlow[level] = String(nodeId);
 
   var hasChildren = Array.isArray(node.children) && node.children.length > 0;
-  selectSubjectNode(node.id, { keepOpen: true });
+  if (hasChildren) {
+    updateSubjectTreeTrigger(node);   // ← ADD THIS LINE
+    renderSubjectTree();
+    return;
+  }
+
+  selectSubjectNode(node.id, { keepOpen: false });
 }
 
 function resetSubjectFlow() {
@@ -8091,12 +10611,12 @@ function selectSubjectNode(nodeId, { preserveName = false, preserveSubtitle = fa
   const parentNode = getSubjectNodeParent(node.id);
   setSubjectSelectedFlow(node.id);
 
-  const subjectInput = document.getElementById("subject");
-  const subjectNodeInput = document.getElementById("subject_node_id");
-  const categoryInput = document.getElementById("indicator_title");
-  const nameInput = document.getElementById("indicator_sub_title");
-  const pathDisplayInput = document.getElementById("subject_path_display");
-  const definitionEl = document.getElementById("definition");
+  const subjectInput = getKpiFieldElement("subject");
+  const subjectNodeInput = getKpiFieldElement("subject_node_id");
+  const categoryInput = getKpiFieldElement("indicator_title");
+  const nameInput = getKpiFieldElement("indicator_sub_title");
+  const pathDisplayInput = getKpiFieldElement("subject_path_display");
+  const definitionEl = getKpiFieldElement("definition");
 
   if (subjectInput) subjectInput.value = node.full_path || node.name || "";
   if (subjectNodeInput) subjectNodeInput.value = node.id || "";
@@ -8124,18 +10644,24 @@ function selectSubjectTreeNode(nodeId) {
   if (!node) return;
 
   const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-  selectSubjectNode(node.id, { keepOpen: hasChildren });
+  if (hasChildren) {
+    setSubjectSelectedFlow(node.id);
+    renderSubjectTree();
+    return;
+  }
+
+  selectSubjectNode(node.id, { keepOpen: false });
 }
 
 function initializeKpiHierarchySelectors(values = {}) {
   subjectTreeSelectedFlow = [];
 
-  const subjectInput = document.getElementById("subject");
-  const subjectNodeInput = document.getElementById("subject_node_id");
-  const categoryInput = document.getElementById("indicator_title");
-  const nameInput = document.getElementById("indicator_sub_title");
-  const pathDisplayInput = document.getElementById("subject_path_display");
-  const definitionEl = document.getElementById("definition");
+  const subjectInput = getKpiFieldElement("subject");
+  const subjectNodeInput = getKpiFieldElement("subject_node_id");
+  const categoryInput = getKpiFieldElement("indicator_title");
+  const nameInput = getKpiFieldElement("indicator_sub_title");
+  const pathDisplayInput = getKpiFieldElement("subject_path_display");
+  const definitionEl = getKpiFieldElement("definition");
 
   if (subjectInput) subjectInput.value = "";
   if (subjectNodeInput) subjectNodeInput.value = "";
@@ -8157,7 +10683,7 @@ function initializeKpiHierarchySelectors(values = {}) {
     if (subjectInput) subjectInput.value = values.subject || "";
     if (categoryInput) categoryInput.value = values.indicator_title || "";
     if (pathDisplayInput) pathDisplayInput.value = values.subject || "";
-    updateSubjectTreeTrigger(null, values.subject || "");
+    updateSubjectTreeTrigger(null, getLastPathSegment(values.subject || ""));
     renderSubjectTree();
     closeSubjectTree();
   }
@@ -8187,7 +10713,7 @@ function getReferenceKpiRow(referenceKpiId) {
 }
 
 function populateReferenceKpiOptions(selectedValue = "") {
-  const selectEl = document.getElementById("reference_kpi_id");
+  const selectEl = getKpiFieldElement("reference_kpi_id");
   if (!selectEl) return;
 
   const selectedText = String(selectedValue || "").trim();
@@ -8248,13 +10774,17 @@ function handleCalculationModeChange() {
     const previewEl = document.getElementById("displayed_kpi_preview");
     if (previewEl) previewEl.value = "";
   }
+
+  syncKpiRequiredState();
 }
 
-      function setActiveNav(target) {
-        document.getElementById("navDashboard").classList.remove("active");
-        document.getElementById("navMyKpis").classList.remove("active");
-        document.getElementById("navConsultAllocations").classList.remove("active");
-        document.getElementById(target).classList.add("active");
+     function setActiveNav(target) {
+        ["navDashboard", "navMyKpis", "navConsultAllocations"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.classList.remove("active");
+        });
+        const activeEl = document.getElementById(target);
+        if (activeEl) activeEl.classList.add("active");
       }
 
       function showDashboard() {
@@ -8439,12 +10969,141 @@ function renderKpis(rows) {
         return searchEl ? String(searchEl.value || "") : "";
       }
 
+      function buildParameterAllocationGroupKey(row) {
+        return [
+          row.kpi_id || "",
+          String(row.kpi_type || "").trim().toLowerCase(),
+          row.unit_type_id || "",
+          row.role_id || "",
+          String(row.function || "").trim().toLowerCase(),
+          row.product_id || "",
+          row.product_line_id || "",
+          row.market_id || "",
+          row.customer_id || "",
+          row.created_by_people_id || "",
+          row.created_at || ""
+        ].join("::");
+      }
+
+      function buildParameterAllocationScopeKey(row) {
+        if (!row || typeof row !== "object") return "";
+
+        const zoneId = String(row.zone_id || "").trim();
+        if (zoneId) return "zone:" + zoneId;
+
+        const unitId = String(row.plant_id || row.unit_id || "").trim();
+        if (unitId) return "unit:" + unitId;
+
+        const allocationId = String(row.kpi_target_allocation_id || "").trim();
+        return allocationId ? "allocation:" + allocationId : "";
+      }
+
+      function mergeParameterAllocationCollections(...collections) {
+        const mergedRows = new Map();
+
+        collections
+          .flat()
+          .filter(Boolean)
+          .forEach((row) => {
+            const scopeKey = buildParameterAllocationScopeKey(row);
+            const fallbackKey = "allocation:" + String(row?.kpi_target_allocation_id || "").trim();
+            const key = scopeKey || fallbackKey;
+            if (!key) return;
+
+            const existingRow = mergedRows.get(key) || {};
+            mergedRows.set(key, {
+              ...existingRow,
+              ...row
+            });
+          });
+
+        return Array.from(mergedRows.values()).sort(
+          (left, right) =>
+            Number(left?.kpi_target_allocation_id || 0) - Number(right?.kpi_target_allocation_id || 0)
+        );
+      }
+
+      function getParameterGroupedScopeKindLabel(row, count = 1) {
+        const normalizedType = String(row?.kpi_type || "").trim().toLowerCase();
+        const singularLabel = normalizedType === "zone" ? "zone" : "unit";
+        return count === 1 ? singularLabel : singularLabel + "s";
+      }
+
+      function groupParameterAllocationRows(rows) {
+        const sourceRows = Array.isArray(rows) ? rows : [];
+        const groupedRows = new Map();
+
+        sourceRows.forEach((row) => {
+          const groupKey = buildParameterAllocationGroupKey(row);
+          if (!groupedRows.has(groupKey)) {
+            groupedRows.set(groupKey, []);
+          }
+          groupedRows.get(groupKey).push(row);
+        });
+
+        return Array.from(groupedRows.values())
+          .map((groupRows) => {
+            const sortedGroupRows = groupRows
+              .slice()
+              .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
+            const primaryRow = sortedGroupRows[0] || {};
+            const scopeNames = Array.from(
+              new Set(
+                sortedGroupRows
+                  .map((row) => row.zone_name || row.unit_name || row.plant_name || "")
+                  .filter(Boolean)
+              )
+            );
+            const responsibleNames = Array.from(
+              new Set(
+                sortedGroupRows
+                  .map((row) => row.set_by_people_display_name || "")
+                  .filter(Boolean)
+              )
+            );
+            const currencies = Array.from(
+              new Set(
+                sortedGroupRows
+                  .map((row) => row.local_currency || "")
+                  .filter(Boolean)
+              )
+            );
+            const targetValues = sortedGroupRows
+              .map((row) => row.target_value)
+              .filter((value) => value !== null && value !== undefined && value !== "");
+
+            return {
+              ...primaryRow,
+              related_allocations: sortedGroupRows,
+              group_row_count: sortedGroupRows.length,
+              group_scope_names: scopeNames,
+              group_responsible_names: responsibleNames,
+              group_currencies: currencies,
+              group_target_values: targetValues,
+              local_currency: currencies.length === 1 ? currencies[0] : "",
+              set_by_people_display_name: responsibleNames.length === 1
+                ? responsibleNames[0]
+                : (primaryRow.set_by_people_display_name || "")
+            };
+          })
+          .sort((left, right) => {
+            const leftCreatedAt = new Date(left.created_at || 0).getTime();
+            const rightCreatedAt = new Date(right.created_at || 0).getTime();
+            if (leftCreatedAt !== rightCreatedAt) {
+              return rightCreatedAt - leftCreatedAt;
+            }
+            return Number(right.kpi_target_allocation_id || 0) - Number(left.kpi_target_allocation_id || 0);
+          });
+      }
+
       function buildParameterSearchIndex(row) {
         return [
           row.kpi_name,
           row.kpi_subject,
           row.kpi_group,
           row.kpi_type,
+          row.unit_type_name,
+          row.role_name,
           row.target_status,
           row.plant_name,
           row.zone_name,
@@ -8454,6 +11113,11 @@ function renderKpis(rows) {
           row.product_name,
           row.market_name,
           row.customer_name,
+          Array.isArray(row.group_scope_names) ? row.group_scope_names.join(" ") : "",
+          Array.isArray(row.group_responsible_names) ? row.group_responsible_names.join(" ") : "",
+          Array.isArray(row.group_target_values)
+            ? row.group_target_values.map((value) => formatParameterDisplayValue(value)).join(" ")
+            : "",
           row.target_unit,
           row.local_currency,
           formatParameterDisplayValue(row.target_value),
@@ -8484,9 +11148,44 @@ function renderKpis(rows) {
         return String(value);
       }
 
+      function getLocalDateInputValue(value = new Date()) {
+        const parsed = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "";
+        const year = parsed.getFullYear();
+        const month = String(parsed.getMonth() + 1).padStart(2, "0");
+        const day = String(parsed.getDate()).padStart(2, "0");
+        return year + "-" + month + "-" + day;
+      }
+
+      function normalizeParameterDateValue(value) {
+        if (!value) return "";
+        if (value instanceof Date) {
+          return getLocalDateInputValue(value);
+        }
+
+        const text = String(value).trim();
+        if (!text) return "";
+
+        const dateOnlyMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (dateOnlyMatch) {
+          return dateOnlyMatch[1] + "-" + dateOnlyMatch[2] + "-" + dateOnlyMatch[3];
+        }
+
+        const parsed = new Date(text);
+        return Number.isNaN(parsed.getTime()) ? text : getLocalDateInputValue(parsed);
+      }
+
       function formatParameterDisplayDate(value) {
         if (!value) return "-";
-        const parsed = new Date(value);
+        const normalizedValue = normalizeParameterDateValue(value);
+        const dateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const parsed = dateOnlyMatch
+          ? new Date(
+              Number(dateOnlyMatch[1]),
+              Number(dateOnlyMatch[2]) - 1,
+              Number(dateOnlyMatch[3])
+            )
+          : new Date(normalizedValue);
         if (Number.isNaN(parsed.getTime())) return escapeHtml(value);
         return parsed.toLocaleDateString("en-GB", {
           day: "2-digit",
@@ -8510,7 +11209,29 @@ function renderKpis(rows) {
       }
 
       function buildParameterScopeSummary(row) {
+        const groupedRowCount = Number(
+          row.group_row_count ||
+          (Array.isArray(row.related_allocations) ? row.related_allocations.length : 0)
+        );
+
+        if (groupedRowCount > 1) {
+          const scopeNames = Array.isArray(row.group_scope_names) ? row.group_scope_names : [];
+          const scopePreview = scopeNames.length > 3
+            ? scopeNames.slice(0, 3).join(", ") + " +" + (scopeNames.length - 3)
+            : scopeNames.join(", ");
+
+          return [
+            row.unit_type_name,
+            row.role_name,
+            scopePreview || (groupedRowCount + " " + getParameterGroupedScopeKindLabel(row, groupedRowCount))
+          ]
+            .filter(Boolean)
+            .join(" / ");
+        }
+
         return [
+          row.unit_type_name,
+          row.role_name,
           row.plant_name,
           row.zone_name,
           row.unit_name,
@@ -8588,10 +11309,8 @@ function renderKpis(rows) {
                 <thead>
                   <tr>
                     <th>KPI Name</th>
-                    <th>KPI Type</th>
-                    <th>Responsible</th>
-                    <th>Target Status</th>
-                    <th>Target Value</th>
+                    <th>Type</th>
+                    <th>Target </th>
                     <th class="parameter-table-actions">Actions</th>
                   </tr>
                 </thead>
@@ -8609,22 +11328,12 @@ function renderKpis(rows) {
                           row.local_currency
                         ].filter(Boolean).join(" • ") || "No KPI type context")}</div>
                       </td>
+                  
                       <td>
-                        <div class="parameter-owner">
-                          <span class="parameter-owner-avatar">\${escapeHtml(getParameterPersonInitials(row.set_by_people_display_name || row.approved_by_people_display_name || ""))}</span>
-                          <div>
-                            <div class="parameter-owner-name">\${escapeHtml(row.set_by_people_display_name || "Unassigned")}</div>
-                            <div class="parameter-owner-sub">\${escapeHtml(row.approved_by_people_display_name ? 'Approved by ' + row.approved_by_people_display_name : 'No approver set')}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <span class="parameter-status-badge \${escapeHtml(getParameterStatusClass(row.target_status))}">\${escapeHtml(row.target_status || "Not Set")}</span>
-                      </td>
-                      <td>
-                        <div class="parameter-matrix-target-main">\${escapeHtml(formatParameterDisplayValue(row.target_value))} \${escapeHtml(row.target_unit || "")}</div>
+                        <div class="parameter-matrix-target-main">\${escapeHtml(Number(row.group_row_count || 0) > 1 ? String(row.group_row_count) + " " + getParameterGroupedScopeKindLabel(row, 1) + " targets" : (formatParameterDisplayValue(row.target_value) + (row.target_unit ? " " + row.target_unit : "")))}</div>
                         <div class="parameter-matrix-target-sub">\${escapeHtml([
                           row.kpi_type,
+                          Number(row.group_row_count || 0) > 1 ? String(row.group_row_count) + " linked rows" : '',
                           row.target_setup_date ? 'Setup ' + formatParameterDisplayDate(row.target_setup_date) : '',
                           row.target_start_date ? 'Start ' + formatParameterDisplayDate(row.target_start_date) : '',
                           row.target_end_date ? 'End ' + formatParameterDisplayDate(row.target_end_date) : ''
@@ -8678,18 +11387,74 @@ function renderKpis(rows) {
         renderParameterKpis(filterParameterRows(parameterSourceRows, search));
       }
 
+      function doesParameterRowMatchAllocationIds(row, allocationIds = []) {
+        const normalizedAllocationIds = new Set(
+          (Array.isArray(allocationIds) ? allocationIds : [allocationIds])
+            .map((allocationId) => String(allocationId || "").trim())
+            .filter(Boolean)
+        );
+        if (!normalizedAllocationIds.size || !row) return false;
+
+        if (normalizedAllocationIds.has(String(row.kpi_target_allocation_id || "").trim())) {
+          return true;
+        }
+
+        return Array.isArray(row.related_allocations) && row.related_allocations.some((allocationRow) =>
+          normalizedAllocationIds.has(String(allocationRow?.kpi_target_allocation_id || "").trim())
+        );
+      }
+
+      function removeParameterAllocationsFromUi(allocationIds) {
+        parameterSourceRows = (Array.isArray(parameterSourceRows) ? parameterSourceRows : []).filter(
+          (row) => !doesParameterRowMatchAllocationIds(row, allocationIds)
+        );
+
+        applyParameterSearch(getParameterSearchValue());
+      }
+
+      function getParameterAllocationIdsForUiRemoval(parameterObjectId, responseData = null) {
+        const responseIds = Array.isArray(responseData?.deleted_ids)
+          ? responseData.deleted_ids
+              .map((allocationId) => String(allocationId || "").trim())
+              .filter(Boolean)
+          : [];
+
+        if (responseIds.length) {
+          return responseIds;
+        }
+
+        const matchedGroupedRow = (Array.isArray(parameterSourceRows) ? parameterSourceRows : []).find(
+          (row) => String(row?.kpi_target_allocation_id || "").trim() === String(parameterObjectId || "").trim()
+        );
+
+        if (Array.isArray(matchedGroupedRow?.related_allocations) && matchedGroupedRow.related_allocations.length) {
+          const relatedIds = matchedGroupedRow.related_allocations
+            .map((row) => String(row?.kpi_target_allocation_id || "").trim())
+            .filter(Boolean);
+
+          if (relatedIds.length) {
+            return relatedIds;
+          }
+        }
+
+        return [String(parameterObjectId || "").trim()].filter(Boolean);
+      }
+
       async function loadParameterKpis(search = getParameterSearchValue()) {
         const parameterGrid = document.getElementById("parameterGrid");
 
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects');
+          const res = await fetch(
+            '/api/responsibles/' + responsibleId + '/kpi-objects?_ts=' + Date.now(),
+            { cache: "no-store" }
+          );
           const data = await res.json();
 
           if (!res.ok) {
             throw new Error(data?.error || "Failed to load KPI target allocations");
           }
 
-          parameterSourceRows = Array.isArray(data) ? data : [];
+          parameterSourceRows = groupParameterAllocationRows(Array.isArray(data) ? data : []);
           applyParameterSearch(search);
         } catch (error) {
           parameterSourceRows = [];
@@ -9137,7 +11902,7 @@ function renderKpis(rows) {
       }
 
       function getFieldValue(id) {
-        const element = document.getElementById(id);
+        const element = getKpiFieldElement(id);
         return element ? String(element.value || "").trim() : "";
       }
 
@@ -9246,15 +12011,15 @@ function renderKpis(rows) {
       function getLimitFields(source = null) {
         const root = source && typeof source.closest === "function"
           ? source.closest("#modalBackdrop") || source.closest(".modal") || document
-          : document;
+          : document.getElementById("modalBackdrop") || document;
 
         return {
-          targetInput: root.querySelector("#target") || document.getElementById("target"),
-          toleranceTypeInput: root.querySelector("#tolerance_type") || document.getElementById("tolerance_type"),
-          upToleranceInput: root.querySelector("#up_tolerance") || document.getElementById("up_tolerance"),
-          lowToleranceInput: root.querySelector("#low_tolerance") || document.getElementById("low_tolerance"),
-          highLimitInput: root.querySelector("#high_limit") || document.getElementById("high_limit"),
-          lowLimitInput: root.querySelector("#low_limit") || document.getElementById("low_limit")
+          targetInput: root.querySelector("#target") || getKpiFieldElement("target"),
+          toleranceTypeInput: root.querySelector("#tolerance_type") || getKpiFieldElement("tolerance_type"),
+          upToleranceInput: root.querySelector("#up_tolerance") || getKpiFieldElement("up_tolerance"),
+          lowToleranceInput: root.querySelector("#low_tolerance") || getKpiFieldElement("low_tolerance"),
+          highLimitInput: root.querySelector("#high_limit") || getKpiFieldElement("high_limit"),
+          lowLimitInput: root.querySelector("#low_limit") || getKpiFieldElement("low_limit")
         };
       }
 
@@ -9304,6 +12069,7 @@ function syncToleranceInputs(source = null) {
       function handleToleranceTypeChange(source) {
         syncToleranceInputs(source);
         recalculateLimits(source);
+        syncKpiRequiredState();
       }
 
 function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
@@ -9350,7 +12116,7 @@ function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
 
       function bindOverviewListeners() {
         ["frequency", "unit", "target"].forEach(id => {
-          const el = document.getElementById(id);
+          const el = getKpiFieldElement(id);
           if (el) {
             el.addEventListener("input", updateModalOverview);
             el.addEventListener("change", updateModalOverview);
@@ -9360,8 +12126,8 @@ function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
 
 
       function bindHierarchyListeners() {
-  const nameEl = document.getElementById("indicator_sub_title");
-  const definitionEl = document.getElementById("definition");
+  const nameEl = getKpiFieldElement("indicator_sub_title");
+  const definitionEl = getKpiFieldElement("definition");
   const treeTrigger = document.getElementById("subjectTreeTrigger");
 
   if (treeTrigger) {
@@ -9388,14 +12154,17 @@ function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
     });
   }
 
-  document.addEventListener("click", (event) => {
-    const treeSelect = document.getElementById("subjectTreeSelect");
-    if (!treeSelect) return;
+document.addEventListener("click", (event) => {
+  const treeSelect = document.getElementById("subjectTreeSelect");
+  if (!treeSelect) return;
 
-    if (!treeSelect.contains(event.target)) {
-      closeSubjectTree();
-    }
-  });
+  const path = event.composedPath ? event.composedPath() : [];
+  const clickedInsideTree = path.includes(treeSelect) || treeSelect.contains(event.target);
+
+  if (!clickedInsideTree) {
+    closeSubjectTree();
+  }
+});
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -9406,32 +12175,34 @@ function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
 }
       function bindLimitListeners() {
         ["target", "up_tolerance", "low_tolerance"].forEach(id => {
-          const el = document.getElementById(id);
+          const el = getKpiFieldElement(id);
           if (el) {
             el.addEventListener("input", (event) => recalculateLimits(event.target));
           }
         });
 
-        const toleranceType = document.getElementById("tolerance_type");
+        const toleranceType = getKpiFieldElement("tolerance_type");
         if (toleranceType) {
           toleranceType.addEventListener("change", (event) => handleToleranceTypeChange(event.target));
         }
       }
 
 function handleCalculationOnChange() {
-  const value = document.getElementById("calculation_on")?.value;
+  const value = getKpiFieldElement("calculation_on")?.value;
   const wrap = document.getElementById("wrap_nombre_periode");
   if (wrap) wrap.style.display = value === "Value" ? "" : "none";
   if (wrap && value !== "Value") {
-    const select = document.getElementById("nombre_periode");
+    const select = getKpiFieldElement("nombre_periode");
     if (select) select.value = "1 week";
   }
+  syncKpiRequiredState();
 }
 
 function handleDisplayTrendChange() {
-  const value = document.getElementById("display_trend")?.value;
+  const value = getKpiFieldElement("display_trend")?.value;
   const wrap = document.getElementById("wrap_regression");
   if (wrap) wrap.style.display = value === "Yes" ? "" : "none";
+  syncKpiRequiredState();
 }
 
 function normalizeNullableFieldValue(value) {
@@ -9454,9 +12225,9 @@ function inferValueType(value) {
 }
 
 function handleMinTypeChange() {
-  const value = document.getElementById("min_type")?.value;
+  const value = getKpiFieldElement("min_type")?.value;
   const wrap = document.getElementById("wrap_min_value");
-  const input = document.getElementById("min");
+  const input = getKpiFieldElement("min");
 
   if (wrap) wrap.style.display = value === "Valeur a entrer" ? "" : "none";
   if (!input) return;
@@ -9464,12 +12235,13 @@ function handleMinTypeChange() {
   if (value === "Null") input.value = "";
   if (value === "0") input.value = "0";
   if (value === "Valeur a entrer" && input.value === "0") input.value = "";
+  syncKpiRequiredState();
 }
 
 function handleMaxTypeChange() {
-  const value = document.getElementById("max_type")?.value;
+  const value = getKpiFieldElement("max_type")?.value;
   const wrap = document.getElementById("wrap_max_value");
-  const input = document.getElementById("max");
+  const input = getKpiFieldElement("max");
 
   if (wrap) wrap.style.display = value === "Valeur a entrer" ? "" : "none";
   if (!input) return;
@@ -9477,6 +12249,236 @@ function handleMaxTypeChange() {
   if (value === "Null") input.value = "";
   if (value === "0") input.value = "0";
   if (value === "Valeur a entrer" && input.value === "0") input.value = "";
+  syncKpiRequiredState();
+}
+
+function setKpiFieldRequired(id, isRequired) {
+  const field = getKpiFieldElement(id);
+  if (!field) return;
+
+  if (isRequired) {
+    field.setAttribute("required", "required");
+    return;
+  }
+
+  field.removeAttribute("required");
+}
+
+function syncKpiRequiredState() {
+  const toleranceType = getFieldValue("tolerance_type");
+  const calculationMode = getFieldValue("calculation_mode");
+  const displayTrend = getFieldValue("display_trend");
+  const minType = getFieldValue("min_type");
+  const maxType = getFieldValue("max_type");
+  const isRelative = String(toleranceType || "").toLowerCase() !== "absolute";
+
+  setKpiFieldRequired("reference_kpi_id", calculationMode === "Ratio");
+  setKpiFieldRequired("regression", displayTrend === "Yes");
+  setKpiFieldRequired("min", minType === "Valeur a entrer");
+  setKpiFieldRequired("max", maxType === "Valeur a entrer");
+  setKpiFieldRequired("up_tolerance", isRelative);
+  setKpiFieldRequired("low_tolerance", isRelative);
+  setKpiFieldRequired("high_limit", !isRelative);
+  setKpiFieldRequired("low_limit", !isRelative);
+}
+
+function focusKpiField(id) {
+  const field = id === "subject_node_id"
+    ? document.getElementById("subjectTreeTrigger")
+    : getKpiFieldElement(id);
+
+  if (field && typeof field.focus === "function") {
+    field.focus();
+  }
+}
+
+function validateKpiForm() {
+  syncKpiRequiredState();
+
+  const validations = [
+    {
+      id: "subject_node_id",
+      valid: Boolean(getFieldValue("subject_node_id")),
+      message: "Select the final subject from the tree."
+    },
+    {
+      id: "indicator_sub_title",
+      valid: Boolean(getFieldValue("indicator_sub_title")),
+      message: "KPI Name is required."
+    },
+    {
+      id: "unit",
+      valid: Boolean(getFieldValue("unit")),
+      message: "Unit is required."
+    },
+    {
+      id: "frequency",
+      valid: Boolean(getFieldValue("frequency")),
+      message: "Frequency is required."
+    },
+    {
+      id: "direction",
+      valid: Boolean(getFieldValue("direction")),
+      message: "Direction is required."
+    },
+    {
+      id: "calculation_on",
+      valid: Boolean(getFieldValue("calculation_on")),
+      message: "Calculation On is required."
+    },
+    {
+      id: "nombre_periode",
+      valid: Boolean(getFieldValue("nombre_periode")),
+      message: "Nombre periode is required."
+    },
+    {
+      id: "calculation_mode",
+      valid: Boolean(getFieldValue("calculation_mode")),
+      message: "Calculation Mode is required."
+    },
+    {
+      id: "display_trend",
+      valid: Boolean(getFieldValue("display_trend")),
+      message: "Display Trend is required."
+    },
+    {
+      id: "min_type",
+      valid: Boolean(getFieldValue("min_type")),
+      message: "Min is required."
+    },
+    {
+      id: "max_type",
+      valid: Boolean(getFieldValue("max_type")),
+      message: "Max is required."
+    },
+    {
+      id: "target_auto_adjustment",
+      valid: Boolean(getFieldValue("target_auto_adjustment")),
+      message: "Target Auto Adjust is required."
+    },
+    {
+      id: "definition",
+      valid: Boolean(getFieldValue("definition")),
+      message: "Definition is required."
+    },
+    {
+      id: "tolerance_type",
+      valid: Boolean(getFieldValue("tolerance_type")),
+      message: "Tolerance Type is required."
+    },
+    {
+      id: "owner_role_id",
+      valid: Boolean(getFieldValue("owner_role_id")),
+      message: "Owner Role is required."
+    }
+  ];
+
+  const calculationMode = getFieldValue("calculation_mode");
+  const displayTrend = getFieldValue("display_trend");
+  const minType = getFieldValue("min_type");
+  const maxType = getFieldValue("max_type");
+  const toleranceType = getFieldValue("tolerance_type");
+
+  if (calculationMode === "Ratio") {
+    validations.push({
+      id: "reference_kpi_id",
+      valid: Boolean(getFieldValue("reference_kpi_id")),
+      message: "Reference KPI is required for Ratio mode."
+    });
+  }
+
+  if (displayTrend === "Yes") {
+    validations.push({
+      id: "regression",
+      valid: Boolean(getFieldValue("regression")),
+      message: "Regression is required when Display Trend is Yes."
+    });
+  }
+
+  if (minType === "Valeur a entrer") {
+    const minValue = getFieldValue("min");
+    validations.push({
+      id: "min",
+      valid: Boolean(minValue),
+      message: "Min Value is required."
+    });
+    validations.push({
+      id: "min",
+      valid: !minValue || normalizeLimitInput(minValue) !== null,
+      message: "Min Value must be numeric."
+    });
+  }
+
+  if (maxType === "Valeur a entrer") {
+    const maxValue = getFieldValue("max");
+    validations.push({
+      id: "max",
+      valid: Boolean(maxValue),
+      message: "Max Value is required."
+    });
+    validations.push({
+      id: "max",
+      valid: !maxValue || normalizeLimitInput(maxValue) !== null,
+      message: "Max Value must be numeric."
+    });
+  }
+
+  if (String(toleranceType || "").toLowerCase() === "absolute") {
+    const highLimitValue = getFieldValue("high_limit");
+    const lowLimitValue = getFieldValue("low_limit");
+    validations.push({
+      id: "high_limit",
+      valid: Boolean(highLimitValue),
+      message: "High Limit is required."
+    });
+    validations.push({
+      id: "high_limit",
+      valid: !highLimitValue || normalizeLimitInput(highLimitValue) !== null,
+      message: "High Limit must be numeric."
+    });
+    validations.push({
+      id: "low_limit",
+      valid: Boolean(lowLimitValue),
+      message: "Low Limit is required."
+    });
+    validations.push({
+      id: "low_limit",
+      valid: !lowLimitValue || normalizeLimitInput(lowLimitValue) !== null,
+      message: "Low Limit must be numeric."
+    });
+  } else {
+    const upToleranceValue = getFieldValue("up_tolerance");
+    const lowToleranceValue = getFieldValue("low_tolerance");
+    validations.push({
+      id: "up_tolerance",
+      valid: Boolean(upToleranceValue),
+      message: "Up Tolerance is required."
+    });
+    validations.push({
+      id: "up_tolerance",
+      valid: !upToleranceValue || normalizeLimitInput(upToleranceValue, true) !== null,
+      message: "Up Tolerance must be numeric."
+    });
+    validations.push({
+      id: "low_tolerance",
+      valid: Boolean(lowToleranceValue),
+      message: "Low Tolerance is required."
+    });
+    validations.push({
+      id: "low_tolerance",
+      valid: !lowToleranceValue || normalizeLimitInput(lowToleranceValue, true) !== null,
+      message: "Low Tolerance must be numeric."
+    });
+  }
+
+  const firstFailure = validations.find((entry) => !entry.valid);
+  if (!firstFailure) {
+    return true;
+  }
+
+  showToast(firstFailure.message);
+  focusKpiField(firstFailure.id);
+  return false;
 }
 
 
@@ -9510,26 +12512,26 @@ function resetForm() {
     "comments",
     "owner_role_id"
   ].forEach(id => {
-    const el = document.getElementById(id);
+    const el = getKpiFieldElement(id);
     if (el) el.value = "";
   });
 
-  const toleranceTypeEl = document.getElementById("tolerance_type");
+  const toleranceTypeEl = getKpiFieldElement("tolerance_type");
   if (toleranceTypeEl) toleranceTypeEl.value = "Relative";
 
-  const displayTrendEl = document.getElementById("display_trend");
+  const displayTrendEl = getKpiFieldElement("display_trend");
   if (displayTrendEl) displayTrendEl.value = "No";
 
-  const calculationModeEl = document.getElementById("calculation_mode");
+  const calculationModeEl = getKpiFieldElement("calculation_mode");
   if (calculationModeEl) calculationModeEl.value = "Direct";
 
-  const minTypeEl = document.getElementById("min_type");
+  const minTypeEl = getKpiFieldElement("min_type");
   if (minTypeEl) minTypeEl.value = "Null";
 
-  const maxTypeEl = document.getElementById("max_type");
+  const maxTypeEl = getKpiFieldElement("max_type");
   if (maxTypeEl) maxTypeEl.value = "0";
 
-  const statusEl = document.getElementById("status");
+  const statusEl = getKpiFieldElement("status");
   if (statusEl) statusEl.value = "Active";
 
   handleCalculationOnChange();
@@ -9539,6 +12541,7 @@ function resetForm() {
   populateReferenceKpiOptions("");
   populateRoleOptions("");
   handleCalculationModeChange();
+  syncKpiRequiredState();
 
   initializeKpiHierarchySelectors({
     subject: "",
@@ -9552,7 +12555,7 @@ function resetForm() {
 }
 
 function setFieldValue(id, value) {
-  const el = document.getElementById(id);
+  const el = getKpiFieldElement(id);
   if (!el) return;
 
   const finalValue = value ?? "";
@@ -9670,7 +12673,7 @@ function fillForm(data) {
 
         function getSafeValue(id, options = {}) {
       const optional = Boolean(options && options.optional);
-      const el = document.getElementById(id);
+      const el = getKpiFieldElement(id);
      if (!el) {
       if (!optional) {
         console.error("Missing field:", id);
@@ -9681,11 +12684,11 @@ function fillForm(data) {
     }
 
       function buildPayload() {
-        const toleranceType = document.getElementById("tolerance_type").value;
-        const minType = document.getElementById("min_type")?.value || "Null";
-        const maxType = document.getElementById("max_type")?.value || "Null";
-        const minValue = normalizeNullableFieldValue(document.getElementById("min")?.value);
-        const maxValue = normalizeNullableFieldValue(document.getElementById("max")?.value);
+        const toleranceType = getSafeValue("tolerance_type");
+        const minType = getSafeValue("min_type") || "Null";
+        const maxType = getSafeValue("max_type") || "Null";
+        const minValue = normalizeNullableFieldValue(getSafeValue("min", { optional: true }));
+        const maxValue = normalizeNullableFieldValue(getSafeValue("max", { optional: true }));
         return {
           indicator_title: getSafeValue("subject"),              // use subject as title
           indicator_sub_title: getSafeValue("indicator_sub_title"), // manual KPI name
@@ -9698,32 +12701,36 @@ function fillForm(data) {
           frequency: getSafeValue("frequency"),
           target: getSafeValue("target", { optional: true }),
           tolerance_type: toleranceType,
-          up_tolerance: serializeToleranceForPayload(document.getElementById("up_tolerance").value, toleranceType, "up"),
-          low_tolerance: serializeToleranceForPayload(document.getElementById("low_tolerance").value, toleranceType, "low"),
+          up_tolerance: serializeToleranceForPayload(getSafeValue("up_tolerance", { optional: true }), toleranceType, "up"),
+          low_tolerance: serializeToleranceForPayload(getSafeValue("low_tolerance", { optional: true }), toleranceType, "low"),
           max: maxType === "Null" ? "" : maxType === "0" ? "0" : maxValue,
           min: minType === "Null" ? "" : minType === "0" ? "0" : minValue,
-          calculation_on: document.getElementById("calculation_on").value,
-          target_auto_adjustment: document.getElementById("target_auto_adjustment").value,
-          target_direction: document.getElementById("direction").value,
-          nombre_periode: document.getElementById("nombre_periode").value,
-          calculation_mode: document.getElementById("calculation_mode").value,
-          reference_kpi_id: document.getElementById("calculation_mode").value === "Ratio"
-            ? (document.getElementById("reference_kpi_id").value || null)
+          calculation_on: getSafeValue("calculation_on"),
+          target_auto_adjustment: getSafeValue("target_auto_adjustment"),
+          target_direction: getSafeValue("direction"),
+          nombre_periode: getSafeValue("nombre_periode"),
+          calculation_mode: getSafeValue("calculation_mode"),
+          reference_kpi_id: getSafeValue("calculation_mode") === "Ratio"
+            ? (getSafeValue("reference_kpi_id", { optional: true }) || null)
             : null,
-          display_trend: document.getElementById("display_trend").value,
-          regression: document.getElementById("regression").value,
-          min_type: document.getElementById("min_type").value,
-          max_type: document.getElementById("max_type").value,
-          owner_role_id: document.getElementById("owner_role_id").value || null,
-          status: document.getElementById("status").value,
-          comments: document.getElementById("comments").value,
-          high_limit: document.getElementById("high_limit").value || null,
-          low_limit: document.getElementById("low_limit").value || null
+          display_trend: getSafeValue("display_trend"),
+          regression: getSafeValue("regression", { optional: true }),
+          min_type: getSafeValue("min_type"),
+          max_type: getSafeValue("max_type"),
+          owner_role_id: getSafeValue("owner_role_id", { optional: true }) || null,
+          status: getSafeValue("status", { optional: true }),
+          comments: getSafeValue("comments", { optional: true }),
+          high_limit: getSafeValue("high_limit", { optional: true }) || null,
+          low_limit: getSafeValue("low_limit", { optional: true }) || null
         };
       }
 
       async function saveKpi() {
-        const kpiId = document.getElementById("kpi_id").value;
+        if (!validateKpiForm()) {
+          return;
+        }
+
+        const kpiId = getSafeValue("kpi_id", { optional: true });
         const isCreateMode = !kpiId;
         const method = kpiId ? "PUT" : "POST";
         const url = kpiId
@@ -9758,7 +12765,7 @@ function fillForm(data) {
       }
 
       async function deleteCurrentKpi() {
-        const kpiId = document.getElementById("kpi_id").value;
+        const kpiId = getSafeValue("kpi_id", { optional: true });
         if (!kpiId) return;
 
         const ok = confirm("Delete this KPI?");
@@ -9790,9 +12797,7 @@ function fillForm(data) {
       }
 
       function formatParameterDateForInput(value) {
-        if (!value) return "";
-        const text = String(value).trim();
-        return text.length >= 10 ? text.slice(0, 10) : text;
+        return normalizeParameterDateValue(value);
       }
 
       function resetParameterForm() {
@@ -9800,8 +12805,13 @@ function fillForm(data) {
           "parameter_object_id",
           "parameter_kpi_id",
           "parameter_kpi_type",
+          "parameter_unit_type_id",
+          "parameter_role_id",
           "parameter_target_status",
           "parameter_plant_id",
+          "parameter_zone_unit_id",
+          "parameter_zone_product_id",
+          "parameter_zone_resolved_display",
           "parameter_zone_id",
           "parameter_unit_id",
           "parameter_function",
@@ -9825,11 +12835,18 @@ function fillForm(data) {
           if (el) el.value = "";
         });
 
+        parameterLockedUnitId = "";
+        parameterLockedZoneId = "";
+        parameterLockedZoneIds = [];
+        parameterResolvedZoneId = "";
+        parameterZoneLookupPending = false;
+        parameterEditMode = false;
+        resetParameterUnitTargetState();
         populateAllocationLookupOptions({});
 
         const setupDateInput = document.getElementById("parameter_target_setup_date");
         if (setupDateInput) {
-          setupDateInput.value = new Date().toISOString().slice(0, 10);
+          setupDateInput.value = getLocalDateInputValue();
         }
 
         const statusInput = document.getElementById("parameter_target_status");
@@ -9837,52 +12854,137 @@ function fillForm(data) {
           statusInput.value = "Draft";
         }
 
+        const unitTypeSelect = document.getElementById("parameter_unit_type_id");
+        if (unitTypeSelect) {
+          unitTypeSelect.disabled = false;
+        }
+
         const parameterDeleteBtn = document.getElementById("parameterDeleteBtn");
         if (parameterDeleteBtn) {
           parameterDeleteBtn.style.display = "none";
         }
-        handleParameterKpiTypeChange();
-        updateParameterOverview();
-        updateParameterKpiSummary();
+        const allocSection = document.getElementById("parameterAllocationFieldsSection");
+        if (allocSection) allocSection.classList.add("is-hidden");
+     handleParameterKpiTypeChange();
+
+
+
+updateParameterOverview();
+updateParameterKpiSummary();
       }
 
       function fillParameterForm(data) {
+        const relatedAllocations = Array.isArray(data?.related_allocations) && data.related_allocations.length
+          ? data.related_allocations
+          : [data];
+        const primaryRow =
+          relatedAllocations.find(
+            (row) => String(row?.kpi_target_allocation_id || "") === String(data?.kpi_target_allocation_id || "")
+          ) || relatedAllocations[0] || data;
+        const normalizedKpiType = String(primaryRow?.kpi_type || "").trim().toLowerCase();
+        const isGroupedScope = normalizedKpiType === "multisite" || normalizedKpiType === "zone";
+
         const mappings = {
-          parameter_object_id: data.kpi_target_allocation_id,
-          parameter_kpi_id: data.kpi_id,
-          parameter_kpi_type: data.kpi_type,
-          parameter_target_status: data.target_status,
-          parameter_plant_id: data.plant_id,
-          parameter_zone_id: data.zone_id,
-          parameter_unit_id: data.unit_id,
-          parameter_function: data.function,
-          parameter_product_line_id: data.product_line_id,
-          parameter_product_id: data.product_id,
-          parameter_market_id: data.market_id,
-          parameter_customer_id: data.customer_id,
-          parameter_target_value: data.target_value ?? "",
-          parameter_target_unit: data.target_unit ?? "",
-          parameter_local_currency: data.local_currency,
-          parameter_last_best_target: data.last_best_target ?? "",
-          parameter_previous_target_value: data.previous_target_value ?? "",
-          parameter_target_setup_date: formatParameterDateForInput(data.target_setup_date),
-          parameter_target_start_date: formatParameterDateForInput(data.target_start_date),
-          parameter_target_end_date: formatParameterDateForInput(data.target_end_date),
-          parameter_set_by_people_id: data.set_by_people_id,
-          parameter_approved_by_people_id: data.approved_by_people_id,
-          parameter_comments: data.comments ?? ""
+          parameter_object_id: primaryRow.kpi_target_allocation_id,
+          parameter_kpi_id: primaryRow.kpi_id,
+          parameter_kpi_type: primaryRow.kpi_type,
+          parameter_unit_type_id: primaryRow.unit_type_id,
+          parameter_role_id: primaryRow.role_id,
+          parameter_target_status: primaryRow.target_status,
+          parameter_plant_id: primaryRow.plant_id,
+          parameter_zone_id: primaryRow.zone_id,
+          parameter_unit_id: primaryRow.unit_id,
+          parameter_function: primaryRow.function,
+          parameter_product_line_id: primaryRow.product_line_id,
+          parameter_product_id: primaryRow.product_id,
+          parameter_market_id: primaryRow.market_id,
+          parameter_customer_id: primaryRow.customer_id,
+          parameter_target_value: primaryRow.target_value ?? "",
+          parameter_target_unit: primaryRow.target_unit ?? "",
+          parameter_local_currency: primaryRow.local_currency,
+          parameter_last_best_target: primaryRow.last_best_target ?? "",
+          parameter_previous_target_value: primaryRow.previous_target_value ?? "",
+          parameter_target_setup_date: formatParameterDateForInput(primaryRow.target_setup_date),
+          parameter_target_start_date: formatParameterDateForInput(primaryRow.target_start_date),
+          parameter_target_end_date: formatParameterDateForInput(primaryRow.target_end_date),
+          parameter_set_by_people_id: primaryRow.set_by_people_id,
+          parameter_zone_unit_id: primaryRow.unit_id,
+          parameter_zone_product_id: primaryRow.product_id,
+          parameter_approved_by_people_id: primaryRow.approved_by_people_id,
+          parameter_comments: primaryRow.comments ?? ""
         };
 
-        populateAllocationLookupOptions(mappings);
+        parameterEditMode = true;
+        parameterLockedUnitId = isGroupedScope
+          ? ""
+          : String(primaryRow.plant_id || primaryRow.unit_id || "").trim();
+    if (normalizedKpiType === "zone") {
+    parameterLockedZoneIds = relatedAllocations
+      .map((row) => String(row.zone_id || "").trim())
+      .filter(Boolean);
 
-        Object.keys(mappings).forEach(id => {
+     parameterLockedZoneId = parameterLockedZoneIds[0] || "";
+     parameterResolvedZoneId = parameterLockedZoneId;
+     } else {
+      parameterLockedZoneIds = [];
+      parameterLockedZoneId = "";
+      parameterResolvedZoneId = "";
+     }
+      initializeParameterUnitTargetState(relatedAllocations);
+       populateAllocationLookupOptions(mappings);
+
+     if (normalizedKpiType === "zone") {
+      setLookupSelectOptions(
+       "parameter_zone_unit_id",
+       getParameterZoneUnitOptions(),
+       "Select unit",
+       primaryRow.unit_id || primaryRow.plant_id || ""
+    );
+
+    setLookupSelectOptions(
+      "parameter_zone_product_id",
+      allocationLookups.products,
+      "Select product",
+      primaryRow.product_id || ""
+    );
+   }
+
+Object.keys(mappings).forEach(id => {
           const el = document.getElementById(id);
           if (el) el.value = mappings[id] ?? "";
         });
 
-        handleParameterKpiTypeChange();
-        updateParameterOverview();
-        updateParameterKpiSummary();
+        const unitTypeSelect = document.getElementById("parameter_unit_type_id");
+        if (unitTypeSelect) {
+          unitTypeSelect.disabled = Boolean(parameterLockedUnitId) || Boolean(parameterLockedZoneId) || isGroupedScope;
+        }
+
+    handleParameterKpiTypeChange();
+
+if (normalizedKpiType === "zone") {
+  const zoneUnitEl = document.getElementById("parameter_zone_unit_id");
+  const zoneProductEl = document.getElementById("parameter_zone_product_id");
+
+  if (zoneUnitEl) {
+    zoneUnitEl.value = String(primaryRow.unit_id || primaryRow.plant_id || "");
+  }
+
+  if (zoneProductEl) {
+    zoneProductEl.value = String(primaryRow.product_id || "");
+  }
+
+  parameterLockedZoneIds = relatedAllocations
+    .map(row => String(row.zone_id || "").trim())
+    .filter(Boolean);
+
+  parameterLockedZoneId = parameterLockedZoneIds[0] || "";
+  parameterResolvedZoneId = parameterLockedZoneId;
+
+  renderMultisiteUnitMatrix();
+}
+
+updateParameterOverview();
+updateParameterKpiSummary();
       }
 
       async function openCreateParameterModal(defaults = {}) {
@@ -9906,12 +13008,18 @@ function fillForm(data) {
         updateParameterKpiSummary();
         document.getElementById("parameterModalTitle").textContent = "Create KPI Target Allocation";
         document.getElementById("parameterModalSubtitle").textContent =
-          "Create a KPI target allocation. The responsible defaults to " + (responsibleName || "this person") + ", but you can reassign it before saving.";
+          "Create KPI target allocations by KPI, KPI type, unit type and role, then enter one Target  per unit.";
         openParameterModal();
       }
 
       async function openEditParameterModal(parameterObjectId) {
         try {
+          const groupedAllocationRow = (currentParameterRows || []).find(
+            (row) => String(row?.kpi_target_allocation_id || "") === String(parameterObjectId || "")
+          );
+          const groupedAllocations = Array.isArray(groupedAllocationRow?.related_allocations)
+            ? groupedAllocationRow.related_allocations
+            : [];
           const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId);
           const data = await res.json();
 
@@ -9919,11 +13027,25 @@ function fillForm(data) {
             throw new Error(data?.error || "Failed to load KPI target allocation");
           }
 
+          const apiRelatedAllocations = Array.isArray(data?.related_allocations)
+            ? data.related_allocations
+            : [];
+          const mergedRelatedAllocations = mergeParameterAllocationCollections(
+            groupedAllocations,
+            apiRelatedAllocations.length ? apiRelatedAllocations : [data]
+          );
+          const mergedAllocationData = {
+            ...data,
+            related_allocations: mergedRelatedAllocations.length
+              ? mergedRelatedAllocations
+              : (apiRelatedAllocations.length ? apiRelatedAllocations : groupedAllocations)
+          };
+
           await loadKpiNames(data.kpi_id);
-          fillParameterForm(data);
+          fillParameterForm(mergedAllocationData);
           document.getElementById("parameterModalTitle").textContent = "Edit KPI Target Allocation";
           document.getElementById("parameterModalSubtitle").textContent =
-            "Update the target allocation details and change the responsible if needed.";
+            "Update the selected unit target allocation and keep the KPI unit synced from the chosen KPI.";
           const parameterDeleteBtn = document.getElementById("parameterDeleteBtn");
           if (parameterDeleteBtn) {
             parameterDeleteBtn.style.display = "inline-flex";
@@ -9935,42 +13057,122 @@ function fillForm(data) {
         }
       }
 
-  function buildParameterPayload() {
+ function buildParameterPayload() {
+ const scopeKind = getParameterScopeKind();
+ const unitAllocations = getParameterUnitAllocationRows();
+   const primaryAllocation = unitAllocations[0] || null;
+
    return {
     kpi_id: getParameterFieldValue("parameter_kpi_id"),
     kpi_type: getParameterFieldValue("parameter_kpi_type"),
+    unit_type_id: getParameterFieldValue("parameter_unit_type_id"),
+    role_id: getParameterFieldValue("parameter_role_id"),
     target_status: getParameterFieldValue("parameter_target_status"),
-    plant_id: getParameterFieldValue("parameter_plant_id"),
-    zone_id: getParameterFieldValue("parameter_zone_id"),
-    unit_id: getParameterFieldValue("parameter_unit_id"),
+    plant_id: primaryAllocation?.plant_id || getParameterFieldValue("parameter_plant_id"),
+    zone_id: primaryAllocation?.zone_id || getParameterFieldValue("parameter_zone_id"),
     function: getParameterFieldValue("parameter_function"),
     product_line_id: getParameterFieldValue("parameter_product_line_id"),
-    product_id: getParameterFieldValue("parameter_product_id"),
+    unit_id: scopeKind === "zone"
+   ? getParameterFieldValue("parameter_zone_unit_id")
+   : getParameterFieldValue("parameter_unit_id"),
+
+   product_id: scopeKind === "zone"
+   ? getParameterFieldValue("parameter_zone_product_id")
+   : getParameterFieldValue("parameter_product_id"),
     market_id: getParameterFieldValue("parameter_market_id"),
     customer_id: getParameterFieldValue("parameter_customer_id"),
-    target_value: getParameterFieldValue("parameter_target_value"),
-    target_unit: getParameterFieldValue("parameter_target_unit"),
-    local_currency: getParameterFieldValue("parameter_local_currency"),
+   target_value: primaryAllocation?.target_value || getParameterFieldValue("parameter_target_value"),
+    target_unit: primaryAllocation?.target_unit || getParameterFieldValue("parameter_target_unit"),
+    local_currency: primaryAllocation?.local_currency || getParameterFieldValue("parameter_local_currency"),
     last_best_target: getParameterFieldValue("parameter_last_best_target"),
     previous_target_value: getParameterFieldValue("parameter_previous_target_value"),
-    target_setup_date: getParameterFieldValue("parameter_target_setup_date"),
-    target_start_date: getParameterFieldValue("parameter_target_start_date"),
-    target_end_date: getParameterFieldValue("parameter_target_end_date"),
+    target_setup_date: normalizeParameterDateValue(primaryAllocation?.target_setup_date || getParameterFieldValue("parameter_target_setup_date")),
+    target_start_date: normalizeParameterDateValue(getParameterFieldValue("parameter_target_start_date")),
+    target_end_date: normalizeParameterDateValue(getParameterFieldValue("parameter_target_end_date")),
     set_by_people_id: getParameterFieldValue("parameter_set_by_people_id"),
     approved_by_people_id: getParameterFieldValue("parameter_approved_by_people_id"),
-    comments: getParameterFieldValue("parameter_comments")
+    comments: getParameterFieldValue("parameter_comments"),
+    unit_allocations: unitAllocations
   };
   }
 
    async function saveParameterKpi() {
   const parameterObjectId = getParameterFieldValue("parameter_object_id");
   const method = parameterObjectId ? "PUT" : "POST";
+  const scopeKind = getParameterScopeKind();
 
   const url = parameterObjectId
     ? '/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId
     : '/api/responsibles/' + responsibleId + '/kpi-objects';
 
   try {
+    if (!getParameterFieldValue("parameter_kpi_id")) {
+      showToast("Select a KPI name first");
+      return;
+    }
+
+    if (!getParameterFieldValue("parameter_kpi_type")) {
+      showToast("Select a KPI type");
+      return;
+    }
+
+     if (!isIndividualParameterScope() && scopeKind !== "zone" && !getParameterFieldValue("parameter_unit_type_id") && !parameterLockedUnitId) {
+      showToast("Select a unit type");
+      return;
+    }
+
+    if (!isIndividualParameterScope() && scopeKind !== "zone" && !getParameterFieldValue("parameter_role_id")) {
+      showToast("Enter the role please");
+      return;
+    }
+
+    if (scopeKind === "zone" && !getParameterFieldValue("parameter_zone_unit_id") && !parameterLockedZoneId) {
+      showToast("Select a unit first");
+      return;
+    }
+
+    if (scopeKind === "zone" && !getParameterFieldValue("parameter_zone_product_id") && !parameterLockedZoneId) {
+      showToast("Select a product");
+      return;
+    }
+
+    if (scopeKind === "zone" && !parameterLockedZoneId) {
+      showToast("No matched zone was found for the selected unit and product");
+      return;
+    }
+
+  if (isIndividualParameterScope()) {
+  const targetVal = getParameterFieldValue("parameter_target_value");
+  if (!targetVal || isNaN(Number(targetVal))) {
+    showToast("Target  is required.");
+    const tvInput = document.getElementById("parameter_target_value");
+    if (tvInput) tvInput.focus();
+    return;
+  }
+   } else {
+const visibleRows = getParameterVisibleUnitRows();
+const missingRow = visibleRows.find((row) => {
+  const state = getParameterUnitState(row.row_kind || "unit", row.value);
+  return !String(state.target_value ?? "").trim();
+});
+
+if (missingRow) {
+  showToast("Target  is required for every unit.");
+
+  const input = document.querySelector(
+    '.parameter-unit-target-input[data-scope-id="' + CSS.escape(String(missingRow.value)) + '"], ' +
+    '.parameter-unit-target-input[data-unit-id="' + CSS.escape(String(missingRow.value)) + '"]'
+  );
+
+  if (input) {
+    input.focus();
+    input.reportValidity();
+  }
+
+  return;
+}
+    }
+
     const res = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
@@ -10011,16 +13213,23 @@ function fillForm(data) {
           const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId, {
             method: "DELETE"
           });
+          const responseData = await res.json().catch(() => null);
 
           if (!res.ok) {
-            const errorData = await res.json().catch(() => null);
-            showToast(errorData?.error || "Delete failed");
+            showToast(responseData?.error || "Delete failed");
             return;
           }
 
+          removeParameterAllocationsFromUi(
+            getParameterAllocationIdsForUiRemoval(parameterObjectId, responseData)
+          );
           if (fromModal) closeParameterModal();
-          await loadParameterKpis();
           showToast("KPI target allocation deleted");
+          window.setTimeout(() => {
+            loadParameterKpis().catch((error) => {
+              console.error("BACKGROUND KPI TARGET ALLOCATION RELOAD ERROR:", error);
+            });
+          }, 300);
         } catch (error) {
           showToast("Delete failed");
         }
@@ -10041,6 +13250,8 @@ function fillForm(data) {
       [
         "parameter_kpi_id",
         "parameter_kpi_type",
+        "parameter_unit_type_id",
+        "parameter_role_id",
         "parameter_target_status",
         "parameter_plant_id",
         "parameter_zone_id",
@@ -10082,9 +13293,67 @@ function fillForm(data) {
     });
     }
 
+    const parameterUnitTypeSelect = document.getElementById("parameter_unit_type_id");
+    if (parameterUnitTypeSelect) {
+      parameterUnitTypeSelect.addEventListener("change", () => {
+        if (!parameterEditMode) {
+          resetParameterUnitTargetState();
+        }
+        syncParameterPlantOptions();
+        if (isIndividualParameterScope()) {
+          syncIndividualParameterFields();
+          return;
+        }
+        renderMultisiteUnitMatrix();
+      });
+    }
+
+    const parameterRoleSelect = document.getElementById("parameter_role_id");
+    if (parameterRoleSelect) {
+      parameterRoleSelect.addEventListener("change", () => {
+        if (isIndividualParameterScope()) {
+          syncIndividualParameterFields();
+          return;
+        }
+        renderMultisiteUnitMatrix();
+      });
+    }
+
     const parameterPlantSelect = document.getElementById("parameter_plant_id");
      if (parameterPlantSelect) {
     parameterPlantSelect.addEventListener("change", autoFillSetByFromUnit);
+    }
+
+    const parameterZoneUnitSelect = document.getElementById("parameter_zone_unit_id");
+    if (parameterZoneUnitSelect) {
+      parameterZoneUnitSelect.addEventListener("change", () => {
+        /* Reset product and resolved zone when unit changes */
+        const productSel = document.getElementById("parameter_zone_product_id");
+        if (productSel) productSel.value = "";
+        parameterResolvedZoneId = "";
+        parameterLockedZoneId   = "";
+        resetParameterUnitTargetState();
+        lookupZoneFromManufacturingStrategy();
+      });
+    }
+
+    const parameterZoneProductSelect = document.getElementById("parameter_zone_product_id");
+    if (parameterZoneProductSelect) {
+      parameterZoneProductSelect.addEventListener("change", () => {
+        resetParameterUnitTargetState();
+        lookupZoneFromManufacturingStrategy();
+      });
+    }
+
+    const parameterSetBySelect = document.getElementById("parameter_set_by_people_id");
+    if (parameterSetBySelect) {
+      parameterSetBySelect.addEventListener("change", () => {
+        if (isIndividualParameterScope()) {
+          syncIndividualParameterFields();
+          return;
+        }
+        renderMultisiteUnitMatrix();
+      });
     }
        
       
@@ -12309,29 +15578,50 @@ const loadFormResponsibleContext = async (responsibleId) => {
       : null;
     const directPeopleContext = await loadPeopleContextByPeopleId(normalizedResponsibleId);
     const resolvedPeopleContext = matchedPeopleFromLegacy || directPeopleContext;
+    let roleName = "";
 
-    return {
-      responsible_id: normalizedResponsibleId,
-      people_id: resolvedPeopleContext?.people_id ?? directPeopleContext?.people_id ?? null,
-      name:
-        resolvedPeopleContext?.name ||
-        legacyResponsible?.name ||
-        directPeopleContext?.name ||
-        fallbackName,
-      email:
-        resolvedPeopleContext?.email ||
-        legacyResponsible?.email ||
-        directPeopleContext?.email ||
-        null,
-      plant_name:
-        resolvedPeopleContext?.plant_name ||
-        directPeopleContext?.plant_name ||
-        "Allocated scope",
-      department_name:
-        resolvedPeopleContext?.department_name ||
-        directPeopleContext?.department_name ||
-        ""
-    };
+if (resolvedPeopleContext?.people_id) {
+  const roleRes = await pool.query(
+    `
+    SELECT r.role_name
+    FROM public.people_role_assignment pra
+    JOIN public.role r
+      ON r.role_id = pra.role_id
+    WHERE pra.people_id = $1
+      AND pra.assignment_status = 'ACTIVE'
+    ORDER BY pra.is_primary DESC, pra.assignment_id DESC
+    LIMIT 1
+    `,
+    [resolvedPeopleContext.people_id]
+  );
+
+  roleName = roleRes.rows[0]?.role_name || "";
+}
+
+
+return {
+  responsible_id: normalizedResponsibleId,
+  people_id: resolvedPeopleContext?.people_id ?? directPeopleContext?.people_id ?? null,
+  name:
+    resolvedPeopleContext?.name ||
+    legacyResponsible?.name ||
+    directPeopleContext?.name ||
+    fallbackName,
+  email:
+    resolvedPeopleContext?.email ||
+    legacyResponsible?.email ||
+    directPeopleContext?.email ||
+    null,
+  plant_name:
+    resolvedPeopleContext?.plant_name ||
+    directPeopleContext?.plant_name ||
+    "Allocated scope",
+  department_name:
+    resolvedPeopleContext?.department_name ||
+    directPeopleContext?.department_name ||
+    "",
+  role_name: roleName
+};
   } catch (error) {
     return {
       responsible_id: normalizedResponsibleId,
@@ -13381,14 +16671,15 @@ app.get("/generate-ca-suggestion", async (req, res) => {
 });
 
 app.post("/kpi-ai-assistant", async (req, res) => {
+  const client = await pool.connect();
+
   try {
     const {
       responsible_id,
       week,
       selected_kpi_id,
       message,
-      kpis,
-      conversation_history
+      kpis
     } = req.body || {};
 
     const cleanMessage = String(message || "").trim();
@@ -13396,37 +16687,212 @@ app.post("/kpi-ai-assistant", async (req, res) => {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    let responsible = null;
-    if (responsible_id) {
-      const responsibleRes = await pool.query(
-        `SELECT
-           p.people_id        AS responsible_id,
-           p.name,
-           p.first_name,
-           p.email,
-           p.work_at_unit_id,
-           u.unit_name             AS plant_name
-         FROM public.people p
-         LEFT JOIN public.unit u ON u.unit_id = p.work_at_unit_id
-         WHERE p.people_id = $1`,
-        [responsible_id]
-      );
-      responsible = responsibleRes.rows[0] || null;
+    await client.query("BEGIN");
+
+    const responsibleRes = await client.query(
+      `SELECT
+         p.people_id AS responsible_id,
+         p.name,
+         p.first_name,
+         p.email,
+         p.work_at_unit_id,
+         u.unit_name AS plant_name
+       FROM public.people p
+       LEFT JOIN public.unit u ON u.unit_id = p.work_at_unit_id
+       WHERE p.people_id = $1`,
+      [responsible_id]
+    );
+
+    const responsible = responsibleRes.rows[0] || null;
+    if (!responsible) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Responsible person not found" });
     }
+
+// Try to find a role assignment, but don't block if none exists
+const assignmentRes = await client.query(
+  `SELECT assignment_id
+   FROM public.people_role_assignment
+   WHERE people_id = $1
+     AND assignment_status = 'ACTIVE'
+   ORDER BY is_primary DESC, assignment_id DESC
+   LIMIT 1`,
+  [responsible_id]
+);
+
+// Fall back to using people_id directly as the conversation key
+const assignment = assignmentRes.rows[0];
+
+if (!assignment) {
+  await client.query("ROLLBACK");
+  return res.status(400).json({
+    error: "No active role assignment found for this responsible person"
+  });
+}
+
+const conversationKey = assignment.assignment_id;
+
+    const selectedId = selected_kpi_id ? Number(selected_kpi_id) : null;
+
+    let kpiId = null;
+
+    if (selectedId) {
+    const kpiLookupRes = await client.query(
+    `SELECT kpi_id FROM public.kpi_target_allocation
+     WHERE kpi_target_allocation_id = $1 LIMIT 1`,
+     [selectedId]
+     );
+     kpiId = kpiLookupRes.rows[0]?.kpi_id ?? selectedId;
+
+    }
+
+    const convoRes = await client.query(
+     `SELECT conversation_id, conversation
+       FROM public.kpi_assistant_conversation
+      WHERE people_role_assignment_id = $1
+       AND kpi_id IS NOT DISTINCT FROM $2
+       ORDER BY updated_at DESC
+       LIMIT 1
+       FOR UPDATE`,
+       [conversationKey, kpiId]   // ← was assignment.assignment_id
+      );
+
+    const existingConversationRow = convoRes.rows[0] || null;
+
+    const conversationHistory = Array.isArray(existingConversationRow?.conversation)
+      ? existingConversationRow.conversation
+      : [];
 
     const reply = await generateKpiAssistantReply({
       responsible,
       week,
-      selectedKpiId: selected_kpi_id,
+      selectedKpiId: kpiId,
       kpis: Array.isArray(kpis) ? kpis : [],
       message: cleanMessage,
-      conversationHistory: Array.isArray(conversation_history) ? conversation_history : []
+      conversationHistory
     });
 
-    res.json({ reply });
+    const updatedConversation = [
+      ...conversationHistory,
+      {
+        role: "user",
+        content: cleanMessage,
+        text: cleanMessage,
+        ts: Date.now()
+      },
+      {
+        role: "assistant",
+        content: reply,
+        text: reply,
+        ts: Date.now()
+      }
+    ].slice(-50);
+
+    if (existingConversationRow) {
+      await client.query(
+        `UPDATE public.kpi_assistant_conversation
+         SET conversation = $1::jsonb,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE conversation_id = $2`,
+        [
+          JSON.stringify(updatedConversation),
+          existingConversationRow.conversation_id
+        ]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO public.kpi_assistant_conversation
+          (people_role_assignment_id, kpi_id, conversation)
+         VALUES ($1, $2, $3::jsonb)`,
+        [
+          conversationKey,
+          kpiId,
+          JSON.stringify(updatedConversation)
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    res.json({
+      reply,
+      conversation: updatedConversation
+    });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("KPI AI assistant error:", err.message);
     res.status(500).json({ error: err.message || "Could not generate AI response" });
+  } finally {
+    client.release();
+  }
+});
+
+
+app.get("/kpi-ai-assistant/conversation", async (req, res) => {
+  const { responsible_id, kpi_id } = req.query;
+
+  try {
+const assignmentRes = await pool.query(
+  `
+  SELECT 
+    pra.assignment_id,
+    pra.role_id,
+    r.role_name,
+    p.name
+  FROM public.people_role_assignment pra
+  JOIN public.role r
+    ON r.role_id = pra.role_id
+  JOIN public.people p
+    ON p.people_id = pra.people_id
+  WHERE pra.people_id = $1
+    AND pra.assignment_status = 'ACTIVE'
+  ORDER BY pra.is_primary DESC, pra.assignment_id DESC
+  LIMIT 1
+  `,
+  [Number(responsible_id)]
+);
+
+    const assignment = assignmentRes.rows[0];
+
+    if (!assignment) {
+      return res.json({ conversation: [] });
+    }
+
+    const selectedId = kpi_id ? Number(kpi_id) : null;
+    let realKpiId = null;
+
+    if (selectedId) {
+      const kpiLookupRes = await pool.query(
+        `
+        SELECT kpi_id
+        FROM public.kpi_target_allocation
+        WHERE kpi_target_allocation_id = $1
+        LIMIT 1
+        `,
+        [selectedId]
+      );
+
+      realKpiId = kpiLookupRes.rows[0]?.kpi_id ?? selectedId;
+    }
+
+    const convoRes = await pool.query(
+      `
+      SELECT conversation
+      FROM public.kpi_assistant_conversation
+      WHERE people_role_assignment_id = $1
+        AND kpi_id IS NOT DISTINCT FROM $2
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `,
+      [assignment.assignment_id, realKpiId]
+    );
+
+    return res.json({
+      conversation: convoRes.rows[0]?.conversation ?? []
+    });
+  } catch (err) {
+    console.error("Fetch conversation error:", err.message);
+    return res.status(500).json({ conversation: [] });
   }
 });
 
@@ -15129,6 +18595,8 @@ app.get("/api/kpi-chart-data", async (req, res) => {
   }
 });
 
+
+
 // ---------- Form page ----------
 app.get("/form", async (req, res) => {
   try {
@@ -16455,6 +19923,85 @@ app.get("/form", async (req, res) => {
             border-color:#93c5fd;
             box-shadow:0 0 0 4px rgba(59,130,246,0.12);
           }
+
+
+          .assistant-message.assistant.greeting-message{
+  background: linear-gradient(135deg, #ffffff 0%, #f4f8ff 100%);
+  border: 1px solid #dbe7ff;
+  border-radius: 22px;
+  padding: 18px 20px;
+  max-width: 320px;
+  box-shadow:
+    0 10px 30px rgba(37, 99, 235, 0.10),
+    inset 0 1px 0 rgba(255,255,255,0.9);
+  position: relative;
+  overflow: hidden;
+  animation: greetingFade 0.35s ease;
+}
+
+.assistant-message.assistant.greeting-message::before{
+  content:"";
+  position:absolute;
+  top:-60px;
+  right:-60px;
+  width:140px;
+  height:140px;
+  border-radius:50%;
+  background: radial-gradient(circle,
+    rgba(59,130,246,0.18) 0%,
+    rgba(59,130,246,0) 72%);
+}
+
+.greeting-title{
+  font-size:16px;
+  font-weight:800;
+  color:#0f172a;
+  margin-bottom:14px;
+  line-height:1.4;
+}
+
+.greeting-meta{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.greeting-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:10px 12px;
+  border-radius:14px;
+  background: rgba(255,255,255,0.78);
+  border:1px solid #e2e8f0;
+  backdrop-filter: blur(6px);
+}
+
+.greeting-label{
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:0.7px;
+  text-transform:uppercase;
+  color:#64748b;
+  min-width:70px;
+}
+
+.greeting-value{
+  font-size:14px;
+  font-weight:700;
+  color:#1e293b;
+}
+
+@keyframes greetingFade{
+  from{
+    opacity:0;
+    transform:translateY(10px) scale(0.98);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+}
           .history-status-select:disabled{opacity:0.72;cursor:wait;}
           .history-status-select.status-open{background-color:#fef2f2;color:#b91c1c;border-color:#fecaca;}
           .history-status-select.status-waiting-for-validation{background-color:#fff7ed;color:#c2410c;border-color:#fed7aa;}
@@ -17448,43 +20995,33 @@ function syncDomFromStore(kvId) {
             };
           }
 
-          function loadAssistantThreads() {
-            try {
-              const raw = window.localStorage ? window.localStorage.getItem(assistantStorageKey) : null;
-              if (!raw) return {};
-              const parsed = JSON.parse(raw);
-              const normalized = {};
-              Object.keys(parsed || {}).forEach((key) => {
-                const threadMessages = Array.isArray(parsed[key]?.messages)
-                  ? parsed[key].messages.map(normalizeAssistantThreadMessage).filter(Boolean).slice(-18)
-                  : [];
-                normalized[key] = { messages: threadMessages };
-              });
-              return normalized;
-            } catch (err) {
-              return {};
-            }
-          }
+      // Threads are now in-memory only; DB is the source of truth
+      function loadAssistantThreads() {
+          return {};
+         }
+      function persistAssistantThreads() {
+       // No-op: the POST /kpi-ai-assistant endpoint saves to DB automatically
+     }
+      function clearAssistantThreads() {
+       assistantState.threads = {};
+      }
 
-          function persistAssistantThreads() {
-            try {
-              if (!window.localStorage) return;
-              window.localStorage.setItem(assistantStorageKey, JSON.stringify(assistantState.threads));
-            } catch (err) {
-              // Ignore storage errors so the assistant remains usable.
-            }
-          }
+     async function fetchConversationFromServer(kvId) {
+       const kpiId = kvId === null || kvId === undefined ? null : kvId;
+       const params = new URLSearchParams({ 
+        responsible_id: String(${JSON.stringify(responsible_id)})
+      });
+       if (kpiId !== null) params.set("kpi_id", String(kpiId));
 
-          function clearAssistantThreads() {
-            assistantState.threads = {};
-            try {
-              if (window.localStorage) {
-                window.localStorage.removeItem(assistantStorageKey);
-              }
-            } catch (err) {
-              // Ignore storage errors so reset still clears in-memory state.
-            }
-          }
+     try {
+       const res = await fetch("/kpi-ai-assistant/conversation?" + params.toString());
+       if (!res.ok) return [];
+       const data = await res.json();
+       return Array.isArray(data.conversation) ? data.conversation : [];
+    } catch {
+      return [];
+     }
+    }
 
           function getAssistantThreadKey(kvId) {
             const resolvedKpiId = kvId === undefined ? assistantState.selectedKpiId : kvId;
@@ -17561,44 +21098,44 @@ function syncDomFromStore(kvId) {
          return;
          }
 
-    const msg = document.createElement("div");
-    msg.className = "assistant-message " + role;
-    assistantMessages.appendChild(msg);
-    assistantMessages.scrollTop = assistantMessages.scrollHeight;
+       const msg = document.createElement("div");
+        msg.className = "assistant-message " + role;
+        assistantMessages.appendChild(msg);
+        assistantMessages.scrollTop = assistantMessages.scrollHeight;
 
-    const safeText = String(text || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+        const safeText = String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+ 
+       if (role !== "assistant" || safeText.length > 400) {
+         msg.innerHTML = safeText.split("\\n").join("<br>");
+         assistantMessages.scrollTop = assistantMessages.scrollHeight;
+         resolve();
+         return;
+         }
 
-    if (role !== "assistant" || safeText.length > 400) {
-      msg.innerHTML = safeText.split("\\n").join("<br>");
-      assistantMessages.scrollTop = assistantMessages.scrollHeight;
-      resolve();
-      return;
-    }
+        let i = 0;
+       const typingSpeed = 5;
 
-    let i = 0;
-    const typingSpeed = 5;
+      function typeNext() {
+        const partial = safeText.slice(0, i).split("\\n").join("<br>");
+        msg.innerHTML = partial + '<span class="assistant-cursor">|</span>';
+        assistantMessages.scrollTop = assistantMessages.scrollHeight;
 
-    function typeNext() {
-      const partial = safeText.slice(0, i).split("\\n").join("<br>");
-      msg.innerHTML = partial + '<span class="assistant-cursor">|</span>';
-      assistantMessages.scrollTop = assistantMessages.scrollHeight;
-
-      if (i < safeText.length) {
-        i++;
-        setTimeout(typeNext, typingSpeed);
-      } else {
+        if (i < safeText.length) {
+         i++;
+         setTimeout(typeNext, typingSpeed);
+        } else {
         msg.innerHTML = safeText.split("\\n").join("<br>");
         assistantMessages.scrollTop = assistantMessages.scrollHeight;
         resolve();
+       }
       }
-    }
 
-    typeNext();
-  });
-}
+     typeNext();
+         });
+         }
           function setAssistantStatus(text) { if (assistantStatus) assistantStatus.textContent = text; }
           function getKpiCardById(kvId) { return document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]'); }
           function getAssistantKpiDisplayName(card) {
@@ -17608,24 +21145,19 @@ function syncDomFromStore(kvId) {
             return subtitle && title ? (subtitle + " (" + title + ")") : (subtitle || title || "Selected KPI");
           }
 
-          function buildAssistantGreeting() {
-          if (!assistantState.selectedKpiId) {
-           return "Hello. Describe the issue you want to diagnose. I will help identify the root cause, action, owner, and deadline using the available knowledge base.";
-           }
+           function buildAssistantGreeting() {
+           return "Welcome ${responsible.name || "Responsible"}\\n\\n" +
+           "Role: ${responsible.role_name || responsible.role || "Not assigned"}\\n" +
+           "Assistant: ${responsible.role_name || responsible.role || "KPI"} Assistant";
+          }
 
-           const card = getKpiCardById(assistantState.selectedKpiId);
-           const kpiName = getAssistantKpiDisplayName(card);
-
-           return "Focused on: " + kpiName + "\\n\\nDescribe the issue, delay, or risk you want to diagnose.";
-          } 
-
-          function ensureAssistantGreeting() {
+           function ensureAssistantGreeting() {
             const thread = getCurrentAssistantThread();
             if (!thread.messages.length) {
               const greeting = buildAssistantGreeting();
               pushAssistantThreadMessage("assistant", greeting, greeting);
             }
-          }
+           }
 
           function renderAssistantConversation() {
             if (!assistantMessages) return;
@@ -17715,22 +21247,43 @@ function syncDomFromStore(kvId) {
             assistantInput.placeholder = "Ask about " + kpiName;
           }
 
-          function openAssistant() {
-            if (!assistantShell) return;
-            assistantShell.classList.add("open");
-            if (assistantLauncher) assistantLauncher.innerHTML = "&times;";
-            if (assistantFocus) {
-              if (!assistantState.selectedKpiId) {
-                assistantFocus.textContent = "All KPIs on this form";
-              } else {
-                const card = getKpiCardById(assistantState.selectedKpiId);
-                assistantFocus.textContent = "Focused on: " + getAssistantKpiDisplayName(card);
-              }
-            }
-            syncAssistantInputPlaceholder();
-            renderAssistantConversation();
-            if (assistantInput) assistantInput.focus();
-          }
+    async function openAssistant() {
+    if (!assistantShell) return;
+    assistantShell.classList.add("open");
+     if (assistantLauncher) assistantLauncher.innerHTML = "&times;";
+     if (assistantFocus) {
+     assistantFocus.textContent =
+     "${responsible.role_name || responsible.role || "KPI"} Assistant";
+    }
+    syncAssistantInputPlaceholder();
+
+    // Show a loading state while we fetch from DB
+    if (assistantMessages) {
+      assistantMessages.innerHTML =
+      '<div class="assistant-message assistant">Loading conversation...</div>';
+    }
+
+     // Load conversation from DB into in-memory thread
+    const threadKey = getAssistantThreadKey(assistantState.selectedKpiId);
+     const serverMessages = await fetchConversationFromServer(assistantState.selectedKpiId);
+
+     if (serverMessages.length) {
+      assistantState.threads[threadKey] = {
+      messages: serverMessages.map((entry) => ({
+        role: entry.role,
+        text: entry.text || entry.content || "",
+        contextText: entry.content || entry.text || "",
+        ts: entry.ts || Date.now()
+      })).filter((e) => e.role && e.text)
+     };
+      } else {
+       // No prior conversation — let ensureAssistantGreeting() add the welcome message
+       assistantState.threads[threadKey] = { messages: [] };
+      }
+
+       renderAssistantConversation();
+       if (assistantInput) assistantInput.focus();
+       }
           function closeAssistant() {
             if (!assistantShell) return;
             assistantShell.classList.remove("open");
@@ -17745,13 +21298,15 @@ function syncDomFromStore(kvId) {
           }
           window.resetAssistantForTesting = resetAssistantForTesting;
 
-          function openAssistantForKpi(kvId) {
-            assistantState.selectedKpiId = kvId;
-            openAssistant();
-            const card = getKpiCardById(kvId);
-            const kpiName = getAssistantKpiDisplayName(card);
-            setAssistantStatus("Focused on " + kpiName + ". This AI support is dedicated to this KPI and will use the knowledge base when relevant.");
-          }
+         function openAssistantForKpi(kvId) {
+         assistantState.selectedKpiId = kvId;
+         openAssistant(); // openAssistant is now async and fetches from DB
+         const card = getKpiCardById(kvId);
+         const kpiName = getAssistantKpiDisplayName(card);
+         setAssistantStatus(
+         "Focused on " + kpiName + ". This AI support uses the knowledge base when relevant."
+        );
+       }
           window.openAssistantForKpi = openAssistantForKpi;
           
 
@@ -17773,12 +21328,11 @@ async function sendAssistantPrompt(message) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        responsible_id: "${responsible_id}",
-        week: "${week}",
-        selected_kpi_id: assistantState.selectedKpiId,
-        kpis: collectAssistantKpis(),
-        message: resolvedMessage,
-        conversation_history: getAssistantRequestHistory(resolvedMessage)
+       responsible_id: "${responsible_id}",
+       week: "${week}",
+       selected_kpi_id: assistantState.selectedKpiId,
+       kpis: collectAssistantKpis(),
+       message: resolvedMessage
       })
     });
 
@@ -17786,6 +21340,15 @@ async function sendAssistantPrompt(message) {
     if (!res.ok) throw new Error(data.error || "Request failed");
 
     const assistantReply = data.reply || "I could not generate a response.";
+    if (Array.isArray(data.conversation)) {
+    const thread = getCurrentAssistantThread();
+    thread.messages = data.conversation.map((entry) => ({
+    role: entry.role,
+    text: entry.text || entry.content,
+    contextText: entry.content || entry.text,
+    ts: entry.ts || Date.now()
+    })).filter((entry) => entry.role && entry.text);
+   }
     pushAssistantThreadMessage("assistant", assistantReply, assistantReply);
 
     await addAssistantMessage(
@@ -17808,14 +21371,14 @@ async function sendAssistantPrompt(message) {
   }
 }
 
-          if (assistantLauncher) assistantLauncher.addEventListener("click", () => {
-            if (assistantShell.classList.contains("open")) {
-              closeAssistant();
-              return;
-            }
-            assistantState.selectedKpiId = null;
-            openAssistant();
-          });
+        if (assistantLauncher) assistantLauncher.addEventListener("click", () => {
+         if (assistantShell.classList.contains("open")) {
+         closeAssistant();
+          return;
+        }
+        assistantState.selectedKpiId = null;
+        openAssistant(); // async, no need to await here
+       });
           if (assistantClose) assistantClose.addEventListener("click", closeAssistant);
           if (assistantReset) assistantReset.addEventListener("click", resetAssistantForTesting);
           if (assistantInput) {
@@ -20648,7 +24211,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
       console.error(`âš ï¸ PDF generation failed for ${responsible.name}:`, pdfErr.message);
     }
 
-    // â”€â”€ SEND EMAIL (with OLD target values in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ SEND EMAIL (with OLD Target s in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const transporter = createTransporter();
     await transporter.sendMail({
       from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
@@ -21479,7 +25042,7 @@ function generateKPIChartHTML(kpi, index) {
       </div>
       ${kpi.definition ? `
         <div style="margin-top:20px;padding:15px;background:#f8fafc;border-radius:12px;border-left:4px solid #667eea;">
-          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">Definition</div>
+          <div style="font-size:12px;color:#64748b;margin-bottom:5px;">Definitsqcion</div>
           <div style="font-size:14px;color:#475569;">${kpi.definition}</div>
         </div>` : ''}
     </div>`;
