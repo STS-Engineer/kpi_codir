@@ -1613,6 +1613,18 @@ const getKpiTargetAllocationScopeKey = (row = {}) => {
   return "";
 };
 
+const getKpiTargetAllocationGroupSignature = (row = {}) => JSON.stringify({
+  kpi_id: normalizeOptionalIntegerInput(row.kpi_id) || null,
+  kpi_type: String(normalizeOptionalTextInput(row.kpi_type) || "").trim().toLowerCase(),
+  unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id) || null,
+  role_id: normalizeOptionalIntegerInput(row.role_id) || null,
+  function: String(normalizeOptionalTextInput(row.function) || "").trim().toLowerCase(),
+  product_id: normalizeOptionalIntegerInput(row.product_id) || null,
+  product_line_id: normalizeOptionalIntegerInput(row.product_line_id) || null,
+  market_id: normalizeOptionalIntegerInput(row.market_id) || null,
+  customer_id: normalizeOptionalIntegerInput(row.customer_id) || null
+});
+
 const getKpiTargetAllocationGroupIds = async (allocationId) => {
   const normalizedAllocationId = normalizeOptionalIntegerInput(allocationId);
   if (!normalizedAllocationId) return [];
@@ -4188,10 +4200,41 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
-    const existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const explicitExistingAllocationIds = Array.isArray(req.body?.existing_allocation_ids)
+      ? req.body.existing_allocation_ids
+        .map((allocationId) => normalizeOptionalIntegerInput(allocationId))
+        .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
+      : [];
+    let existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
 
     if (!existingGroupRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
+    }
+
+    if (explicitExistingAllocationIds.length) {
+      const knownExistingIds = new Set(
+        existingGroupRows
+          .map((row) => normalizeOptionalIntegerInput(row?.kpi_target_allocation_id))
+          .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
+      );
+      const missingExistingIds = explicitExistingAllocationIds.filter(
+        (allocationId) => !knownExistingIds.has(allocationId)
+      );
+
+      if (missingExistingIds.length) {
+        const missingExistingRows = await Promise.all(
+          missingExistingIds.map((allocationId) =>
+            loadKpiTargetAllocationRowsForUi({
+              allocationId,
+              responsibleId: null
+            })
+          )
+        );
+
+        existingGroupRows = existingGroupRows
+          .concat(missingExistingRows.flat().filter(Boolean))
+          .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
+      }
     }
 
     const preservedCreatedByPeopleId =
@@ -4203,6 +4246,7 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedExistingGroupType = String(existingGroupRows[0]?.kpi_type || "")
       .trim()
       .toLowerCase();
+    const existingGroupSignature = getKpiTargetAllocationGroupSignature(existingGroupRows[0] || {});
     const shouldPreserveMissingRows =
       normalizedExistingGroupType === "multisite" ||
       normalizedExistingGroupType === "zone" ||
@@ -4212,9 +4256,103 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId,
       created_by_people_id: req.body.created_by_people_id || preservedCreatedByPeopleId
     }, normalizedResponsiblePeopleId, preservedCreatedByPeopleId);
+    const requestedGroupSignature = getKpiTargetAllocationGroupSignature(preparedRows[0] || {});
+    const shouldReplaceMissingRows = existingGroupSignature !== requestedGroupSignature;
+    const shouldKeepUnmatchedExistingRows = shouldPreserveMissingRows && !shouldReplaceMissingRows;
 
     client = await pool.connect();
     await client.query("BEGIN");
+
+    if (shouldReplaceMissingRows) {
+      const existingAllocationIdsToReplace = Array.from(
+        new Set(
+          explicitExistingAllocationIds.concat(
+            existingGroupRows
+              .map((row) => normalizeOptionalIntegerInput(row?.kpi_target_allocation_id))
+              .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
+          )
+        )
+      );
+
+      if (existingAllocationIdsToReplace.length) {
+        await client.query(
+          `
+          DELETE FROM public.kpi_target_allocation
+          WHERE kpi_target_allocation_id = ANY($1::int[])
+          `,
+          [existingAllocationIdsToReplace]
+        );
+      }
+
+      const replacementAllocationIds = [];
+
+      for (const preparedRow of preparedRows) {
+        const insertResult = await client.query(
+          `
+          INSERT INTO public.kpi_target_allocation (
+            kpi_id,
+            plant_id,
+            zone_id,
+            unit_id,
+            "function",
+            product_id,
+            product_line_id,
+            market_id,
+            customer_id,
+            target_value,
+            target_unit,
+            local_currency,
+            kpi_type,
+            unit_type_id,
+            role_id,
+            target_setup_date,
+            target_start_date,
+            target_end_date,
+            last_best_target,
+            previous_target_value,
+            target_status,
+            set_by_people_id,
+            created_by_people_id,
+            approved_by_people_id,
+            comments,
+            created_at
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+          RETURNING kpi_target_allocation_id
+          `,
+          [
+            ...getKpiObjectInsertValues(preparedRow),
+            preservedGroupCreatedAt
+          ]
+        );
+
+        if (insertResult.rows[0]?.kpi_target_allocation_id) {
+          replacementAllocationIds.push(insertResult.rows[0].kpi_target_allocation_id);
+        }
+      }
+
+      await client.query("COMMIT");
+      transactionCompleted = true;
+
+      const refreshedRows = await Promise.all(
+        replacementAllocationIds.map((allocationId) =>
+          loadKpiTargetAllocationRowsForUi({
+            allocationId: Number(allocationId),
+            responsibleId: null
+          })
+        )
+      );
+      const relatedAllocations = refreshedRows
+        .flat()
+        .filter(Boolean)
+        .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
+      const primaryRow = relatedAllocations[0] || null;
+
+      return res.json({
+        ...(primaryRow || {}),
+        related_allocations: relatedAllocations
+      });
+    }
 
     const existingRowsByScopeKey = new Map(
       existingGroupRows
@@ -4324,7 +4462,7 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     for (const [scopeKey, existingRow] of existingRowsByScopeKey.entries()) {
       if (preparedRowsByScopeKey.has(scopeKey)) continue;
 
-      if (shouldPreserveMissingRows) {
+      if (shouldKeepUnmatchedExistingRows) {
         if (existingRow?.kpi_target_allocation_id) {
           resultingAllocationIds.push(existingRow.kpi_target_allocation_id);
         }
@@ -8723,6 +8861,7 @@ textarea {
       let parameterSourceRows = [];
       let parameterKpiCatalog = [];
       let parameterUnitTargetState = {};
+      let parameterEditingAllocationIds = [];
       let parameterLockedUnitId = "";
       let parameterLockedZoneId = "";
       let parameterLockedZoneIds = [];
@@ -8977,7 +9116,10 @@ textarea {
         const select = document.getElementById("parameter_kpi_id");
         if (!select) return;
 
-        const res = await fetch("/api/kpis");
+        const res = await fetch(
+          "/api/responsibles/" + responsibleId + "/kpis?search=&_ts=" + Date.now(),
+          { cache: "no-store" }
+        );
         const data = await res.json();
         parameterKpiCatalog = Array.isArray(data) ? data : [];
 
@@ -12990,6 +13132,7 @@ function fillForm(data) {
         parameterResolvedZoneId = "";
         parameterZoneLookupPending = false;
         parameterEditMode = false;
+        parameterEditingAllocationIds = [];
         resetParameterUnitTargetState();
         populateAllocationLookupOptions({});
 
@@ -13062,6 +13205,9 @@ updateParameterKpiSummary();
         };
 
         parameterEditMode = true;
+        parameterEditingAllocationIds = relatedAllocations
+          .map((row) => Number(row?.kpi_target_allocation_id))
+          .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0);
         parameterLockedUnitId = isGroupedScope
           ? ""
           : String(primaryRow.plant_id || primaryRow.unit_id || "").trim();
@@ -13180,6 +13326,9 @@ updateParameterKpiSummary();
    return {
     kpi_id: getParameterFieldValue("parameter_kpi_id"),
     kpi_type: getParameterFieldValue("parameter_kpi_type"),
+    existing_allocation_ids: Array.isArray(parameterEditingAllocationIds)
+      ? parameterEditingAllocationIds.slice()
+      : [],
     unit_type_id: getParameterFieldValue("parameter_unit_type_id"),
     role_id: getParameterFieldValue("parameter_role_id"),
     target_status: getParameterFieldValue("parameter_target_status"),
