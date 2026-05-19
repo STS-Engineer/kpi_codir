@@ -381,7 +381,36 @@ let kpiObjectSchemaPromise = null;
 
 const ensureKpiRatioSchema = async () => {
   if (!kpiRatioSchemaPromise) {
-    kpiRatioSchemaPromise = Promise.resolve().catch((error) => {
+    kpiRatioSchemaPromise = (async () => {
+      await pool.query(`
+        ALTER TABLE public.kpi
+        ADD COLUMN IF NOT EXISTS created_by_people_id INTEGER
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'fk_kpi_created_by_people'
+          ) THEN
+            ALTER TABLE public.kpi
+            ADD CONSTRAINT fk_kpi_created_by_people
+            FOREIGN KEY (created_by_people_id)
+            REFERENCES public.people (people_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_created_by_people
+        ON public.kpi (created_by_people_id)
+      `);
+    })().catch((error) => {
       kpiRatioSchemaPromise = null;
       throw error;
     });
@@ -923,9 +952,15 @@ const loadKpiTargetAllocationLookups = async () => {
       ORDER BY unit_type_name, unit_type_id
     `),
     pool.query(`
-      SELECT zone_id, zone_name, responsable_zone
-      FROM public.zone
-      ORDER BY zone_name, zone_id
+    SELECT 
+       zone_id AS value,
+       zone_id,
+       zone_name AS label,
+       zone_name,
+       responsable_zone,
+       role
+     FROM zone
+      ORDER BY zone_name
     `),
     pool.query(`
       SELECT product_line_id, product_line_name
@@ -1049,7 +1084,8 @@ const loadKpiTargetAllocationLookups = async () => {
     zones: zonesResult.rows.map((row) => ({
       value: String(row.zone_id),
       label: normalizeOptionalTextInput(row.zone_name) || `Zone ${row.zone_id}`,
-      responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || ""
+      responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || "",
+      role: normalizeOptionalTextInput(row.role) || ""
     })),
     productLines: productLinesResult.rows.map((row) => ({
       value: String(row.product_line_id),
@@ -1090,6 +1126,7 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
 
   return {
     kpi_id: row.kpi_id,
+    created_by_people_id: row.created_by_people_id ?? null,
     indicator_title: row.kpi_sub_title || "",
     indicator_sub_title: row.kpi_name || "",
     kpi_code: row.kpi_code || "",
@@ -1173,6 +1210,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       k.owner_role_id,
       k.status,
       k.comments,
+      k.created_by_people_id,
       k.created_at,
       k.updated_at,
       primary_subject.subject_id,
@@ -1195,7 +1233,10 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
         a.set_by_people_id
       FROM public.kpi_target_allocation a
       WHERE a.kpi_id = k.kpi_id
-        AND a.set_by_people_id = $4
+        AND (
+          a.set_by_people_id = $4
+          OR a.created_by_people_id = $4
+        )
       ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.kpi_target_allocation_id DESC
       LIMIT 1
     ) assignment ON TRUE
@@ -1226,6 +1267,23 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
 
     WHERE
       ($3::integer IS NULL OR k.kpi_id = $3)
+      ${normalizedResponsibleId === null ? "" : `
+      AND (
+        k.created_by_people_id = $4
+        OR (
+          k.created_by_people_id IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM public.kpi_target_allocation ownership_allocation
+            WHERE ownership_allocation.kpi_id = k.kpi_id
+              AND (
+                ownership_allocation.set_by_people_id = $4
+                OR ownership_allocation.created_by_people_id = $4
+              )
+          )
+        )
+      )
+      `}
       AND (
         $1 = ''
         OR COALESCE(k.kpi_name, '') ILIKE $2
@@ -3447,12 +3505,13 @@ app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   owner_role_id,
   status,
   comments,
+  created_by_people_id,
   high_limit,
   low_limit
 )
 VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
-  $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+  $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
 )
       RETURNING *
       `,
@@ -3483,6 +3542,7 @@ VALUES (
         owner_role_id,
         status,
         comments,
+        responsiblePeopleId,
         high_limit,
         low_limit
       ]
@@ -3515,9 +3575,13 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   const { responsibleId } = req.params;
   try {
     await ensureKpiRatioSchema();
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
     const rows = await loadKpiRowsForUi({
       search: req.query.search || "",
-      responsibleId
+      responsibleId: responsiblePeopleId
     });
     res.json(rows);
   } catch (error) {
@@ -3531,9 +3595,13 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
     const rows = await loadKpiRowsForUi({
       kpiId: Number(kpiId),
-      responsibleId
+      responsibleId: responsiblePeopleId
     });
 
     if (!rows.length) {
@@ -3548,11 +3616,15 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 });
 
 app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
-  const { kpiId } = req.params;
+  const { responsibleId, kpiId } = req.params;
   let client;
 
   try {
     await ensureKpiRatioSchema();
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
     const {
       subject_id,
       kpi_name,
@@ -3626,10 +3698,26 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
           owner_role_id = $24,
           status = $25,
           comments = $26,
-          high_limit = $27,
-          low_limit = $28,
+          created_by_people_id = COALESCE(created_by_people_id, $27),
+          high_limit = $28,
+          low_limit = $29,
           updated_at = NOW()
-      WHERE kpi_id = $29
+      WHERE kpi_id = $30
+        AND (
+          created_by_people_id = $27
+          OR (
+            created_by_people_id IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM public.kpi_target_allocation ownership_allocation
+              WHERE ownership_allocation.kpi_id = public.kpi.kpi_id
+                AND (
+                  ownership_allocation.set_by_people_id = $27
+                  OR ownership_allocation.created_by_people_id = $27
+                )
+            )
+          )
+        )
       RETURNING *
       `,
       [
@@ -3659,6 +3747,7 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
         owner_role_id,
         status,
         comments,
+        responsiblePeopleId,
         high_limit,
         low_limit,
         kpiId
@@ -3673,7 +3762,10 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
     await upsertPrimarySubjectKpiLink(client, Number(kpiId), resolvedSubjectId);
     await client.query("COMMIT");
 
-    const rows = await loadKpiRowsForUi({ kpiId: Number(kpiId) });
+    const rows = await loadKpiRowsForUi({
+      kpiId: Number(kpiId),
+      responsibleId: responsiblePeopleId
+    });
     res.json(rows[0] || result.rows[0]);
   } catch (error) {
     if (client) {
@@ -3689,12 +3781,74 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 });
 
 app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
-  const { kpiId } = req.params;
+  const { responsibleId, kpiId } = req.params;
   let client;
 
   try {
+    await ensureKpiRatioSchema();
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
+    );
     client = await pool.connect();
     await client.query("BEGIN");
+
+    const ownershipResult = await client.query(
+      `
+      SELECT kpi_id
+      FROM public.kpi
+      WHERE kpi_id = $1
+        AND (
+          created_by_people_id = $2
+          OR (
+            created_by_people_id IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM public.kpi_target_allocation ownership_allocation
+              WHERE ownership_allocation.kpi_id = public.kpi.kpi_id
+                AND (
+                  ownership_allocation.set_by_people_id = $2
+                  OR ownership_allocation.created_by_people_id = $2
+                )
+            )
+          )
+        )
+      LIMIT 1
+      `,
+      [kpiId, responsiblePeopleId]
+    );
+
+    if (!ownershipResult.rows.length) {
+      await client.query("ROLLBACK").catch(() => {});
+      return res.status(404).json({ error: "KPI not found" });
+    }
+
+    const sharedLegacyOwnershipResult = await client.query(
+      `
+      SELECT 1
+      FROM public.kpi k
+      WHERE k.kpi_id = $1
+        AND k.created_by_people_id IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM public.kpi_target_allocation foreign_allocation
+          WHERE foreign_allocation.kpi_id = k.kpi_id
+            AND (
+              (foreign_allocation.created_by_people_id IS NOT NULL AND foreign_allocation.created_by_people_id <> $2)
+              OR (foreign_allocation.set_by_people_id IS NOT NULL AND foreign_allocation.set_by_people_id <> $2)
+            )
+        )
+      LIMIT 1
+      `,
+      [kpiId, responsiblePeopleId]
+    );
+
+    if (sharedLegacyOwnershipResult.rows.length) {
+      await client.query("ROLLBACK").catch(() => {});
+      return res.status(409).json({
+        error: "This KPI is still shared by another responsible. Recreate it under one owner before deleting it."
+      });
+    }
 
     await client.query(
       `DELETE FROM public.kpi_target_allocation WHERE kpi_id = $1`,
@@ -8419,6 +8573,17 @@ textarea {
                   <option value="Zone">Zone</option>
                 </select>
               </div>
+
+              <div class="field col-2 is-hidden" id="parameter_zone_role_field">
+              <label>
+              <span>Role</span>
+              <span class="hint">Loaded from zone table</span>
+              </label>
+
+             <select id="parameter_zone_role">
+              <option value="">All roles</option>
+             </select>
+              </div>
               <div class="field col-2" id="parameter_unit_type_field">
                 <label><span>Unit Type</span><span class="hint">Loaded from unit type</span></label>
                 <select id="parameter_unit_type_id"></select>
@@ -9555,33 +9720,28 @@ function getParameterVisibleUnitRows() {
   const scopeKind = getParameterScopeKind();
 
 if (scopeKind === "zone") {
-  const lockedZoneIds = Array.isArray(parameterLockedZoneIds)
-    ? parameterLockedZoneIds.map(String)
-    : [];
 
-  if (!lockedZoneIds.length && !parameterLockedZoneId) {
-    return [];
-  }
+  const selectedZoneRole =
+    String(
+      getParameterFieldValue("parameter_zone_role") || ""
+    ).trim();
 
-  const zoneRows = Array.isArray(allocationLookups.zones)
-    ? allocationLookups.zones.map((zoneEntry) => ({
-        row_kind: "zone",
-        value: String(zoneEntry.value || ""),
-        label: zoneEntry.label || "",
-        local_currency: "",
-        responsable_zone: zoneEntry.responsable_zone || ""
-      }))
-    : [];
+  return (allocationLookups.zones || [])
+    .filter(zoneEntry => {
 
-  if (lockedZoneIds.length) {
-    return zoneRows.filter((zoneEntry) =>
-      lockedZoneIds.includes(String(zoneEntry.value || ""))
-    );
-  }
+      if (!selectedZoneRole) return true;
 
-  return zoneRows.filter(
-    (zoneEntry) => String(zoneEntry.value || "") === String(parameterLockedZoneId)
-  );
+      return String(zoneEntry.role || "").trim()
+        === selectedZoneRole;
+    })
+    .map(zoneEntry => ({
+      row_kind: "zone",
+      value: String(zoneEntry.value || zoneEntry.zone_id || ""),
+      label: zoneEntry.label || zoneEntry.zone_name || "",
+      local_currency: "",
+      responsable_zone: zoneEntry.responsable_zone || "",
+      zone_role: zoneEntry.role || ""
+    }));
 }
 
   const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
@@ -9712,9 +9872,9 @@ function resolveParameterResponsibleEntry(scopeEntry, state = null) {
 function getParameterResponsibleCellNote(scopeEntry, responsibleEntry) {
   const roleLabel = getParameterRoleLabel(getParameterFieldValue("parameter_role_id"));
 
-  if (scopeEntry?.row_kind === "zone") {
-    return "";
-  }
+if (scopeEntry?.row_kind === "zone") {
+    return scopeEntry.zone_role || "";
+}
 
   if (!roleLabel) {
     return "Enter the role please.";
@@ -9844,15 +10004,8 @@ function getParameterUnitAllocationRows() {
       return {
       plant_id: scopeKind === "unit" ? scopeId : null,
       zone_id: scopeKind === "zone" ? scopeId : null,
-
-     // important for Zone edit
-     unit_id: scopeKind === "zone"
-      ? getParameterFieldValue("parameter_zone_unit_id")
-      : null,
-
-     product_id: scopeKind === "zone"
-      ? getParameterFieldValue("parameter_zone_product_id")
-      : getParameterFieldValue("parameter_product_id"),
+      unit_id: null,
+      product_id: scopeKind === "unit" ? getParameterFieldValue("parameter_product_id") : null,
         unit_type_id: scopeKind === "unit" ? (sharedUnitTypeId || String(scopeEntry.unit_type_id || "")) : null,
         role_id: scopeKind === "unit" ? sharedRoleId : null,
         target_value: targetValue,
@@ -10010,9 +10163,43 @@ async function lookupZoneFromManufacturingStrategy() {
 }
 
 
+function populateZoneRoleOptions(selectedValue = "") {
+
+  const select = document.getElementById("parameter_zone_role");
+
+  if (!select) return;
+
+  const roles = [...new Set(
+    (allocationLookups.zones || [])
+      .map(function(z) {
+        return String(z.role || "").trim();
+      })
+      .filter(function(role) {
+        return role;
+      })
+  )];
+
+  select.innerHTML =
+    '<option value="">All roles</option>' +
+    roles.map(function(role) {
+      return '<option value="' +
+        escapeHtml(role) +
+        '">' +
+        escapeHtml(role) +
+        '</option>';
+    }).join("");
+
+  select.value = selectedValue || "";
+}
+
 function syncParameterScopePresentation() {
   const scopeKind   = getParameterScopeKind();
   const isZoneScope = scopeKind === "zone";
+  toggleScopedParameterField(
+  "parameter_zone_role_field",
+  isZoneScope,
+  { clearOnHide: true }
+  );
  
   const kpiType      = getParameterFieldValue("parameter_kpi_type").toLowerCase();
   const isIndividual = kpiType === "individual";
@@ -10074,34 +10261,20 @@ toggleScopedParameterField("parameter_zone_resolved_field", false, { clearOnHide
  
 if (isZoneScope) {
     parameterLockedUnitId = "";
+    parameterLockedZoneId = "";
+    parameterLockedZoneIds = [];
 
-    /* Show Unit + Product pickers; hide Unit Type & Role */
-    toggleScopedParameterField("parameter_unit_type_field", false);
-    toggleScopedParameterField("parameter_role_field",      false);
-    toggleScopedParameterField("parameter_zone_unit_field",     true, { clearOnHide: false });
-    toggleScopedParameterField("parameter_zone_product_field",  true, { clearOnHide: false });
-    toggleScopedParameterField("parameter_zone_resolved_field", false);
-
-    /* Populate the Unit dropdown for Zone mode */
-    setLookupSelectOptions(
-      "parameter_zone_unit_id",
-      getParameterZoneUnitOptions(),
-      "Select unit",
-      getParameterFieldValue("parameter_zone_unit_id")
-    );
-
-    /* Populate the Product dropdown */
-    setLookupSelectOptions(
-      "parameter_zone_product_id",
-      allocationLookups.products || [],
-      "Select product",
-      getParameterFieldValue("parameter_zone_product_id")
-    );
+    populateZoneRoleOptions(
+    getParameterFieldValue("parameter_zone_role")
+    ); 
+    toggleScopedParameterField("parameter_unit_type_field",    false, { clearOnHide: true });
+    toggleScopedParameterField("parameter_role_field",         false, { clearOnHide: true });
+    toggleScopedParameterField("parameter_zone_unit_field",    false, { clearOnHide: true });
+    toggleScopedParameterField("parameter_zone_product_field", false, { clearOnHide: true });
+    toggleScopedParameterField("parameter_zone_resolved_field",false, { clearOnHide: true });
 
     if (tableLabel) tableLabel.textContent = "Zone Target Table";
-    if (tableHint)  tableHint.textContent  = "Select a unit and product to resolve the zone from manufacturing strategy.";
-    if (tableCopy)  tableCopy.textContent  =
-      "Select a unit and product. The matching zone from the manufacturing strategy table will appear automatically, and you can then enter its Target .";
+    if (tableHint)  tableHint.textContent  = "Enter a target for each zone. The responsible and role are loaded automatically from the zone table.";
     if (tableBadge) tableBadge.textContent = "Zone View";
     return;
   }
@@ -10152,31 +10325,11 @@ function renderMultisiteUnitMatrix() {
     return;
   }
 
-  if (scopeKind === "zone" && !selectedZoneUnitId) {
-    renderParameterTableEmptyState("Select a unit and product to display the matched zone.");
-    return;
-  }
-
-  if (scopeKind === "zone" && !selectedZoneProductId) {
-    renderParameterTableEmptyState("Select a product to display the matched zone.");
-    return;
-  }
-
-  if (scopeKind === "zone" && parameterZoneLookupPending) {
-    renderParameterTableEmptyState("Looking up the matched zone for the selected unit and product...");
-    return;
-  }
-
-  if (scopeKind === "zone" && !parameterLockedZoneId) {
-    renderParameterTableEmptyState("No matching zone was found for the selected unit and product.");
-    return;
-  }
-
   const visibleRows = getParameterVisibleUnitRows();
   if (!visibleRows.length) {
     renderParameterTableEmptyState(
       scopeKind === "zone"
-        ? "No matching zone was found for the selected unit and product."
+        ? "No zones were found in the zone table."
         : "No units were found for the selected unit type."
     );
     return;
@@ -10191,7 +10344,6 @@ function renderMultisiteUnitMatrix() {
             '<th>Sell Currency</th>' +
             '<th>KPI Unit</th>' +
             '<th>Target </th>' +
-            '<th>Last Best Target</th>' +
             '<th>Setup Date</th>' +
             '<th>Responsible</th>' +
           '</tr>' +
@@ -10230,15 +10382,12 @@ function renderMultisiteUnitMatrix() {
                   '<input class="parameter-unit-target-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="Enter Target " value="' + escapeHtml(state.target_value ?? "") + '" />' +
                 '</td>' +
                 '<td>' +
-                  '<input class="parameter-unit-last-best-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="e.g. 3400" value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
-                '</td>' +
-                '<td>' +
                   '<input class="parameter-unit-setup-date-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="date" value="' + escapeHtml(normalizeParameterDateValue(state.target_setup_date ?? getParameterFieldValue("parameter_target_setup_date")) || getLocalDateInputValue()) + '" />' +
                 '</td>' +
-                '<td>' +
+               '<td>' +
                   '<input class="' + responsibleInputClass + '" type="text" readonly tabindex="-1" value="' + escapeHtml(responsibleLabel) + '" placeholder="' + escapeHtml(responsiblePlaceholder) + '" />' +
-                  responsibleNoteMarkup +
-                '</td>' +
+               '</td>' +
+
               '</tr>';
           }).join("") +
         '</tbody>' +
@@ -12908,8 +13057,6 @@ updateParameterKpiSummary();
           parameter_target_start_date: formatParameterDateForInput(primaryRow.target_start_date),
           parameter_target_end_date: formatParameterDateForInput(primaryRow.target_end_date),
           parameter_set_by_people_id: primaryRow.set_by_people_id,
-          parameter_zone_unit_id: primaryRow.unit_id,
-          parameter_zone_product_id: primaryRow.product_id,
           parameter_approved_by_people_id: primaryRow.approved_by_people_id,
           parameter_comments: primaryRow.comments ?? ""
         };
@@ -12933,21 +13080,7 @@ updateParameterKpiSummary();
       initializeParameterUnitTargetState(relatedAllocations);
        populateAllocationLookupOptions(mappings);
 
-     if (normalizedKpiType === "zone") {
-      setLookupSelectOptions(
-       "parameter_zone_unit_id",
-       getParameterZoneUnitOptions(),
-       "Select unit",
-       primaryRow.unit_id || primaryRow.plant_id || ""
-    );
 
-    setLookupSelectOptions(
-      "parameter_zone_product_id",
-      allocationLookups.products,
-      "Select product",
-      primaryRow.product_id || ""
-    );
-   }
 
 Object.keys(mappings).forEach(id => {
           const el = document.getElementById(id);
@@ -12962,24 +13095,6 @@ Object.keys(mappings).forEach(id => {
     handleParameterKpiTypeChange();
 
 if (normalizedKpiType === "zone") {
-  const zoneUnitEl = document.getElementById("parameter_zone_unit_id");
-  const zoneProductEl = document.getElementById("parameter_zone_product_id");
-
-  if (zoneUnitEl) {
-    zoneUnitEl.value = String(primaryRow.unit_id || primaryRow.plant_id || "");
-  }
-
-  if (zoneProductEl) {
-    zoneProductEl.value = String(primaryRow.product_id || "");
-  }
-
-  parameterLockedZoneIds = relatedAllocations
-    .map(row => String(row.zone_id || "").trim())
-    .filter(Boolean);
-
-  parameterLockedZoneId = parameterLockedZoneIds[0] || "";
-  parameterResolvedZoneId = parameterLockedZoneId;
-
   renderMultisiteUnitMatrix();
 }
 
@@ -13072,13 +13187,8 @@ updateParameterKpiSummary();
     zone_id: primaryAllocation?.zone_id || getParameterFieldValue("parameter_zone_id"),
     function: getParameterFieldValue("parameter_function"),
     product_line_id: getParameterFieldValue("parameter_product_line_id"),
-    unit_id: scopeKind === "zone"
-   ? getParameterFieldValue("parameter_zone_unit_id")
-   : getParameterFieldValue("parameter_unit_id"),
-
-   product_id: scopeKind === "zone"
-   ? getParameterFieldValue("parameter_zone_product_id")
-   : getParameterFieldValue("parameter_product_id"),
+    unit_id: getParameterFieldValue("parameter_unit_id"),
+    product_id: getParameterFieldValue("parameter_product_id"),
     market_id: getParameterFieldValue("parameter_market_id"),
     customer_id: getParameterFieldValue("parameter_customer_id"),
    target_value: primaryAllocation?.target_value || getParameterFieldValue("parameter_target_value"),
@@ -13126,20 +13236,6 @@ updateParameterKpiSummary();
       return;
     }
 
-    if (scopeKind === "zone" && !getParameterFieldValue("parameter_zone_unit_id") && !parameterLockedZoneId) {
-      showToast("Select a unit first");
-      return;
-    }
-
-    if (scopeKind === "zone" && !getParameterFieldValue("parameter_zone_product_id") && !parameterLockedZoneId) {
-      showToast("Select a product");
-      return;
-    }
-
-    if (scopeKind === "zone" && !parameterLockedZoneId) {
-      showToast("No matched zone was found for the selected unit and product");
-      return;
-    }
 
   if (isIndividualParameterScope()) {
   const targetVal = getParameterFieldValue("parameter_target_value");
@@ -13291,6 +13387,16 @@ if (missingRow) {
      handleParameterKpiTypeChange();
     autoFillSetByFromUnit();
     });
+    const parameterZoneRoleSelect =
+  document.getElementById("parameter_zone_role");
+
+if (parameterZoneRoleSelect) {
+
+  parameterZoneRoleSelect.addEventListener("change", () => {
+    renderMultisiteUnitMatrix();
+  });
+
+}
     }
 
     const parameterUnitTypeSelect = document.getElementById("parameter_unit_type_id");
