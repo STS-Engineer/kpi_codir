@@ -9416,35 +9416,32 @@ textarea {
           <div class="form-section is-hidden" id="parameterAllocationFieldsSection">
             <div class="form-grid">
               <div class="field col-3">
-                <label><span>Target Value <span style="color:#ef4444;">*</span></span><span class="hint">Required</span></label>
+                <label><span>Target Value <span style="color:#ef4444;">*</span></span></label>
                 <input id="parameter_target_value" type="number" step="any" placeholder="Enter target value" required />
               </div>
               <div class="field col-3">
-                <label><span>Setup Date</span><span class="hint">Effective setup date</span></label>
+                <label><span>Setup Date</span></label>
                 <input id="parameter_target_setup_date" type="date" />
               </div>
               <div class="field col-3">
-                <label><span>KPI Unit</span><span class="hint">Loaded from KPI</span></label>
+                <label><span>KPI Unit</span></label>
                 <input id="parameter_target_unit" class="readonly-input" readonly />
               </div>
               <div class="field col-3">
-                <label><span>Sell Currency</span><span class="hint">Loaded from unit</span></label>
+                <label><span>Sell Currency</span></label>
                 <input id="parameter_local_currency" class="readonly-input" readonly />
               </div>
-              <div class="field col-3">
-                <label><span>Last Best Target</span><span class="hint">Optional benchmark</span></label>
-                <input id="parameter_last_best_target" type="number" step="any" placeholder="3400" />
-              </div>
+          
               <div class="field col-3" id="parameter_previous_target_field">
-                <label><span>Previous Target</span><span class="hint">Optional reference</span></label>
+                <label><span>Previous Target</span></label>
                 <input id="parameter_previous_target_value" type="number" step="any" placeholder="Optional previous target" />
               </div>
               <div class="field col-3">
-                <label><span id="parameter_set_by_people_label">Responsible</span><span class="hint" id="parameter_set_by_people_hint">Assigned from selected unit and role</span></label>
+                <label><span id="parameter_set_by_people_label">Responsible</span></label>
                 <select id="parameter_set_by_people_id"></select>
               </div>
               <div class="field col-3">
-                <label><span>Approved By</span><span class="hint">Optional approver</span></label>
+                <label><span>Approved By</span></label>
                 <select id="parameter_approved_by_people_id"></select>
               </div>
               <div class="field col-3" id="parameter_target_start_date_field">
@@ -10372,7 +10369,6 @@ function renderMultisiteUnitMatrix() {
             '<th>Setup Date</th>' +
             '<th>KPI Unit</th>' +
             '<th>Responsible</th>' +
-            '<th>Last Best Target</th>' +
           '</tr>' +
         '</thead>' +
         '<tbody>' +
@@ -10425,14 +10421,6 @@ function renderMultisiteUnitMatrix() {
                   '</select>' +
                 '</td>' +
  
-                /* ── Last Best Target ── */
-                '<td>' +
-                  '<input class="parameter-unit-last-best-input"' +
-                    ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '"' +
-                    ' type="number" step="any" placeholder="e.g. 3400"' +
-                    ' value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
-                '</td>' +
- 
               
  
               '</tr>';
@@ -10482,14 +10470,6 @@ function renderMultisiteUnitMatrix() {
       const sk = event.target.getAttribute("data-scope-kind");
       const si = event.target.getAttribute("data-scope-id");
       setParameterUnitState(sk, si, { responsible_id: event.target.value });
-    });
-  });
- 
-  Array.from(matrixEl.querySelectorAll(".parameter-unit-last-best-input")).forEach(function(input) {
-    input.addEventListener("input", function(event) {
-      const sk = event.target.getAttribute("data-scope-kind");
-      const si = event.target.getAttribute("data-scope-id");
-      setParameterUnitState(sk, si, { last_best_target: event.target.value });
     });
   });
  
@@ -11295,7 +11275,7 @@ if (isZoneScope) {
  
   parameterLockedZoneId = "";
   if (tableLabel) tableLabel.textContent = "Unit Target Table";
-  if (tableHint)  tableHint.textContent  = "Enter target and last best target for each unit. Responsible is linked automatically from the selected role.";
+  if (tableHint)  tableHint.textContent  = "Enter a target for each unit. Responsible is linked automatically from the selected role.";
   if (tableCopy)  tableCopy.textContent  =
     "Choose a KPI, KPI type, unit type and role. The table below will list matching units, resolve the related responsible automatically, and keep the KPI unit from the selected KPI.";
   if (tableBadge) tableBadge.textContent = "Unit Type View";
@@ -11356,7 +11336,6 @@ function renderMultisiteUnitMatrix() {
             '<th>Sell Currency</th>' +
             '<th>KPI Unit</th>' +
             '<th>Target Value</th>' +
-            '<th>Last Best Target</th>' +
             '<th>Setup Date</th>' +
             '<th>Responsible</th>' +
           '</tr>' +
@@ -11395,9 +11374,6 @@ function renderMultisiteUnitMatrix() {
                   '<input class="parameter-unit-target-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="Enter target value" value="' + escapeHtml(state.target_value ?? "") + '" />' +
                 '</td>' +
                 '<td>' +
-                  '<input class="parameter-unit-last-best-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="e.g. 3400" value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
-                '</td>' +
-                '<td>' +
                   '<input class="parameter-unit-setup-date-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="date" value="' + escapeHtml(normalizeParameterDateValue(state.target_setup_date ?? getParameterFieldValue("parameter_target_setup_date")) || getLocalDateInputValue()) + '" />' +
                 '</td>' +
                 '<td>' +
@@ -11424,15 +11400,6 @@ function renderMultisiteUnitMatrix() {
       const scopeKind = event.target.getAttribute("data-scope-kind");
       const scopeId = event.target.getAttribute("data-scope-id");
       setParameterUnitState(scopeKind, scopeId, { target_setup_date: event.target.value });
-      syncPrimaryParameterFieldsFromTable();
-    });
-  });
-
-  Array.from(matrixEl.querySelectorAll(".parameter-unit-last-best-input")).forEach((input) => {
-    input.addEventListener("input", (event) => {
-      const scopeKind = event.target.getAttribute("data-scope-kind");
-      const scopeId = event.target.getAttribute("data-scope-id");
-      setParameterUnitState(scopeKind, scopeId, { last_best_target: event.target.value });
       syncPrimaryParameterFieldsFromTable();
     });
   });
