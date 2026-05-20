@@ -2586,14 +2586,14 @@ app.get("/kpi-admin", async (req, res) => {
         overflow: auto;
       }
 
-      .section-title {
-        margin: 24px 0 12px;
-        font-size: 12px;
-        font-weight: 900;
-        color: #4f46e5;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-      }
+     .section-title {
+     margin: 0 0 8px;
+     font-size: 10px;
+     font-weight: 900;
+     color: #000;
+     text-transform: uppercase;
+     letter-spacing: 0.14em;
+    }
 
       .form-grid {
         display: grid;
@@ -2632,19 +2632,13 @@ app.get("/kpi-admin", async (req, res) => {
 
       .field input,
       .field textarea,
-      .field select {
-        width: 100%;
-        border: 1px solid rgba(148,163,184,0.24);
-        background: #ffffff;
-        color: #0f172a;
-        border-radius: 16px;
-        padding: 13px 14px;
-        font-size: 14px;
-        font-family: inherit;
-        outline: none;
-        transition: all 0.18s ease;
-        box-shadow: 0 2px 6px rgba(15,23,42,0.03);
-      }
+    .field select {
+  background: transparent !important;
+  border-radius: 0 !important;
+  color: #000 !important;
+  box-shadow: none !important;
+  border: 1px solid #ccc !important;
+}
 
       .field input:focus,
       .field textarea:focus,
@@ -6015,14 +6009,14 @@ textarea {
         flex-shrink: 0;
       }
 
-      .section-title {
-        margin: 0 0 8px;
-        font-size: 10px;
-        font-weight: 900;
-        color: #4f46e5;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-      }
+   .section-title {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 900;
+  color: #000;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
 
       .section-subtitle {
         font-size: 11px;
@@ -6052,15 +6046,13 @@ textarea {
       .field.col-8 { grid-column: span 8; }
       .field.col-12 { grid-column: 1 / -1; }
 
-   .field label {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        font-size: 10px;
-        font-weight: 800;
-        color: #334155;
-      }
+ .section-title,
+.field label {
+  background: transparent !important;
+  color: #000 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+}
 
       .field .hint {
         font-size: 9px;
@@ -6068,20 +6060,21 @@ textarea {
         color: #94a3b8;
       }
 
-      .field input,
-      .field textarea,
-      .field select {
-        width: 100%;
-        border: 1px solid rgba(148,163,184,0.28);
-        background: #ffffff;
-        color: #0f172a;
-        border-radius: 10px;
-        padding: 7px 10px;
-        font-size: 13px;
-        font-family: inherit;
-        outline: none;
-        transition: all 0.15s ease;
-      }
+ .field input,
+.field textarea,
+.field select {
+  width: 100%;
+  border: 1px solid rgba(148,163,184,0.28);
+  background: transparent;
+  color: #000;
+  border-radius: 0;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: all 0.15s ease;
+  box-shadow: none;
+}
 
       .field input::placeholder,
       .field textarea::placeholder,
@@ -6225,6 +6218,15 @@ textarea {
         flex-direction: column;
         gap: 10px;
       }
+
+      .field,
+.field-wrap,
+.form-group,
+.select-wrapper {
+  background: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
 
       .tree-select-help {
         font-size: 11px;
@@ -7710,7 +7712,8 @@ textarea {
 
 .parameter-modal {
   width: min(1500px, calc(100vw - 42px)) !important;
-  max-height: calc(100vh - 34px) !important;
+  height: calc(100vh - 42px) !important;
+  max-height: calc(100vh - 42px) !important;
   overflow: hidden !important;
   border-radius: 34px !important;
   background:
@@ -7741,8 +7744,10 @@ textarea {
 }
 
 .parameter-modal .modal-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
   padding: 18px 22px !important;
-  max-height: calc(100vh - 210px) !important;
+  max-height: none !important;
   overflow-y: auto !important;
   background: linear-gradient(180deg, #fbfdff 0%, #f4f8fd 100%) !important;
 }
@@ -7806,13 +7811,171 @@ textarea {
   transform: translateY(-1px) !important;
 }
 
+.parameter-role-select {
+  position: relative;
+}
+
+.parameter-role-native {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.parameter-role-trigger {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(148,163,184,0.28);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 10px 12px;
+  color: #0f172a;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.parameter-role-trigger:hover,
+.parameter-role-select.is-open .parameter-role-trigger {
+  border-color: rgba(37,99,235,0.55);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+}
+
+.parameter-role-trigger:disabled {
+  cursor: not-allowed;
+  color: #94a3b8;
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+.parameter-role-trigger-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parameter-role-trigger.is-placeholder .parameter-role-trigger-label {
+  color: #64748b;
+}
+
+.parameter-role-trigger-chevron {
+  flex-shrink: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.parameter-role-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, calc(100vh - 240px));
+  border: 1px solid rgba(148,163,184,0.22);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+  box-shadow: 0 22px 48px rgba(15,23,42,0.14);
+  overflow: hidden;
+}
+
+.parameter-role-menu[hidden] {
+  display: none !important;
+}
+
+.parameter-role-search {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid rgba(148,163,184,0.16);
+  background: rgba(255,255,255,0.96);
+}
+
+.parameter-role-search input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(148,163,184,0.24);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 8px 10px;
+  color: #0f172a;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.parameter-role-search input:focus {
+  border-color: rgba(37,99,235,0.55);
+  box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+}
+
+.parameter-role-options {
+  max-height: min(340px, calc(100vh - 300px));
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.parameter-role-option {
+  width: 100%;
+  display: block;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  padding: 10px 12px;
+  color: #0f172a;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.parameter-role-option:hover {
+  background: rgba(37,99,235,0.08);
+}
+
+.parameter-role-option.is-selected {
+  background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(6,182,212,0.10));
+  color: #1d4ed8;
+  font-weight: 800;
+}
+
+.parameter-role-option.is-placeholder {
+  color: #64748b;
+}
+
+.parameter-role-empty {
+  padding: 16px 14px;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+}
+
 .parameter-modal .modal-footer {
   padding: 18px 24px !important;
   background: rgba(255,255,255,0.96) !important;
   border-top: 1px solid rgba(148,163,184,0.18) !important;
   display: flex !important;
-  justify-content: space-between !important;
+  justify-content: flex-end !important;
   align-items: center !important;
+}
+
+.parameter-modal .footer-actions {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 10px !important;
+  margin-left: auto !important;
 }
 
 .parameter-modal .btn {
@@ -8345,21 +8508,55 @@ textarea {
 }
 
 .kpi-attributes-modal .field > label > span:first-child {
-  display: inline-flex;
+  color: #000 !important;
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.field label span,
+.field-title span,
+.form-label span {
+  background: transparent !important;
+  color: #000 !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+.kpi-attributes-modal .hierarchy-tree-field > label {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: fit-content;
-  max-width: 100%;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: rgba(37,99,235,0.08);
-  color: #1d4ed8;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.kpi-attributes-modal .hierarchy-tree-field > label > span:first-child {
+  display: inline;
+  padding: 0 !important;
+  margin: 0;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #0f172a !important;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
   line-height: 1.2;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+}
+
+.kpi-attributes-modal .hierarchy-tree-field > label > .hint {
+  font-size: 9px;
+  font-weight: 700;
+  color: #94a3b8 !important;
 }
 
 .kpi-main-row .field label {
@@ -8409,18 +8606,21 @@ textarea {
 
 .calc-logic-row .clr-label {
   align-self: flex-start;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(37,99,235,0.08);
-  color: #1d4ed8;
-  font-size: 8px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+  margin-bottom: 2px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.2;
+  box-shadow: none;
 }
 
 .calc-logic-row.is-split .clr-label {
@@ -8572,19 +8772,24 @@ textarea {
 .tol-type-label {
   min-width: 88px;
   display: inline-flex;
-  align-items: center;   /* vertical center */
+  align-items: center;
   justify-content: center;
   align-self: center;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(37,99,235,0.08);
+
+  padding: 0;
+  border-radius: 0;
+
+  background: transparent;
+
   height: auto;
   font-size: 10px;
   font-weight: 900;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #1d4ed8;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+
+  color: #000;
+
+  box-shadow: none;
 }
 
 .tolerance-options {
@@ -8855,11 +9060,11 @@ textarea {
           <div class="form-section">
             <div class="kpi-main-row">
               <div class="field f-name">
-                <label><span>KPI Name</span><span class="hint">Required</span></label>
+                <label><span>KPI Name</span></label>
                 <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
               </div>
               <div class="field f-unit">
-                <label><span>Unit</span><span class="hint">Measure</span></label>
+                <label><span>Unit</span></label>
                 <select id="unit" required>
                   <option value="Currency">Currency</option>
                   <option value="%">%</option>
@@ -8869,7 +9074,7 @@ textarea {
                 </select>
               </div>
               <div class="field f-freq">
-                <label><span>Frequency</span><span class="hint">Rhythm</span></label>
+                <label><span>Frequency</span></label>
                 <select id="frequency" required>
                   <option value="Daily">Daily</option>
                   <option value="Weekly">Weekly</option>
@@ -8881,14 +9086,14 @@ textarea {
                 </select>
               </div>
               <div class="field f-dir">
-                <label><span>Direction</span><span class="hint">Trend</span></label>
+                <label><span>Direction</span></label>
                 <select id="direction" required>
                   <option value="Up">Up</option>
                   <option value="Down">Down</option>
                 </select>
               </div>
               <div class="field f-min">
-                <label><span>Min</span><span class="hint">Required</span></label>
+                <label><span>Min</span></label>
                 <select id="min_type" onchange="handleMinTypeChange()" required>
                   <option value="Null">Null</option>
                   <option value="0">0</option>
@@ -8900,7 +9105,7 @@ textarea {
                 <input id="min" placeholder="Min value" />
               </div>
               <div class="field f-max">
-                <label><span>Max</span><span class="hint">Required</span></label>
+                <label><span>Max</span></label>
                 <select id="max_type" onchange="handleMaxTypeChange()" required>
                   <option value="Null">Null</option>
                   <option value="0">0</option>
@@ -9018,7 +9223,6 @@ textarea {
           <div class="field" id="wrap_high_limit" style="display:none;">
             <label>
               <span>High Limit</span>
-              <span class="hint">Absolute upper bound</span>
             </label>
             <input id="high_limit"
                    type="number"
@@ -9029,7 +9233,6 @@ textarea {
           <div class="field" id="wrap_low_limit" style="display:none;">
             <label>
               <span>Low Limit</span>
-              <span class="hint">Absolute lower bound</span>
             </label>
             <input id="low_limit"
                    type="number"
@@ -9056,7 +9259,6 @@ textarea {
           <div class="field" id="wrap_up_tolerance" style="display:none;">
             <label>
               <span>Up Tolerance</span>
-              <span class="hint">Upper tolerance</span>
             </label>
             <input id="up_tolerance"
                    placeholder="+10%"
@@ -9066,7 +9268,6 @@ textarea {
           <div class="field" id="wrap_low_tolerance" style="display:none;">
             <label>
               <span>Low Tolerance</span>
-              <span class="hint">Lower tolerance</span>
             </label>
             <input id="low_tolerance"
                    placeholder="-10%"
@@ -9122,11 +9323,11 @@ textarea {
           <div class="form-section">
             <div class="form-grid">
               <div class="field col-6">
-                <label><span>KPI Name</span><span class="hint">Last subject above each KPI name</span></label>
+                <label><span>KPI Name</span></label>
                 <select id="parameter_kpi_id"></select>
               </div>
               <div class="field col-2">
-                <label><span>KPI Type</span><span class="hint">Allocation classification</span></label>
+                <label><span>KPI Type</span></label>
                 <select id="parameter_kpi_type">
                   <option value="">Select KPI Type</option>
                   <option value="Multisite">Multisite</option>
@@ -9135,12 +9336,35 @@ textarea {
                 </select>
               </div>
               <div class="field col-2" id="parameter_unit_type_field">
-                <label><span>Unit Type</span><span class="hint">Loaded from unit type</span></label>
+                <label><span>Unit Type</span></label>
                 <select id="parameter_unit_type_id"></select>
               </div>
               <div class="field col-2" id="parameter_role_field">
-                <label><span id="parameter_role_label">Role</span><span class="hint" id="parameter_role_hint">Loaded from role table</span></label>
-                <select id="parameter_role_id"></select>
+                <label><span id="parameter_role_label">Role</span></label>
+                <div class="parameter-role-select" id="parameterRoleSelectShell">
+                  <button
+                    type="button"
+                    class="parameter-role-trigger is-placeholder"
+                    id="parameterRoleTrigger"
+                    aria-haspopup="listbox"
+                    aria-expanded="false"
+                  >
+                    <span class="parameter-role-trigger-label" id="parameterRoleTriggerLabel">Select role</span>
+                    <span class="parameter-role-trigger-chevron">▾</span>
+                  </button>
+                  <div class="parameter-role-menu" id="parameterRoleMenu" hidden>
+                    <div class="parameter-role-search">
+                      <input
+                        id="parameterRoleSearch"
+                        type="text"
+                        placeholder="Type to filter roles..."
+                        autocomplete="off"
+                      />
+                    </div>
+                    <div class="parameter-role-options" id="parameterRoleOptions" role="listbox" aria-label="Role options"></div>
+                  </div>
+                  <select id="parameter_role_id" class="parameter-role-native" tabindex="-1" aria-hidden="true"></select>
+                </div>
               </div>
 
               <div class="field col-3 is-hidden" id="parameter_zone_unit_field">
@@ -9168,7 +9392,7 @@ textarea {
                 <select id="parameter_plant_id"></select>
               </div>
               <div class="field col-12 multisite-matrix-field" id="parameter_multisite_matrix_field">
-                <label><span id="parameter_scope_table_label">Unit Target Table</span><span class="hint" id="parameter_scope_table_hint">Enter a target for each unit inside the selected unit type</span></label>
+                
                 <div class="multisite-matrix-shell">
                   <div class="multisite-matrix-intro">
                     <div class="multisite-matrix-badge" id="parameter_scope_table_badge">Unit Type View</div>
@@ -9251,7 +9475,6 @@ textarea {
         <div class="modal-footer">
       
           <div class="footer-actions">
-            <button id="parameterCancelBtn" class="btn btn-soft" type="button" onclick="closeParameterModal()">Cancel</button>
             <button
               id="parameterSaveBtn"
               class="btn btn-primary"
@@ -9262,6 +9485,7 @@ textarea {
               <span class="parameter-save-spinner" aria-hidden="true"></span>
               <span class="parameter-save-label">Save Target Allocation</span>
             </button>
+            <button id="parameterCancelBtn" class="btn btn-soft" type="button" onclick="closeParameterModal()">Cancel</button>
           </div>
         </div>
       </div>
@@ -9826,6 +10050,170 @@ function setLookupSelectOptions(selectId, options, placeholder, selectedValue = 
 
   selectEl.value = selectedText;
   selectEl.disabled = normalizedOptions.length === 0;
+
+  if (selectId === "parameter_role_id") {
+    syncParameterRoleDropdown();
+  }
+}
+
+function getParameterRoleDropdownElements() {
+  return {
+    shell: document.getElementById("parameterRoleSelectShell"),
+    trigger: document.getElementById("parameterRoleTrigger"),
+    triggerLabel: document.getElementById("parameterRoleTriggerLabel"),
+    menu: document.getElementById("parameterRoleMenu"),
+    search: document.getElementById("parameterRoleSearch"),
+    options: document.getElementById("parameterRoleOptions"),
+    select: document.getElementById("parameter_role_id")
+  };
+}
+
+function closeParameterRoleDropdown({ restoreFocus = false } = {}) {
+  const { shell, trigger, menu, search } = getParameterRoleDropdownElements();
+  if (!shell || !trigger || !menu) return;
+
+  shell.classList.remove("is-open");
+  menu.hidden = true;
+  trigger.setAttribute("aria-expanded", "false");
+  if (search) {
+    search.value = "";
+  }
+
+  if (restoreFocus) {
+    trigger.focus();
+  }
+}
+
+function renderParameterRoleDropdownOptions(filterText = "") {
+  const { options, select } = getParameterRoleDropdownElements();
+  if (!options || !select) return;
+
+  const nativeOptions = Array.from(select.options || []);
+  const selectedValue = String(select.value || "");
+  const normalizedFilter = String(filterText || "").trim().toLowerCase();
+  const visibleOptions = nativeOptions.filter((option, index) => {
+    const value = String(option.value || "");
+    const label = String(option.text || option.label || value || "Select role");
+
+    if (!normalizedFilter) return true;
+    if (index === 0 && value === "") return false;
+
+    return label.toLowerCase().includes(normalizedFilter);
+  });
+
+  if (!visibleOptions.length) {
+    options.innerHTML = '<div class="parameter-role-empty">No roles match your search</div>';
+    return;
+  }
+
+  options.innerHTML = visibleOptions.map((option) => {
+    const value = String(option.value || "");
+    const label = String(option.text || option.label || value || "Select role");
+    const isSelected = value === selectedValue;
+    const isPlaceholder = value === "";
+
+    return '<button type="button" class="parameter-role-option' +
+      (isSelected ? ' is-selected' : '') +
+      (isPlaceholder ? ' is-placeholder' : '') +
+      '" role="option" aria-selected="' + (isSelected ? "true" : "false") +
+      '" data-value="' + escapeHtml(value) + '">' +
+      escapeHtml(label) +
+      '</button>';
+  }).join("");
+}
+
+function syncParameterRoleDropdown() {
+  const {
+    trigger,
+    triggerLabel,
+    search,
+    options,
+    select
+  } = getParameterRoleDropdownElements();
+
+  if (!trigger || !triggerLabel || !options || !select) return;
+
+  const nativeOptions = Array.from(select.options || []);
+  const selectedValue = String(select.value || "");
+  const selectedOption = nativeOptions.find(
+    (option) => String(option.value || "") === selectedValue
+  );
+  const placeholderText = nativeOptions[0]?.text || "Select role";
+
+  triggerLabel.textContent = selectedOption?.text || placeholderText;
+  trigger.disabled = Boolean(select.disabled);
+  trigger.classList.toggle("is-placeholder", !selectedValue);
+  if (search) {
+    search.disabled = Boolean(select.disabled);
+  }
+
+  if (!nativeOptions.length || (nativeOptions.length === 1 && String(nativeOptions[0].value || "") === "")) {
+    options.innerHTML = '<div class="parameter-role-empty">No roles available</div>';
+    closeParameterRoleDropdown();
+    return;
+  }
+
+  renderParameterRoleDropdownOptions("");
+  closeParameterRoleDropdown();
+}
+
+function ensureParameterRoleDropdownSpace() {
+  const { shell, menu, options } = getParameterRoleDropdownElements();
+  const modalBody = shell?.closest(".modal-body");
+  if (!shell || !menu || !options || !modalBody) return;
+
+  const shellRect = shell.getBoundingClientRect();
+  const bodyRect = modalBody.getBoundingClientRect();
+  const desiredHeight = Math.min((menu.scrollHeight || options.scrollHeight || 320), 420);
+  const overflow = shellRect.bottom + desiredHeight + 16 - bodyRect.bottom;
+
+  if (overflow > 0) {
+    modalBody.scrollTop += overflow;
+  }
+}
+
+function toggleParameterRoleDropdown(forceOpen) {
+  const { shell, trigger, menu, search, select } = getParameterRoleDropdownElements();
+  if (!shell || !trigger || !menu || !select || trigger.disabled || select.disabled) return;
+
+  const shouldOpen = typeof forceOpen === "boolean"
+    ? forceOpen
+    : menu.hidden;
+
+  if (!shouldOpen) {
+    closeParameterRoleDropdown();
+    return;
+  }
+
+  shell.classList.add("is-open");
+  menu.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  renderParameterRoleDropdownOptions("");
+  ensureParameterRoleDropdownSpace();
+
+  if (search) {
+    search.value = "";
+    setTimeout(() => {
+      search.focus();
+      search.select();
+    }, 0);
+  }
+}
+
+function applyParameterRoleDropdownValue(nextValue = "") {
+  const { select } = getParameterRoleDropdownElements();
+  if (!select) return;
+
+  const normalizedValue = String(nextValue || "");
+  if (String(select.value || "") === normalizedValue) {
+    closeParameterRoleDropdown({ restoreFocus: true });
+    return;
+  }
+
+  select.value = normalizedValue;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  syncParameterRoleDropdown();
+  closeParameterRoleDropdown({ restoreFocus: true });
 }
 
 function populateRoleOptions(selectedValue = "") {
@@ -9838,12 +10226,18 @@ function toggleScopedParameterField(fieldId, shouldShow, { clearOnHide = true } 
 
   field.classList.toggle("is-hidden", !shouldShow);
 
-  const input = field.querySelector("input, select, textarea");
+  const input = fieldId === "parameter_role_field"
+    ? document.getElementById("parameter_role_id")
+    : field.querySelector("input, select, textarea");
   if (!input) return;
 
   input.disabled = !shouldShow;
   if (!shouldShow && clearOnHide) {
     input.value = "";
+  }
+
+  if (fieldId === "parameter_role_field") {
+    syncParameterRoleDropdown();
   }
 }
 
@@ -12679,11 +13073,13 @@ function renderKpis(rows) {
 
       function openParameterModal() {
         setParameterSaveLoading(parameterSavePending);
+        syncParameterRoleDropdown();
         document.getElementById("parameterModalBackdrop").classList.add("open");
       }
 
       function closeParameterModal(force = false) {
         if (parameterSavePending && !force) return;
+        closeParameterRoleDropdown();
         document.getElementById("parameterModalBackdrop").classList.remove("open");
       }
 
@@ -14039,7 +14435,14 @@ if (missingRow) {
 
     closeParameterModal(true);
     await loadParameterKpis();
-    showToast(parameterObjectId ? "KPI target allocation updated" : "KPI target allocation created");
+
+    if (parameterObjectId) {
+      showToast("KPI target allocation updated");
+      return;
+    }
+
+    await showConsultTargetAllocations();
+    showToast("KPI target allocation created");
   } catch (error) {
     console.error("SAVE KPI OBJECT ERROR:", error);
     showToast("Failed to save: " + error.message);
@@ -14165,6 +14568,7 @@ if (missingRow) {
    const parameterRoleSelect = document.getElementById("parameter_role_id");
 if (parameterRoleSelect) {
   parameterRoleSelect.addEventListener("change", () => {
+    syncParameterRoleDropdown();
     if (isIndividualParameterScope()) {
       syncIndividualParameterFields();
       return;
@@ -14176,7 +14580,61 @@ if (parameterRoleSelect) {
     }
     renderMultisiteUnitMatrix();
   });
+
+  syncParameterRoleDropdown();
 }
+
+const parameterRoleTrigger = document.getElementById("parameterRoleTrigger");
+if (parameterRoleTrigger) {
+  parameterRoleTrigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleParameterRoleDropdown();
+  });
+}
+
+const parameterRoleOptionsHost = document.getElementById("parameterRoleOptions");
+if (parameterRoleOptionsHost) {
+  parameterRoleOptionsHost.addEventListener("click", (event) => {
+    const optionButton = event.target.closest(".parameter-role-option");
+    if (!optionButton) return;
+    applyParameterRoleDropdownValue(optionButton.getAttribute("data-value") || "");
+  });
+}
+
+const parameterRoleSearch = document.getElementById("parameterRoleSearch");
+if (parameterRoleSearch) {
+  parameterRoleSearch.addEventListener("input", (event) => {
+    renderParameterRoleDropdownOptions(event.target.value || "");
+  });
+
+  parameterRoleSearch.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const firstVisibleOption = document.querySelector("#parameterRoleOptions .parameter-role-option:not(.is-placeholder)");
+      if (firstVisibleOption) {
+        applyParameterRoleDropdownValue(firstVisibleOption.getAttribute("data-value") || "");
+      }
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeParameterRoleDropdown({ restoreFocus: true });
+    }
+  });
+}
+
+document.addEventListener("click", (event) => {
+  const { shell } = getParameterRoleDropdownElements();
+  if (!shell || shell.contains(event.target)) return;
+  closeParameterRoleDropdown();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeParameterRoleDropdown();
+  }
+});
 
     const parameterPlantSelect = document.getElementById("parameter_plant_id");
      if (parameterPlantSelect) {
