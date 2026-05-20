@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const { Pool } = require("pg");
-const bodyParser = require("body-parser");  
+const bodyParser = require("body-parser");
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
@@ -7304,21 +7304,23 @@ textarea {
 }
 
 .kpi-attributes-modal .modal-header {
-  padding: 24px 30px 18px !important;
+  padding: 16px 22px 12px !important;
   background: rgba(255,255,255,0.96) !important;
   border-bottom: 1px solid rgba(148,163,184,0.18) !important;
 }
 
 .kpi-attributes-modal .modal-header h2 {
-  font-size: 32px !important;
+  font-size: 24px !important;
   font-weight: 950 !important;
   letter-spacing: -0.05em !important;
   color: #0f172a !important;
 }
 
 .kpi-attributes-modal .modal-subtitle {
+  margin-top: 4px !important;
   color: #64748b !important;
-  font-size: 14px !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
 }
 
 .kpi-attributes-modal .modal-body {
@@ -7508,7 +7510,7 @@ textarea {
 .kpi-attributes-modal {
   width: min(1860px, calc(100vw - 32px)) !important;
   height: auto !important;
-  max-height: calc(100vh - 18px) !important;
+  max-height: calc(100vh - 2px) !important;
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
@@ -7518,13 +7520,13 @@ textarea {
   flex: 0 1 auto !important;
   display: grid !important;
   align-content: start !important;
-  gap: 10px !important;
-  max-height: calc(100vh - 172px) !important;
+  gap: 6px !important;
+  max-height: calc(100vh - 108px) !important;
   height: auto !important;
   min-height: 0 !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
-  padding: 12px 16px 8px !important;
+  padding: 6px 10px 4px !important;
 }
 
 /* Keep the subject dropdown usable without taking over the whole modal */
@@ -7557,8 +7559,8 @@ textarea {
 /* Make sections compact so everything fits */
 .kpi-attributes-modal .form-section {
   margin: 0 !important;
-  padding: 12px 14px !important;
-  border-radius: 24px !important;
+  padding: 7px 10px !important;
+  border-radius: 18px !important;
   box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05) !important;
 }
 
@@ -7568,11 +7570,17 @@ textarea {
 }
 
 .kpi-attributes-modal .form-grid {
-  gap: 10px !important;
+  gap: 6px !important;
 }
 
 .kpi-attributes-modal .form-grid + .form-grid {
-  margin-top: 14px !important;
+  margin-top: 8px !important;
+}
+
+.kpi-attributes-modal .hierarchy-tree-field .tree-select-trigger {
+  min-height: 44px !important;
+  padding: 8px 10px !important;
+  border-radius: 14px !important;
 }
 
 .kpi-attributes-modal .kpi-inline-row {
@@ -7628,7 +7636,7 @@ textarea {
 }
 
 .kpi-attributes-modal .kpi-details-row .field:last-child textarea {
-  min-height: 108px !important;
+  min-height: 84px !important;
   overflow-y: hidden !important;
 }
 
@@ -7639,18 +7647,18 @@ textarea {
 .kpi-attributes-modal .field input,
 .kpi-attributes-modal .field select,
 .kpi-attributes-modal .field textarea {
-  min-height: 42px !important;
-  padding: 9px 12px !important;
-  border-radius: 14px !important;
+  min-height: 34px !important;
+  padding: 6px 9px !important;
+  border-radius: 11px !important;
 }
 
 .kpi-attributes-modal .field textarea {
-  min-height: 58px !important;
+  min-height: 42px !important;
   line-height: 1.5 !important;
 }
 
 .kpi-attributes-modal .modal-footer {
-  padding: 10px 16px 14px !important;
+  padding: 6px 12px 8px !important;
   margin-top: 0 !important;
 }
 
@@ -8329,6 +8337,31 @@ textarea {
 .kpi-main-row .field.f-max  { flex: 0.85; min-width: 80px; }
 .kpi-main-row .field.f-maxv { flex: 0.85; min-width: 80px; }
 .kpi-main-row .field.f-def  { flex: 2.5; min-width: 180px; }
+.kpi-attributes-modal .field > label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kpi-attributes-modal .field > label > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(37,99,235,0.08);
+  color: #1d4ed8;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.2;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+}
+
 .kpi-main-row .field label {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; font-size: 10px; font-weight: 800; color: #334155;
@@ -8343,40 +8376,242 @@ textarea {
 }
 .kpi-main-row .field textarea { min-height: 56px; resize: none; line-height: 1.45; }
 
-.calc-section-rows { display: flex; flex-direction: column; gap: 10px; }
-.calc-logic-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.calc-section-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calc-logic-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-height: auto;
+  padding: 9px 11px;
+  border-radius: 16px;
+  border: 1px solid rgba(191,219,254,0.7);
+  background:
+    radial-gradient(circle at top right, rgba(37,99,235,0.10), transparent 42%),
+    linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,251,255,0.98) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.88),
+    0 16px 28px rgba(15,23,42,0.06);
+}
+
+.calc-logic-row.is-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto minmax(260px, 1fr);
+  gap: 6px 10px;
+  align-items: end;
+}
+
 .calc-logic-row .clr-label {
-  font-size: 11px; font-weight: 900; color: #64748b;
-  text-transform: uppercase; letter-spacing: 0.08em;
-  min-width: 155px; flex-shrink: 0;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(37,99,235,0.08);
+  color: #1d4ed8;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
 }
-.calc-logic-row .field { min-width: 140px; flex: 1; max-width: 240px; }
-.calc-logic-row .field.cond-field { min-width: 190px; flex: 1.5; max-width: 320px; }
+
+.calc-logic-row.is-split .clr-label {
+  grid-column: 1 / -1;
+}
+
+.calc-logic-row .field {
+  min-width: 0;
+  flex: none;
+  max-width: none;
+}
+
+.calc-logic-row.is-split > .field:not(.cond-field) {
+  grid-column: 1 / 2;
+}
+
+.calc-logic-row .field.cond-field {
+  min-width: 0;
+  flex: none;
+  max-width: none;
+}
+
+.calc-logic-row.is-split > .field.cond-field {
+  grid-column: 3 / 4;
+}
+
 .calc-logic-row .field label {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; font-size: 10px; font-weight: 800; color: #334155; margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+  font-size: 8px;
+  font-weight: 800;
+  color: #334155;
 }
-.calc-logic-row .field .hint { font-size: 9px; font-weight: 700; color: #94a3b8; }
+
+.calc-logic-row .field .hint {
+  font-size: 7px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+
 .calc-logic-row .field input,
 .calc-logic-row .field select {
-  width: 100%; border: 1px solid rgba(148,163,184,0.28);
-  background: #fff; color: #0f172a; border-radius: 10px;
-  padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; min-height: 38px;
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid rgba(148,163,184,0.28);
+  background: rgba(255,255,255,0.96);
+  color: #0f172a;
+  border-radius: 10px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
 }
-.calc-logic-arrow { font-size: 14px; color: #94a3b8; flex-shrink: 0; }
 
-.tolerance-wrap { display: flex; flex-direction: column; gap: 14px; }
-.tolerance-type-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.calc-logic-arrow {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(79,70,229,0.08);
+  color: #4f46e5;
+  font-size: 10px;
+  font-weight: 900;
+  flex-shrink: 0;
+}
+
+.calc-logic-row.is-split .calc-logic-arrow {
+  grid-column: 2 / 3;
+  align-self: end;
+  justify-self: center;
+}
+
+.calc-section-rows > .f-def {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(191,219,254,0.7);
+  background:
+    radial-gradient(circle at top right, rgba(6,182,212,0.08), transparent 38%),
+    linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(246,250,255,0.98) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    0 18px 32px rgba(15,23,42,0.06);
+}
+
+.calc-section-rows > .f-def label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+.calc-section-rows > .f-def .hint {
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.calc-section-rows > .f-def textarea {
+  min-height: 62px;
+  border: 1px solid rgba(148,163,184,0.24);
+  border-radius: 14px;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.96);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+}
+
+@media (max-width: 1180px) {
+  .calc-logic-row {
+    min-height: auto;
+  }
+
+  .calc-logic-row.is-split {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+}
+
+.tolerance-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+
+.tolerance-option-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.tolerance-type-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 .tol-type-label {
-  font-size: 11px; font-weight: 900; color: #64748b;
-  text-transform: uppercase; letter-spacing: 0.10em; min-width: 72px;
+  min-width: 88px;
+  display: inline-flex;
+  align-items: center;   /* vertical center */
+  justify-content: center;
+  align-self: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(37,99,235,0.08);
+  height: auto;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
 }
+
+.tolerance-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+
+
 .tol-radio-label {
-  display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
-  font-size: 13px; font-weight: 700; color: #334155; padding: 9px 18px;
-  border-radius: 14px; border: 1.5px solid rgba(148,163,184,0.28);
-  background: #fff; transition: all 0.18s ease; user-select: none;
+  width: 96px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(148,163,184,0.28);
+  background: #fff;
 }
+
+
 .tol-radio-label:has(input:checked) {
   background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(79,70,229,0.07));
   border-color: rgba(37,99,235,0.40); color: #1d4ed8;
@@ -8385,20 +8620,25 @@ textarea {
 .tol-radio-label input[type="radio"] {
   width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; margin: 0;
 }
-.tolerance-fields-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+
+.tolerance-fields-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
 .tolerance-fields-row .field {
-  flex: 1; min-width: 150px; max-width: 260px;
+  flex: 1; min-width: 120px; max-width: 200px;
   display: flex; flex-direction: column; gap: 4px;
 }
 .tolerance-fields-row .field label {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; font-size: 10px; font-weight: 800; color: #334155;
+  gap: 8px; font-size: 8px; font-weight: 800; color: #334155;
 }
-.tolerance-fields-row .field .hint { font-size: 9px; font-weight: 700; color: #94a3b8; }
+.tolerance-fields-row .field .hint { font-size: 7px; font-weight: 700; color: #94a3b8; }
 .tolerance-fields-row .field input {
   width: 100%; border: 1px solid rgba(148,163,184,0.28);
   background: #fff; color: #0f172a; border-radius: 10px;
-  padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; min-height: 38px;
+  padding: 5px 8px; font-size: 11px; font-family: inherit; outline: none; min-height: 32px;
 }
 
 
@@ -8682,6 +8922,7 @@ textarea {
                 <span class="clr-label">Calculation On</span>
                 <div class="field">
                   <select id="calculation_on" onchange="handleCalculationOnChange()" required>
+                   <option value="" selected>Select Calculation On</option>
                     <option value="Value">Value</option>
                     <option value="Average">Average</option>
                   </select>
@@ -8751,54 +8992,103 @@ textarea {
             </div>
           </div>
 
-          <!-- SECTION 4: Tolerance with radio buttons -->
-        <!-- SECTION 4: Tolerance with radio buttons -->
 <div class="form-section">
+
   <div class="tolerance-wrap">
-    <div class="tolerance-type-row">
-      <span class="tol-type-label">Tolerance</span>
 
-      <label class="tol-radio-label">
-        <input type="radio" name="tolerance_type_radio" value="Absolute"
-               onchange="setToleranceTypeFromRadio('Absolute')">
-        Absolute
-      </label>
+    <!-- LEFT TITLE -->
+    <span class="tol-type-label">Tolerance</span>
 
-      <label class="tol-radio-label">
-        <input type="radio" name="tolerance_type_radio" value="Relative"
-               onchange="setToleranceTypeFromRadio('Relative')">
-        Relative
-      </label>
+    <!-- RIGHT CONTENT -->
+    <div class="tolerance-options">
+
+      <!-- ABSOLUTE -->
+      <div class="tolerance-option-row">
+
+        <label class="tol-radio-label">
+          <input type="radio"
+                 name="tolerance_type_radio"
+                 value="Absolute"
+                 onchange="setToleranceTypeFromRadio('Absolute')">
+          Absolute
+        </label>
+
+        <div class="tolerance-fields-row">
+
+          <div class="field" id="wrap_high_limit" style="display:none;">
+            <label>
+              <span>High Limit</span>
+              <span class="hint">Absolute upper bound</span>
+            </label>
+            <input id="high_limit"
+                   type="number"
+                   step="any"
+                   placeholder="e.g. 544.5" />
+          </div>
+
+          <div class="field" id="wrap_low_limit" style="display:none;">
+            <label>
+              <span>Low Limit</span>
+              <span class="hint">Absolute lower bound</span>
+            </label>
+            <input id="low_limit"
+                   type="number"
+                   step="any"
+                   placeholder="e.g. 445.5" />
+          </div>
+
+        </div>
+      </div>
+
+      <!-- RELATIVE -->
+      <div class="tolerance-option-row">
+
+        <label class="tol-radio-label">
+          <input type="radio"
+                 name="tolerance_type_radio"
+                 value="Relative"
+                 onchange="setToleranceTypeFromRadio('Relative')">
+          Relative
+        </label>
+
+        <div class="tolerance-fields-row">
+
+          <div class="field" id="wrap_up_tolerance" style="display:none;">
+            <label>
+              <span>Up Tolerance</span>
+              <span class="hint">Upper tolerance</span>
+            </label>
+            <input id="up_tolerance"
+                   placeholder="+10%"
+                   oninput="recalculateLimits(this)" />
+          </div>
+
+          <div class="field" id="wrap_low_tolerance" style="display:none;">
+            <label>
+              <span>Low Tolerance</span>
+              <span class="hint">Lower tolerance</span>
+            </label>
+            <input id="low_tolerance"
+                   placeholder="-10%"
+                   oninput="recalculateLimits(this)" />
+          </div>
+
+        </div>
+      </div>
+
     </div>
 
-<select id="tolerance_type" style="display:none;" onchange="handleToleranceTypeChange(this)">
-  <option value="" selected></option>
-  <option value="Absolute">Absolute</option>
-  <option value="Relative">Relative</option>
-</select>
+    <!-- HIDDEN SELECT -->
+    <select id="tolerance_type"
+            style="display:none;"
+            onchange="handleToleranceTypeChange(this)">
+      <option value="" selected></option>
+      <option value="Absolute">Absolute</option>
+      <option value="Relative">Relative</option>
+    </select>
 
-    <div class="tolerance-fields-row">
-      <div class="field" id="wrap_high_limit" style="display:none;">
-        <label><span>High Limit</span><span class="hint">Absolute upper bound</span></label>
-        <input id="high_limit" type="number" step="any" placeholder="e.g. 544.5" />
-      </div>
-
-      <div class="field" id="wrap_low_limit" style="display:none;">
-        <label><span>Low Limit</span><span class="hint">Absolute lower bound</span></label>
-        <input id="low_limit" type="number" step="any" placeholder="e.g. 445.5" />
-      </div>
-
-      <div class="field" id="wrap_up_tolerance" style="display:none;">
-        <label><span>Up Tolerance</span><span class="hint">Upper tolerance</span></label>
-        <input id="up_tolerance" placeholder="+10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
-      </div>
-
-      <div class="field" id="wrap_low_tolerance" style="display:none;">
-        <label><span>Low Tolerance</span><span class="hint">Lower tolerance</span></label>
-        <input id="low_tolerance" placeholder="-10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
-      </div>
-    </div>
   </div>
+
 </div>
 
        <div class="modal-footer">
@@ -11047,7 +11337,7 @@ function syncDefinitionTextareaHeight() {
 
   definitionEl.style.height = "auto";
   definitionEl.style.overflowY = "hidden";
-  definitionEl.style.height = Math.max(definitionEl.scrollHeight, 108) + "px";
+  definitionEl.style.height = Math.max(definitionEl.scrollHeight, 62) + "px";
 }
 
 function findSubjectNodeForValues(values = {}) {
@@ -11258,10 +11548,12 @@ function handleCalculationModeChange() {
   const referenceWrap = document.getElementById("wrap_reference_kpi_id");
   const displayedWrap = document.getElementById("wrap_displayed_kpi_preview");
   const helpWrap = document.getElementById("wrap_ratio_mode_help");
+  const modeRow = referenceWrap ? referenceWrap.closest(".calc-logic-row") : null;
 
   if (referenceWrap) referenceWrap.style.display = isRatio ? "" : "none";
   const arrowMode = document.getElementById("calc_mode_arrow");
   if (arrowMode) arrowMode.style.display = isRatio ? "" : "none";
+  if (modeRow) modeRow.classList.toggle("is-split", isRatio);
   if (displayedWrap) displayedWrap.style.display = isRatio ? "" : "none";
   if (helpWrap) helpWrap.style.display = isRatio ? "" : "none";
 
@@ -12721,12 +13013,12 @@ function handleCalculationOnChange() {
   const wrap = document.getElementById("wrap_nombre_periode");
   const select = getKpiFieldElement("nombre_periode");
   const shouldShowNombrePeriode = value === "Average";
+  const calcOnRow = wrap ? wrap.closest(".calc-logic-row") : null;
 
   if (wrap) wrap.style.display = shouldShowNombrePeriode ? "" : "none";
-  const arrowTrend = document.getElementById("disp_trend_arrow");
- if (arrowTrend) arrowTrend.style.display = value === "Yes" ? "" : "none";
   const arrowOn = document.getElementById("calc_on_arrow");
   if (arrowOn) arrowOn.style.display = shouldShowNombrePeriode ? "" : "none";
+  if (calcOnRow) calcOnRow.classList.toggle("is-split", shouldShowNombrePeriode);
   if (select) {
     select.disabled = !shouldShowNombrePeriode;
     if (!select.value) select.value = "1 week";
@@ -12738,7 +13030,11 @@ function handleCalculationOnChange() {
 function handleDisplayTrendChange() {
   const value = getKpiFieldElement("display_trend")?.value;
   const wrap = document.getElementById("wrap_regression");
+  const arrowTrend = document.getElementById("disp_trend_arrow");
+  const trendRow = wrap ? wrap.closest(".calc-logic-row") : null;
   if (wrap) wrap.style.display = value === "Yes" ? "" : "none";
+  if (arrowTrend) arrowTrend.style.display = value === "Yes" ? "" : "none";
+  if (trendRow) trendRow.classList.toggle("is-split", value === "Yes");
   syncKpiRequiredState();
 }
 
@@ -13605,7 +13901,7 @@ updateParameterKpiSummary();
   const unitAllocations = getParameterUnitAllocationRows();
   const primaryAllocation = unitAllocations[0] || null;
 
-  const roleId =
+ const roleId =
     kpiType === "Individual"
       ? null
       : getNormalizedParameterRoleId();
@@ -13614,7 +13910,7 @@ updateParameterKpiSummary();
     kpi_id: getParameterFieldValue("parameter_kpi_id"),
     kpi_type: getParameterFieldValue("parameter_kpi_type"),
     unit_type_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_unit_type_id"),
-    role_id: getNormalizedParameterRoleId(),
+    role_id: roleId,
     target_status: getParameterFieldValue("parameter_target_status"),
     plant_id: primaryAllocation?.plant_id || getParameterFieldValue("parameter_plant_id"),
     zone_id: primaryAllocation?.zone_id || getParameterFieldValue("parameter_zone_id"),
