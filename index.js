@@ -10,6 +10,10 @@ const { generateKPIRecommendationsPDFBuffer, generatePlantKPIRecommendationsPDFB
 const {
   buildDelayKnowledgeBaseContext
 } = require("./delay-knowledge-base");
+const {
+  buildKpiAssistantKnowledgeContext,
+  formatKpiAssistantGuidedQuestion
+} = require("./kpi-assistant-guides");
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -114,6 +118,7 @@ const prepareKpiWritePayload = (payload = {}) => {
   const explanation = normalizeOptionalTextInput(payload.kpi_explanation ?? payload.definition);
   const status = normalizeOptionalTextInput(payload.status) || "Active";
   const normalizedCalculationMode = String(calculationMode || "").toLowerCase();
+  const normalizedCalculationOn = String(calculationOn || "").toLowerCase();
   const normalizedDisplayTrend = String(displayTrend || "").toLowerCase();
   const normalizedToleranceType = String(toleranceType || "").toLowerCase();
 
@@ -141,7 +146,7 @@ const prepareKpiWritePayload = (payload = {}) => {
     throw createHttpError(400, "Calculation On is required.");
   }
 
-  if (!nombrePeriode) {
+  if (normalizedCalculationOn === "average" && !nombrePeriode) {
     throw createHttpError(400, "Nombre periode is required.");
   }
 
@@ -195,10 +200,6 @@ const prepareKpiWritePayload = (payload = {}) => {
 
   if (!targetAutoAdjustment) {
     throw createHttpError(400, "Target auto adjust is required.");
-  }
-
-  if (ownerRoleId === null) {
-    throw createHttpError(400, "Owner role is required.");
   }
 
   if (rawSubjectNodeId !== null && (!Number.isInteger(subjectNodeId) || subjectNodeId <= 0)) {
@@ -388,6 +389,11 @@ const ensureKpiRatioSchema = async () => {
       `);
 
       await pool.query(`
+        ALTER TABLE public.kpi_target_allocation
+        ADD COLUMN IF NOT EXISTS created_by_people_id INTEGER
+      `);
+
+      await pool.query(`
         DO $$
         BEGIN
           IF NOT EXISTS (
@@ -409,6 +415,25 @@ const ensureKpiRatioSchema = async () => {
       await pool.query(`
         CREATE INDEX IF NOT EXISTS idx_kpi_created_by_people
         ON public.kpi (created_by_people_id)
+      `);
+
+      await pool.query(`
+        WITH ownership AS (
+          SELECT DISTINCT ON (a.kpi_id)
+            a.kpi_id,
+            COALESCE(a.created_by_people_id, a.set_by_people_id) AS created_by_people_id
+          FROM public.kpi_target_allocation a
+          WHERE COALESCE(a.created_by_people_id, a.set_by_people_id) IS NOT NULL
+          ORDER BY
+            a.kpi_id,
+            COALESCE(a.created_at, a.updated_at, NOW()) ASC,
+            a.kpi_target_allocation_id ASC
+        )
+        UPDATE public.kpi k
+        SET created_by_people_id = ownership.created_by_people_id
+        FROM ownership
+        WHERE k.kpi_id = ownership.kpi_id
+          AND k.created_by_people_id IS NULL
       `);
     })().catch((error) => {
       kpiRatioSchemaPromise = null;
@@ -733,7 +758,7 @@ const prepareKpiObjectPayload = (payload = {}) => {
   }
 
   if (rawTargetValue === null || normalizedTargetValue === null) {
-    throw createHttpError(400, "Target  is required and must be numeric.");
+    throw createHttpError(400, "Target value is required and must be numeric.");
   }
 
   if (rawLastBestTarget !== null && normalizedLastBestTarget === null) {
@@ -741,7 +766,7 @@ const prepareKpiObjectPayload = (payload = {}) => {
   }
 
   if (rawPreviousTargetValue !== null && normalizedPreviousTargetValue === null) {
-    throw createHttpError(400, "Previous Target  must be numeric.");
+    throw createHttpError(400, "Previous target value must be numeric.");
   }
 
   if (rawTargetSetupDate !== null && normalizeOptionalDateInput(rawTargetSetupDate) === null) {
@@ -952,15 +977,13 @@ const loadKpiTargetAllocationLookups = async () => {
       ORDER BY unit_type_name, unit_type_id
     `),
     pool.query(`
-    SELECT 
-       zone_id AS value,
-       zone_id,
-       zone_name AS label,
-       zone_name,
-       responsable_zone,
-       role
-     FROM zone
-      ORDER BY zone_name
+      SELECT
+        zone_id,
+        zone_name,
+        responsable_zone,
+        role
+      FROM public.zone
+      ORDER BY zone_name, zone_id
     `),
     pool.query(`
       SELECT product_line_id, product_line_name
@@ -1081,12 +1104,23 @@ const loadKpiTargetAllocationLookups = async () => {
       label: normalizeOptionalTextInput(row.unit_type_name) || `Unit type ${row.unit_type_id}`
     })),
     multisiteAssignments: Array.from(multisiteAssignmentsMap.values()),
-    zones: zonesResult.rows.map((row) => ({
-      value: String(row.zone_id),
-      label: normalizeOptionalTextInput(row.zone_name) || `Zone ${row.zone_id}`,
-      responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || "",
-      role: normalizeOptionalTextInput(row.role) || ""
-    })),
+   zones: zonesResult.rows.map((row) => ({
+    value: String(row.zone_id),
+    zone_id: String(row.zone_id),
+
+    label:
+     normalizeOptionalTextInput(row.zone_name) ||
+    `Zone ${row.zone_id}`,
+
+    zone_name:
+    normalizeOptionalTextInput(row.zone_name) || "",
+
+    responsable_zone:
+    normalizeOptionalTextInput(row.responsable_zone) || "",
+
+    role:
+     normalizeOptionalTextInput(row.role) || ""
+   })),
     productLines: productLinesResult.rows.map((row) => ({
       value: String(row.product_line_id),
       label: normalizeOptionalTextInput(row.product_line_name) || `Product line ${row.product_line_id}`
@@ -1114,6 +1148,16 @@ const getDashboardOwnerDisplayName = async (responsibleId) => {
   return (await loadFormResponsibleContext(responsibleId))?.name || "KPI Workspace";
 };
 
+const resolveResponsiblePeopleId = async (responsibleId) => {
+  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
+  if (!normalizedResponsibleId) return null;
+
+  const responsibleContext = await loadFormResponsibleContext(normalizedResponsibleId);
+  return normalizeOptionalIntegerInput(
+    responsibleContext?.people_id ?? normalizedResponsibleId
+  );
+};
+
 const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
   const subjectId = row.subject_id === null || row.subject_id === undefined
     ? null
@@ -1126,7 +1170,6 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
 
   return {
     kpi_id: row.kpi_id,
-    created_by_people_id: row.created_by_people_id ?? null,
     indicator_title: row.kpi_sub_title || "",
     indicator_sub_title: row.kpi_name || "",
     kpi_code: row.kpi_code || "",
@@ -1159,6 +1202,7 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     comments: row.comments || "",
     created_at: row.created_at,
     updated_at: row.updated_at,
+    created_by_people_id: row.created_by_people_id ?? null,
     full_subject_path: subjectPath,
     kpi_target_allocation_id: row.kpi_target_allocation_id ?? null,
     allocation_target_value: row.allocation_target_value ?? null,
@@ -1210,9 +1254,9 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       k.owner_role_id,
       k.status,
       k.comments,
-      k.created_by_people_id,
       k.created_at,
       k.updated_at,
+      k.created_by_people_id,
       primary_subject.subject_id,
       assignment.kpi_target_allocation_id,
       assignment.target_value AS allocation_target_value,
@@ -1233,10 +1277,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
         a.set_by_people_id
       FROM public.kpi_target_allocation a
       WHERE a.kpi_id = k.kpi_id
-        AND (
-          a.set_by_people_id = $4
-          OR a.created_by_people_id = $4
-        )
+        AND a.set_by_people_id = $4
       ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.kpi_target_allocation_id DESC
       LIMIT 1
     ) assignment ON TRUE
@@ -1268,21 +1309,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
     WHERE
       ($3::integer IS NULL OR k.kpi_id = $3)
       ${normalizedResponsibleId === null ? "" : `
-      AND (
-        k.created_by_people_id = $4
-        OR (
-          k.created_by_people_id IS NULL
-          AND EXISTS (
-            SELECT 1
-            FROM public.kpi_target_allocation ownership_allocation
-            WHERE ownership_allocation.kpi_id = k.kpi_id
-              AND (
-                ownership_allocation.set_by_people_id = $4
-                OR ownership_allocation.created_by_people_id = $4
-              )
-          )
-        )
-      )
+      AND k.created_by_people_id = $4
       `}
       AND (
         $1 = ''
@@ -1613,18 +1640,6 @@ const getKpiTargetAllocationScopeKey = (row = {}) => {
   return "";
 };
 
-const getKpiTargetAllocationGroupSignature = (row = {}) => JSON.stringify({
-  kpi_id: normalizeOptionalIntegerInput(row.kpi_id) || null,
-  kpi_type: String(normalizeOptionalTextInput(row.kpi_type) || "").trim().toLowerCase(),
-  unit_type_id: normalizeOptionalIntegerInput(row.unit_type_id) || null,
-  role_id: normalizeOptionalIntegerInput(row.role_id) || null,
-  function: String(normalizeOptionalTextInput(row.function) || "").trim().toLowerCase(),
-  product_id: normalizeOptionalIntegerInput(row.product_id) || null,
-  product_line_id: normalizeOptionalIntegerInput(row.product_line_id) || null,
-  market_id: normalizeOptionalIntegerInput(row.market_id) || null,
-  customer_id: normalizeOptionalIntegerInput(row.customer_id) || null
-});
-
 const getKpiTargetAllocationGroupIds = async (allocationId) => {
   const normalizedAllocationId = normalizeOptionalIntegerInput(allocationId);
   if (!normalizedAllocationId) return [];
@@ -1823,6 +1838,7 @@ app.post("/api/kpis", async (req, res) => {
       high_limit,
       low_limit
     } = prepareKpiWritePayload(req.body);
+    const createdByPeopleId = normalizeOptionalIntegerInput(req.body.created_by_people_id);
     const resolvedSubjectId = await resolveSubjectIdForKpiPayload({
       subject_id,
       subject: req.body.subject
@@ -1865,10 +1881,11 @@ app.post("/api/kpis", async (req, res) => {
         status,
         comments,
         high_limit,
-        low_limit
+        low_limit,
+        created_by_people_id
       )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
       )
       RETURNING *;
       `,
@@ -1900,7 +1917,8 @@ app.post("/api/kpis", async (req, res) => {
         status,
         comments,
         high_limit,
-        low_limit
+        low_limit,
+        createdByPeopleId
       ]
     );
 
@@ -2819,10 +2837,7 @@ app.get("/kpi-admin", async (req, res) => {
             <label>Unit</label>
             <input id="unit" />
           </div>
-          <div class="field full">
-            <label>Definition</label>
-            <textarea id="definition"></textarea>
-          </div>
+
         </div>
 
         <div class="section-title">Performance Rules</div>
@@ -2845,7 +2860,7 @@ app.get("/kpi-admin", async (req, res) => {
           <div class="field">
             <label>Target Auto Adjustment</label>
             <select id="target_auto_adjustment">
-              <option value="Yes">Yes</option>
+              <option value="Yes" selected>Yes</option>
               <option value="No">No</option>
             </select>
           </div>
@@ -3441,10 +3456,12 @@ app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
-    const responsibleContext = await loadFormResponsibleContext(responsibleId);
-    const responsiblePeopleId = normalizeOptionalIntegerInput(
-      responsibleContext?.people_id ?? responsibleId
-    );
+    const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
+
+    if (!responsiblePeopleId) {
+      throw createHttpError(400, "Responsible owner is invalid.");
+    }
+
     const {
       subject_id,
       kpi_name,
@@ -3517,9 +3534,9 @@ app.post("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   owner_role_id,
   status,
   comments,
-  created_by_people_id,
   high_limit,
-  low_limit
+  low_limit,
+  created_by_people_id
 )
 VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
@@ -3554,9 +3571,9 @@ VALUES (
         owner_role_id,
         status,
         comments,
-        responsiblePeopleId,
         high_limit,
-        low_limit
+        low_limit,
+        responsiblePeopleId
       ]
     );
 
@@ -3587,13 +3604,9 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   const { responsibleId } = req.params;
   try {
     await ensureKpiRatioSchema();
-    const responsibleContext = await loadFormResponsibleContext(responsibleId);
-    const responsiblePeopleId = normalizeOptionalIntegerInput(
-      responsibleContext?.people_id ?? responsibleId
-    );
     const rows = await loadKpiRowsForUi({
       search: req.query.search || "",
-      responsibleId: responsiblePeopleId
+      responsibleId
     });
     res.json(rows);
   } catch (error) {
@@ -3607,13 +3620,9 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
-    const responsibleContext = await loadFormResponsibleContext(responsibleId);
-    const responsiblePeopleId = normalizeOptionalIntegerInput(
-      responsibleContext?.people_id ?? responsibleId
-    );
     const rows = await loadKpiRowsForUi({
       kpiId: Number(kpiId),
-      responsibleId: responsiblePeopleId
+      responsibleId
     });
 
     if (!rows.length) {
@@ -3633,10 +3642,12 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
-    const responsibleContext = await loadFormResponsibleContext(responsibleId);
-    const responsiblePeopleId = normalizeOptionalIntegerInput(
-      responsibleContext?.people_id ?? responsibleId
-    );
+    const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
+
+    if (!responsiblePeopleId) {
+      throw createHttpError(400, "Responsible owner is invalid.");
+    }
+
     const {
       subject_id,
       kpi_name,
@@ -3710,26 +3721,11 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
           owner_role_id = $24,
           status = $25,
           comments = $26,
-          created_by_people_id = COALESCE(created_by_people_id, $27),
-          high_limit = $28,
-          low_limit = $29,
+          high_limit = $27,
+          low_limit = $28,
           updated_at = NOW()
-      WHERE kpi_id = $30
-        AND (
-          created_by_people_id = $27
-          OR (
-            created_by_people_id IS NULL
-            AND EXISTS (
-              SELECT 1
-              FROM public.kpi_target_allocation ownership_allocation
-              WHERE ownership_allocation.kpi_id = public.kpi.kpi_id
-                AND (
-                  ownership_allocation.set_by_people_id = $27
-                  OR ownership_allocation.created_by_people_id = $27
-                )
-            )
-          )
-        )
+      WHERE kpi_id = $29
+        AND created_by_people_id = $30
       RETURNING *
       `,
       [
@@ -3759,10 +3755,10 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
         owner_role_id,
         status,
         comments,
-        responsiblePeopleId,
         high_limit,
         low_limit,
-        kpiId
+        kpiId,
+        responsiblePeopleId
       ]
     );
 
@@ -3798,68 +3794,29 @@ app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
-    const responsibleContext = await loadFormResponsibleContext(responsibleId);
-    const responsiblePeopleId = normalizeOptionalIntegerInput(
-      responsibleContext?.people_id ?? responsibleId
-    );
+    const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
+
+    if (!responsiblePeopleId) {
+      throw createHttpError(400, "Responsible owner is invalid.");
+    }
+
     client = await pool.connect();
     await client.query("BEGIN");
 
-    const ownershipResult = await client.query(
+    const ownedKpiResult = await client.query(
       `
       SELECT kpi_id
       FROM public.kpi
       WHERE kpi_id = $1
-        AND (
-          created_by_people_id = $2
-          OR (
-            created_by_people_id IS NULL
-            AND EXISTS (
-              SELECT 1
-              FROM public.kpi_target_allocation ownership_allocation
-              WHERE ownership_allocation.kpi_id = public.kpi.kpi_id
-                AND (
-                  ownership_allocation.set_by_people_id = $2
-                  OR ownership_allocation.created_by_people_id = $2
-                )
-            )
-          )
-        )
+        AND created_by_people_id = $2
       LIMIT 1
       `,
       [kpiId, responsiblePeopleId]
     );
 
-    if (!ownershipResult.rows.length) {
+    if (!ownedKpiResult.rows.length) {
       await client.query("ROLLBACK").catch(() => {});
       return res.status(404).json({ error: "KPI not found" });
-    }
-
-    const sharedLegacyOwnershipResult = await client.query(
-      `
-      SELECT 1
-      FROM public.kpi k
-      WHERE k.kpi_id = $1
-        AND k.created_by_people_id IS NULL
-        AND EXISTS (
-          SELECT 1
-          FROM public.kpi_target_allocation foreign_allocation
-          WHERE foreign_allocation.kpi_id = k.kpi_id
-            AND (
-              (foreign_allocation.created_by_people_id IS NOT NULL AND foreign_allocation.created_by_people_id <> $2)
-              OR (foreign_allocation.set_by_people_id IS NOT NULL AND foreign_allocation.set_by_people_id <> $2)
-            )
-        )
-      LIMIT 1
-      `,
-      [kpiId, responsiblePeopleId]
-    );
-
-    if (sharedLegacyOwnershipResult.rows.length) {
-      await client.query("ROLLBACK").catch(() => {});
-      return res.status(409).json({
-        error: "This KPI is still shared by another responsible. Recreate it under one owner before deleting it."
-      });
     }
 
     await client.query(
@@ -3876,9 +3833,10 @@ app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
       `
       DELETE FROM public.kpi
       WHERE kpi_id = $1
+        AND created_by_people_id = $2
       RETURNING *
       `,
-      [kpiId]
+      [kpiId, responsiblePeopleId]
     );
 
     if (!result.rows.length) {
@@ -3893,7 +3851,9 @@ app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
       await client.query("ROLLBACK").catch(() => {});
     }
     console.error(error);
-    res.status(500).json({ error: "Failed to delete KPI" });
+    res.status(error.statusCode || 500).json({
+      error: error.statusCode ? error.message : "Failed to delete KPI"
+    });
   } finally {
     if (client) {
       client.release();
@@ -4064,7 +4024,7 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
     }, normalizedResponsiblePeopleId, createdByPeopleId);
 
     if (!preparedRows.length) {
-      throw createHttpError(400, "Enter at least one unit Target .");
+      throw createHttpError(400, "Enter at least one unit target value.");
     }
 
     client = await pool.connect();
@@ -4114,6 +4074,14 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
     }
 
     await client.query("COMMIT");
+
+    // await sendKpiTargetAllocationAssignmentNotifications({
+    //   req,
+    //   actorResponsibleId: normalizedResponsiblePeopleId || responsibleId,
+    //   allocationIds: insertedIds
+    // }).catch((notificationError) => {
+    //   console.error("KPI target allocation notification error:", notificationError);
+    // });
 
     const rows = await Promise.all(
       insertedIds.map((allocationId) =>
@@ -4200,41 +4168,10 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
-    const explicitExistingAllocationIds = Array.isArray(req.body?.existing_allocation_ids)
-      ? req.body.existing_allocation_ids
-        .map((allocationId) => normalizeOptionalIntegerInput(allocationId))
-        .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
-      : [];
-    let existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
 
     if (!existingGroupRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
-    }
-
-    if (explicitExistingAllocationIds.length) {
-      const knownExistingIds = new Set(
-        existingGroupRows
-          .map((row) => normalizeOptionalIntegerInput(row?.kpi_target_allocation_id))
-          .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
-      );
-      const missingExistingIds = explicitExistingAllocationIds.filter(
-        (allocationId) => !knownExistingIds.has(allocationId)
-      );
-
-      if (missingExistingIds.length) {
-        const missingExistingRows = await Promise.all(
-          missingExistingIds.map((allocationId) =>
-            loadKpiTargetAllocationRowsForUi({
-              allocationId,
-              responsibleId: null
-            })
-          )
-        );
-
-        existingGroupRows = existingGroupRows
-          .concat(missingExistingRows.flat().filter(Boolean))
-          .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
-      }
     }
 
     const preservedCreatedByPeopleId =
@@ -4246,7 +4183,6 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedExistingGroupType = String(existingGroupRows[0]?.kpi_type || "")
       .trim()
       .toLowerCase();
-    const existingGroupSignature = getKpiTargetAllocationGroupSignature(existingGroupRows[0] || {});
     const shouldPreserveMissingRows =
       normalizedExistingGroupType === "multisite" ||
       normalizedExistingGroupType === "zone" ||
@@ -4256,103 +4192,9 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId,
       created_by_people_id: req.body.created_by_people_id || preservedCreatedByPeopleId
     }, normalizedResponsiblePeopleId, preservedCreatedByPeopleId);
-    const requestedGroupSignature = getKpiTargetAllocationGroupSignature(preparedRows[0] || {});
-    const shouldReplaceMissingRows = existingGroupSignature !== requestedGroupSignature;
-    const shouldKeepUnmatchedExistingRows = shouldPreserveMissingRows && !shouldReplaceMissingRows;
 
     client = await pool.connect();
     await client.query("BEGIN");
-
-    if (shouldReplaceMissingRows) {
-      const existingAllocationIdsToReplace = Array.from(
-        new Set(
-          explicitExistingAllocationIds.concat(
-            existingGroupRows
-              .map((row) => normalizeOptionalIntegerInput(row?.kpi_target_allocation_id))
-              .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0)
-          )
-        )
-      );
-
-      if (existingAllocationIdsToReplace.length) {
-        await client.query(
-          `
-          DELETE FROM public.kpi_target_allocation
-          WHERE kpi_target_allocation_id = ANY($1::int[])
-          `,
-          [existingAllocationIdsToReplace]
-        );
-      }
-
-      const replacementAllocationIds = [];
-
-      for (const preparedRow of preparedRows) {
-        const insertResult = await client.query(
-          `
-          INSERT INTO public.kpi_target_allocation (
-            kpi_id,
-            plant_id,
-            zone_id,
-            unit_id,
-            "function",
-            product_id,
-            product_line_id,
-            market_id,
-            customer_id,
-            target_value,
-            target_unit,
-            local_currency,
-            kpi_type,
-            unit_type_id,
-            role_id,
-            target_setup_date,
-            target_start_date,
-            target_end_date,
-            last_best_target,
-            previous_target_value,
-            target_status,
-            set_by_people_id,
-            created_by_people_id,
-            approved_by_people_id,
-            comments,
-            created_at
-          )
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-          RETURNING kpi_target_allocation_id
-          `,
-          [
-            ...getKpiObjectInsertValues(preparedRow),
-            preservedGroupCreatedAt
-          ]
-        );
-
-        if (insertResult.rows[0]?.kpi_target_allocation_id) {
-          replacementAllocationIds.push(insertResult.rows[0].kpi_target_allocation_id);
-        }
-      }
-
-      await client.query("COMMIT");
-      transactionCompleted = true;
-
-      const refreshedRows = await Promise.all(
-        replacementAllocationIds.map((allocationId) =>
-          loadKpiTargetAllocationRowsForUi({
-            allocationId: Number(allocationId),
-            responsibleId: null
-          })
-        )
-      );
-      const relatedAllocations = refreshedRows
-        .flat()
-        .filter(Boolean)
-        .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
-      const primaryRow = relatedAllocations[0] || null;
-
-      return res.json({
-        ...(primaryRow || {}),
-        related_allocations: relatedAllocations
-      });
-    }
 
     const existingRowsByScopeKey = new Map(
       existingGroupRows
@@ -4365,9 +4207,12 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
         .filter(([scopeKey]) => Boolean(scopeKey))
     );
     const resultingAllocationIds = [];
+    const notificationAllocationIds = [];
 
     for (const [scopeKey, preparedRow] of preparedRowsByScopeKey.entries()) {
       const existingRow = existingRowsByScopeKey.get(scopeKey);
+      const existingAssignedPeopleId = normalizeOptionalIntegerInput(existingRow?.set_by_people_id);
+      const preparedAssignedPeopleId = normalizeOptionalIntegerInput(preparedRow?.set_by_people_id);
 
       if (existingRow?.kpi_target_allocation_id) {
         const updateResult = await client.query(
@@ -4411,6 +4256,9 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
         if (updateResult.rows[0]?.kpi_target_allocation_id) {
           resultingAllocationIds.push(updateResult.rows[0].kpi_target_allocation_id);
+          if (existingAssignedPeopleId !== preparedAssignedPeopleId) {
+            notificationAllocationIds.push(updateResult.rows[0].kpi_target_allocation_id);
+          }
         }
         continue;
       }
@@ -4456,13 +4304,14 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
       if (insertResult.rows[0]?.kpi_target_allocation_id) {
         resultingAllocationIds.push(insertResult.rows[0].kpi_target_allocation_id);
+        notificationAllocationIds.push(insertResult.rows[0].kpi_target_allocation_id);
       }
     }
 
     for (const [scopeKey, existingRow] of existingRowsByScopeKey.entries()) {
       if (preparedRowsByScopeKey.has(scopeKey)) continue;
 
-      if (shouldKeepUnmatchedExistingRows) {
+      if (shouldPreserveMissingRows) {
         if (existingRow?.kpi_target_allocation_id) {
           resultingAllocationIds.push(existingRow.kpi_target_allocation_id);
         }
@@ -4480,6 +4329,14 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
     await client.query("COMMIT");
     transactionCompleted = true;
+
+    // await sendKpiTargetAllocationAssignmentNotifications({
+    //   req,
+    //   actorResponsibleId: normalizedResponsiblePeopleId || responsibleId,
+    //   allocationIds: notificationAllocationIds
+    // }).catch((notificationError) => {
+    //   console.error("KPI target allocation notification error:", notificationError);
+    // });
 
     const refreshedRowIds = Array.from(
       new Set(
@@ -6191,6 +6048,7 @@ textarea {
       .field.col-4 { grid-column: span 4; }
       .field.col-5 { grid-column: span 5; }
       .field.col-6 { grid-column: span 6; }
+      .field.col-7 { grid-column: span 7; }
       .field.col-8 { grid-column: span 8; }
       .field.col-12 { grid-column: 1 / -1; }
 
@@ -7039,10 +6897,12 @@ textarea {
           max-width: none;
         }
 
+        .field.col-2,
         .field.col-3,
         .field.col-4,
-        .field.col-2,
+        .field.col-5,
         .field.col-6,
+        .field.col-7,
         .field.col-8,
         .field.col-12 {
           grid-column: auto;
@@ -7392,13 +7252,13 @@ textarea {
 
 .kpi-attributes-modal .modal-footer {
   display: flex;
-  justify-content: flex-start;
+  justify-content: flex-end;
   align-items: center;
   gap: 10px;
   width: 100%;
   position: relative;
   bottom: auto;
-  padding: 14px 20px;
+  padding: 14px 60px 14px 20px;
   border-top: 1px solid rgba(15,23,42,0.06);
   background: rgba(255,255,255,0.97);
 }
@@ -7644,27 +7504,35 @@ textarea {
   }
 }
 
-/* Show full modal content without internal scrolling */
+/* Keep the KPI modal polished, compact, and content-driven */
 .kpi-attributes-modal {
   width: min(1860px, calc(100vw - 32px)) !important;
   height: auto !important;
-  max-height: none !important;
-  overflow: visible !important;
+  max-height: calc(100vh - 18px) !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
 
 .kpi-attributes-modal .modal-body {
-  max-height: none !important;
+  flex: 0 1 auto !important;
+  display: grid !important;
+  align-content: start !important;
+  gap: 10px !important;
+  max-height: calc(100vh - 172px) !important;
   height: auto !important;
-  overflow: visible !important;
-  padding: 10px 18px 12px !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 12px 16px 8px !important;
 }
 
-/* Remove tree scroll */
+/* Keep the subject dropdown usable without taking over the whole modal */
 .kpi-attributes-modal .tree-list {
   height: auto !important;
-  min-height: auto !important;
-  max-height: none !important;
-  overflow: visible !important;
+  min-height: 320px !important;
+  max-height: min(42vh, 420px) !important;
+  overflow: auto !important;
 }
 
 /* Show all tree columns/items clearly */
@@ -7688,23 +7556,134 @@ textarea {
 
 /* Make sections compact so everything fits */
 .kpi-attributes-modal .form-section {
-  margin-bottom: 8px !important;
-  padding: 10px 12px !important;
+  margin: 0 !important;
+  padding: 12px 14px !important;
+  border-radius: 24px !important;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05) !important;
 }
 
 .kpi-attributes-modal .tree-select-panel {
-  overflow: visible !important;
+  max-height: min(52vh, 520px) !important;
+  overflow: hidden !important;
+}
+
+.kpi-attributes-modal .form-grid {
+  gap: 10px !important;
+}
+
+.kpi-attributes-modal .form-grid + .form-grid {
+  margin-top: 14px !important;
+}
+
+.kpi-attributes-modal .kpi-inline-row {
+  display: grid !important;
+  grid-template-columns:
+    minmax(340px, 2.15fr)
+    minmax(120px, 0.85fr)
+    minmax(180px, 1.1fr)
+    minmax(150px, 0.95fr) !important;
+  gap: 10px !important;
+  align-items: end !important;
+}
+
+.kpi-attributes-modal .kpi-inline-row .field {
+  min-width: 0 !important;
+  grid-column: auto !important;
+}
+
+.kpi-attributes-modal .kpi-logic-row {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)) !important;
+  gap: 14px !important;
+  align-items: end !important;
+}
+
+.kpi-attributes-modal .kpi-logic-row .field {
+  min-width: 0 !important;
+  grid-column: auto !important;
+}
+
+.kpi-attributes-modal .kpi-logic-row #wrap_reference_kpi_id {
+  min-width: 280px !important;
+}
+
+.kpi-attributes-modal .kpi-details-row {
+  display: grid !important;
+  grid-template-columns:
+    minmax(128px, 0.7fr)
+    minmax(128px, 0.7fr)
+    minmax(220px, 1fr)
+    minmax(560px, 3fr) !important;
+  gap: 16px !important;
+  align-items: end !important;
+}
+
+.kpi-attributes-modal .kpi-details-row .field {
+  min-width: 0 !important;
+  grid-column: auto !important;
+}
+
+.kpi-attributes-modal .kpi-details-row .field:last-child {
+  grid-column: 4 / 5 !important;
+}
+
+.kpi-attributes-modal .kpi-details-row .field:last-child textarea {
+  min-height: 108px !important;
+  overflow-y: hidden !important;
+}
+
+.kpi-attributes-modal .kpi-tolerance-row {
+  gap: 14px !important;
 }
 
 .kpi-attributes-modal .field input,
 .kpi-attributes-modal .field select,
 .kpi-attributes-modal .field textarea {
-  min-height: 36px !important;
-  padding: 7px 10px !important;
+  min-height: 42px !important;
+  padding: 9px 12px !important;
+  border-radius: 14px !important;
+}
+
+.kpi-attributes-modal .field textarea {
+  min-height: 58px !important;
+  line-height: 1.5 !important;
 }
 
 .kpi-attributes-modal .modal-footer {
-  padding: 12px 20px !important;
+  padding: 10px 16px 14px !important;
+  margin-top: 0 !important;
+}
+
+@media (max-width: 1280px) {
+  .kpi-attributes-modal .kpi-inline-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .kpi-attributes-modal .kpi-logic-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .kpi-attributes-modal .kpi-details-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .kpi-attributes-modal .kpi-details-row .field:last-child {
+    grid-column: auto !important;
+  }
+}
+
+@media (max-width: 960px) {
+  .kpi-attributes-modal .kpi-inline-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .kpi-attributes-modal .kpi-logic-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .kpi-attributes-modal .kpi-details-row {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 
@@ -7770,7 +7749,12 @@ textarea {
 }
 
 .parameter-modal .form-grid {
-  gap: 14px !important;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 24px;
+  column-gap: 36px; /* more horizontal space */
+  row-gap: 20px;
+  align-items: end;
 }
 
 .parameter-modal #parameterAllocationFieldsSection.is-individual-layout .form-grid {
@@ -7832,6 +7816,42 @@ textarea {
 .parameter-modal .btn-primary {
   background: linear-gradient(135deg, #4f46e5, #2563eb, #06b6d4) !important;
   box-shadow: 0 16px 32px rgba(37,99,235,0.28) !important;
+}
+
+.parameter-modal #parameterCloseBtn:disabled,
+.parameter-modal #parameterCancelBtn:disabled,
+.parameter-modal #parameterSaveBtn:disabled {
+  opacity: 0.72 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.parameter-modal #parameterSaveBtn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  min-width: 220px;
+}
+
+.parameter-modal #parameterSaveBtn.is-loading {
+  cursor: wait !important;
+}
+
+.parameter-modal .parameter-save-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.38);
+  border-top-color: #ffffff;
+  display: none;
+  animation: parameterButtonSpin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+.parameter-modal #parameterSaveBtn.is-loading .parameter-save-spinner {
+  display: inline-block;
 }
 
 .parameter-modal .btn-danger {
@@ -8288,6 +8308,103 @@ textarea {
     transform: translateY(0) scale(1);
   }
 }
+
+@keyframes parameterButtonSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── New KPI modal layout ── */
+.kpi-main-row {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+}
+.kpi-main-row .field { display: flex; flex-direction: column; gap: 4px; }
+.kpi-main-row .field.f-name { flex: 2.5; min-width: 160px; }
+.kpi-main-row .field.f-unit { flex: 0.9; min-width: 80px; }
+.kpi-main-row .field.f-freq { flex: 1.2; min-width: 110px; }
+.kpi-main-row .field.f-dir  { flex: 0.9; min-width: 85px; }
+.kpi-main-row .field.f-min  { flex: 0.85; min-width: 80px; }
+.kpi-main-row .field.f-minv { flex: 0.85; min-width: 80px; }
+.kpi-main-row .field.f-max  { flex: 0.85; min-width: 80px; }
+.kpi-main-row .field.f-maxv { flex: 0.85; min-width: 80px; }
+.kpi-main-row .field.f-def  { flex: 2.5; min-width: 180px; }
+.kpi-main-row .field label {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 10px; font-weight: 800; color: #334155;
+}
+.kpi-main-row .field .hint { font-size: 9px; font-weight: 700; color: #94a3b8; }
+.kpi-main-row .field input,
+.kpi-main-row .field select,
+.kpi-main-row .field textarea {
+  width: 100%; border: 1px solid rgba(148,163,184,0.28);
+  background: #fff; color: #0f172a; border-radius: 10px;
+  padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none;
+}
+.kpi-main-row .field textarea { min-height: 56px; resize: none; line-height: 1.45; }
+
+.calc-section-rows { display: flex; flex-direction: column; gap: 10px; }
+.calc-logic-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.calc-logic-row .clr-label {
+  font-size: 11px; font-weight: 900; color: #64748b;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  min-width: 155px; flex-shrink: 0;
+}
+.calc-logic-row .field { min-width: 140px; flex: 1; max-width: 240px; }
+.calc-logic-row .field.cond-field { min-width: 190px; flex: 1.5; max-width: 320px; }
+.calc-logic-row .field label {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 10px; font-weight: 800; color: #334155; margin-bottom: 4px;
+}
+.calc-logic-row .field .hint { font-size: 9px; font-weight: 700; color: #94a3b8; }
+.calc-logic-row .field input,
+.calc-logic-row .field select {
+  width: 100%; border: 1px solid rgba(148,163,184,0.28);
+  background: #fff; color: #0f172a; border-radius: 10px;
+  padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; min-height: 38px;
+}
+.calc-logic-arrow { font-size: 14px; color: #94a3b8; flex-shrink: 0; }
+
+.tolerance-wrap { display: flex; flex-direction: column; gap: 14px; }
+.tolerance-type-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.tol-type-label {
+  font-size: 11px; font-weight: 900; color: #64748b;
+  text-transform: uppercase; letter-spacing: 0.10em; min-width: 72px;
+}
+.tol-radio-label {
+  display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+  font-size: 13px; font-weight: 700; color: #334155; padding: 9px 18px;
+  border-radius: 14px; border: 1.5px solid rgba(148,163,184,0.28);
+  background: #fff; transition: all 0.18s ease; user-select: none;
+}
+.tol-radio-label:has(input:checked) {
+  background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(79,70,229,0.07));
+  border-color: rgba(37,99,235,0.40); color: #1d4ed8;
+  box-shadow: 0 6px 18px rgba(37,99,235,0.12);
+}
+.tol-radio-label input[type="radio"] {
+  width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; margin: 0;
+}
+.tolerance-fields-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+.tolerance-fields-row .field {
+  flex: 1; min-width: 150px; max-width: 260px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.tolerance-fields-row .field label {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 10px; font-weight: 800; color: #334155;
+}
+.tolerance-fields-row .field .hint { font-size: 9px; font-weight: 700; color: #94a3b8; }
+.tolerance-fields-row .field input {
+  width: 100%; border: 1px solid rgba(148,163,184,0.28);
+  background: #fff; color: #0f172a; border-radius: 10px;
+  padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; min-height: 38px;
+}
+
+
+.parameter-modal .field {
+  min-width: 0 !important;
+}
  </style>
   </head>
 
@@ -8411,14 +8528,14 @@ textarea {
             <div class="parameter-matrix-hero">
               <div class="parameter-matrix-title">
                 <h2>KPI Matrix</h2>
-                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and Target .</p>
+                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and target value.</p>
               </div>
               <button class="btn btn-primary parameter-matrix-add-btn" type="button" onclick="openCreateParameterModal()">+ Add Target Allocation</button>
             </div>
 
             <div class="parameter-matrix-toolbar">
               <div class="search-wrap parameter-matrix-search">
-                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or Target ..." />
+                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or target value..." />
               </div>
               <div class="parameter-results-meta" id="parameterResultsMeta">0 allocations</div>
             </div>
@@ -8439,7 +8556,7 @@ textarea {
             </div>
           </div>
 
-          <button class="btn btn-soft" onclick="closeModal()">Close</button>
+        <button class="btn btn-soft" onclick="closeModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;">&times;</button>
         </div>
 
       <div class="modal-body">
@@ -8494,187 +8611,203 @@ textarea {
           </div>
           
 
-           <div class="form-section">     
-           <div class="form-grid kpi-inline-row">
-             <div class="field col-5">
-              <label><span>KPI Name</span><span class="hint">Required KPI label</span></label>
-              <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
+          <!-- SECTION 2: KPI identity + Min/Max + Definition in one row -->
+          <div class="form-section">
+            <div class="kpi-main-row">
+              <div class="field f-name">
+                <label><span>KPI Name</span><span class="hint">Required</span></label>
+                <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
               </div>
-
-              <div class="field col-2">
-              <label><span>Unit</span><span class="hint">Measure</span></label>
-               <select id="unit" required>
-               <option value="%">%</option>
-               <option value="Pieces">Pieces</option>
-               <option value="PPM">PPM</option>
-              <option value="Number">Number</option>
-              </select>
-             </div>
-
-           <div class="field col-2">
-            <label><span>Frequency</span><span class="hint">Rhythm</span></label>
-            <select id="frequency" required>
-            <option value="By Monthly">By Monthly</option>
-            <option value="Monthly">Monthly</option>
-            <option value="By Weekly">By Weekly</option>
-            <option value="Weekly">Weekly</option>
-            <option value="Yearly">Yearly</option>
-            <option value="By Yearly">By Yearly</option>
-            </select>
-           </div>
-
-           <div class="field col-2">
-            <label><span>Direction</span><span class="hint">Trend direction</span></label>
-           <select id="direction" required>
-           <option value="Up">Up</option>
-             <option value="Down">Down</option>
-             </select>
-            </div>
-           
-            </div>
-         </div>
-
-           <div class="form-section">
-            <div class="form-grid">
-       
-         <div class="field col-3">
-               <label><span>Calculation On</span><span class="hint">Basis</span></label>
-               <select id="calculation_on" onchange="handleCalculationOnChange()" required>
-               <option value="Value">Value</option>
-               <option value="Average">Average</option>
-               </select>
-              </div>
-              <div class="field col-2" id="wrap_nombre_periode">
-             <label><span>Nombre periode</span><span class="hint">Period</span></label>
-             <select id="nombre_periode" required>
-             <option value="1 week">1 week</option>
-             <option value="2 weeks">2 weeks</option>
-             <option value="3 weeks">3 weeks</option>
-             <option value="4 weeks">4 weeks</option>
-             </select>
-             </div>
-              <div class="field col-2">
-                <label><span>Calculation Mode</span><span class="hint">Mode</span></label>
-                  <select id="calculation_mode" onchange="handleCalculationModeChange()" required>
-                  <option value="Direct">Direct</option>
-                  <option value="Ratio">Ratio</option>
-                  </select>
-               </div>
-
-              <div class="field col-2" id="wrap_reference_kpi_id" style="display:none;">
-                <label><span>Reference KPI</span><span class="hint">Required for ratio</span></label>
-                <select id="reference_kpi_id" onchange="updateDisplayedKpiPreview()">
-                  <option value="">Select reference KPI</option>
+              <div class="field f-unit">
+                <label><span>Unit</span><span class="hint">Measure</span></label>
+                <select id="unit" required>
+                  <option value="Currency">Currency</option>
+                  <option value="%">%</option>
+                  <option value="Pieces">Pieces</option>
+                  <option value="PPM">PPM</option>
+                  <option value="Number">Number</option>
                 </select>
               </div>
-              <div class="field col-2">
-              <label><span>Display Trend</span><span class="hint">Yes / No</span></label>
-             <select id="display_trend" onchange="handleDisplayTrendChange()" required>
-             <option value="No">No</option>
-             <option value="Yes">Yes</option>
-            </select>
-             </div>
-
-          <div class="field col-2" id="wrap_regression" style="display:none;">
-           <label><span>Regression</span><span class="hint">Weeks</span></label>
-            <select id="regression">
-            <option value="1 week">1 week</option>
-           <option value="2 weeks">2 weeks</option>
-           <option value="3 weeks">3 weeks</option>
-           <option value="4 weeks">4 weeks</option>
-           </select>
-           </div>
-
-  
-          <div class="field col-2">
-          <label><span>Min</span><span class="hint">Required</span></label>
-          <select id="min_type" onchange="handleMinTypeChange()" required>
-           <option value="Null">Null</option>
-           <option value="0">0</option>
-           <option value="Valeur a entrer">Valeur a entrer</option>
-          </select>
-          </div>
-              <div class="field col-2" id="wrap_min_value" style="display:none;">
-                <label><span>Min Value</span><span class="hint">Enter value</span></label>
+              <div class="field f-freq">
+                <label><span>Frequency</span><span class="hint">Rhythm</span></label>
+                <select id="frequency" required>
+                  <option value="Daily">Daily</option>
+                  <option value="Weekly">Weekly</option>
+                  <option value="By Weekly">By Weekly</option>
+                  <option value="Monthly">Monthly</option>
+                  <option value="By Monthly">By Monthly</option>
+                  <option value="Yearly">Yearly</option>
+                  <option value="By Yearly">By Yearly</option>
+                </select>
+              </div>
+              <div class="field f-dir">
+                <label><span>Direction</span><span class="hint">Trend</span></label>
+                <select id="direction" required>
+                  <option value="Up">Up</option>
+                  <option value="Down">Down</option>
+                </select>
+              </div>
+              <div class="field f-min">
+                <label><span>Min</span><span class="hint">Required</span></label>
+                <select id="min_type" onchange="handleMinTypeChange()" required>
+                  <option value="Null">Null</option>
+                  <option value="0">0</option>
+                  <option value="Valeur a entrer">Value</option>
+                </select>
+              </div>
+              <div class="field f-minv" id="wrap_min_value" style="display:none;">
+                <label><span>Min Value</span><span class="hint">Enter</span></label>
                 <input id="min" placeholder="Min value" />
               </div>
-              <div class="field col-2">
+              <div class="field f-max">
                 <label><span>Max</span><span class="hint">Required</span></label>
                 <select id="max_type" onchange="handleMaxTypeChange()" required>
                   <option value="Null">Null</option>
                   <option value="0">0</option>
-                  <option value="Valeur a entrer">Valeur a entrer</option>
+                  <option value="Valeur a entrer">Value</option>
                 </select>
               </div>
-              <div class="field col-2" id="wrap_max_value" style="display:none;">
-                <label><span>Max Value</span><span class="hint">Enter value</span></label>
+              <div class="field f-maxv" id="wrap_max_value" style="display:none;">
+                <label><span>Max Value</span><span class="hint">Enter</span></label>
                 <input id="max" placeholder="Max value" />
               </div>
-
-              <div class="field col-3">
-                <label><span>Target Auto Adjust</span><span class="hint">Required</span></label>
-                <select id="target_auto_adjustment" required>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </div>
+          
             </div>
           </div>
 
+          <!-- SECTION 3: Calculation logic stacked rows -->
           <div class="form-section">
-           
-            <div class="form-grid">
-              <div class="field col-3">
-                <label><span>Tolerance Type</span><span class="hint">Relative / Absolute</span></label>
-                <select id="tolerance_type" onchange="handleToleranceTypeChange()" required>
-                  <option value="Relative">Relative</option>
-                  <option value="Absolute">Absolute</option>
-                </select>
+            <div class="calc-section-rows">
+              <div class="calc-logic-row">
+                <span class="clr-label">Calculation On</span>
+                <div class="field">
+                  <select id="calculation_on" onchange="handleCalculationOnChange()" required>
+                    <option value="Value">Value</option>
+                    <option value="Average">Average</option>
+                  </select>
+                </div>
+                <span class="calc-logic-arrow" id="calc_on_arrow" style="display:none;">→</span>
+                <div class="field cond-field" id="wrap_nombre_periode" style="display:none;">
+                  <label><span>Number of Periods</span><span class="hint">Period count</span></label>
+                  <select id="nombre_periode" required>
+                    <option value="1 week">1 week</option>
+                    <option value="2 weeks">2 weeks</option>
+                    <option value="3 weeks">3 weeks</option>
+                    <option value="4 weeks">4 weeks</option>
+                  </select>
+                </div>
+              </div>
+              <div class="calc-logic-row">
+                <span class="clr-label">Calculation Mode</span>
+                <div class="field">
+                  <select id="calculation_mode" onchange="handleCalculationModeChange()" required>
+                    <option value="" selected>Select calculation mode</option>
+                    <option value="Direct">Direct</option>
+                    <option value="Ratio">Ratio</option>
+                  </select>
+                </div>
+                <span class="calc-logic-arrow" id="calc_mode_arrow" style="display:none;">→</span>
+                <div class="field cond-field" id="wrap_reference_kpi_id" style="display:none;">
+                  <label><span>Reference KPI</span><span class="hint">Required for ratio</span></label>
+                  <select id="reference_kpi_id" onchange="updateDisplayedKpiPreview()">
+                    <option value="">Select reference KPI</option>
+                  </select>
+                </div>
+              </div>
+              <div class="calc-logic-row">
+                <span class="clr-label">Display Trend</span>
+                <div class="field">
+                  <select id="display_trend" onchange="handleDisplayTrendChange()" required>
+                    <option value="" selected>Select display trend</option>
+                    <option value="No">No</option>
+                    <option value="Yes">Yes</option>
+                  </select>
+                </div>
+                <span class="calc-logic-arrow" id="disp_trend_arrow" style="display:none;">→</span>
+                <div class="field cond-field" id="wrap_regression" style="display:none;">
+                  <label><span> Periods of Regression</span><span class="hint">Weeks</span></label>
+                  <select id="regression">
+                    <option value="1 week">1 week</option>
+                    <option value="2 weeks">2 weeks</option>
+                    <option value="3 weeks">3 weeks</option>
+                    <option value="4 weeks">4 weeks</option>
+                  </select>
+                </div>
+              </div>
+              <div class="calc-logic-row">
+                <span class="clr-label">Target Auto Adjust</span>
+                <div class="field">
+                  <select id="target_auto_adjustment" required>
+                    <option value="Yes">Yes</option>
+                    <option value="No">No</option>
+                  </select>
+                </div>
               </div>
 
-              <!-- Shown for Relative only -->
-              <div class="field col-3" id="wrap_up_tolerance">
-                <label><span>Up Tolerance</span><span class="hint">Upper variance</span></label>
-                <input id="up_tolerance" placeholder="10% or 10" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
-              </div>
-              <div class="field col-3" id="wrap_low_tolerance">
-                <label><span>Low Tolerance</span><span class="hint">Lower variance</span></label>
-                <input id="low_tolerance" placeholder="-10% or -10" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
-              </div>
-
-              <!-- Shown for Absolute only -->
-              <div class="field col-3" id="wrap_high_limit" style="display:none;">
-                <label><span>High Limit</span><span class="hint">Enter value</span></label>
-                <input id="high_limit" type="number" step="any" placeholder="e.g. 544.5" />
-              </div>
-              <div class="field col-3" id="wrap_low_limit" style="display:none;">
-                <label><span>Low Limit</span><span class="hint">Enter value</span></label>
-                <input id="low_limit" type="number" step="any" placeholder="e.g. 445.5" />
-              </div>
-
-              <div class="field col-3">
-                <label><span>Owner Role</span><span class="hint">Required accountability</span></label>
-                <select id="owner_role_id" required>
-                  <option value="">Select owner role</option>
-                </select>
-              </div>
-              
-               <div class="field col-5">
+               <div class="field f-def">
                 <label><span>Definition</span><span class="hint">Explain clearly</span></label>
                 <textarea id="definition" placeholder="Write a clear KPI definition..." required></textarea>
               </div>
-
-              </div>
             </div>
           </div>
+
+          <!-- SECTION 4: Tolerance with radio buttons -->
+        <!-- SECTION 4: Tolerance with radio buttons -->
+<div class="form-section">
+  <div class="tolerance-wrap">
+    <div class="tolerance-type-row">
+      <span class="tol-type-label">Tolerance</span>
+
+      <label class="tol-radio-label">
+        <input type="radio" name="tolerance_type_radio" value="Absolute"
+               onchange="setToleranceTypeFromRadio('Absolute')">
+        Absolute
+      </label>
+
+      <label class="tol-radio-label">
+        <input type="radio" name="tolerance_type_radio" value="Relative"
+               onchange="setToleranceTypeFromRadio('Relative')">
+        Relative
+      </label>
+    </div>
+
+<select id="tolerance_type" style="display:none;" onchange="handleToleranceTypeChange(this)">
+  <option value="" selected></option>
+  <option value="Absolute">Absolute</option>
+  <option value="Relative">Relative</option>
+</select>
+
+    <div class="tolerance-fields-row">
+      <div class="field" id="wrap_high_limit" style="display:none;">
+        <label><span>High Limit</span><span class="hint">Absolute upper bound</span></label>
+        <input id="high_limit" type="number" step="any" placeholder="e.g. 544.5" />
+      </div>
+
+      <div class="field" id="wrap_low_limit" style="display:none;">
+        <label><span>Low Limit</span><span class="hint">Absolute lower bound</span></label>
+        <input id="low_limit" type="number" step="any" placeholder="e.g. 445.5" />
+      </div>
+
+      <div class="field" id="wrap_up_tolerance" style="display:none;">
+        <label><span>Up Tolerance</span><span class="hint">Upper tolerance</span></label>
+        <input id="up_tolerance" placeholder="+10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
+      </div>
+
+      <div class="field" id="wrap_low_tolerance" style="display:none;">
+        <label><span>Low Tolerance</span><span class="hint">Lower tolerance</span></label>
+        <input id="low_tolerance" placeholder="-10%" oninput="recalculateLimits(this)" onkeyup="recalculateLimits(this)" />
+      </div>
+    </div>
+  </div>
+</div>
 
        <div class="modal-footer">
       <div class="footer-actions">
       <button id="deleteBtn" class="btn btn-danger" onclick="deleteCurrentKpi()">Delete KPI</button>
-      <button class="btn btn-soft" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
-  </div>
-</div>
+     <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
+     <button class="btn btn-soft" onclick="closeModal()">Cancel</button>
+      </div>
+      </div>
         </div>
 
     
@@ -8691,7 +8824,7 @@ textarea {
             </div>
           </div>
 
-          <button class="btn btn-soft" onclick="closeParameterModal()">Close</button>
+          <button id="parameterCloseBtn" class="btn btn-soft" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;" type="button" onclick="closeParameterModal()">&times;</button>
         </div>
 
         <div class="modal-body">
@@ -8711,23 +8844,12 @@ textarea {
                   <option value="Zone">Zone</option>
                 </select>
               </div>
-
-              <div class="field col-2 is-hidden" id="parameter_zone_role_field">
-              <label>
-              <span>Role</span>
-              <span class="hint">Loaded from zone table</span>
-              </label>
-
-             <select id="parameter_zone_role">
-              <option value="">All roles</option>
-             </select>
-              </div>
               <div class="field col-2" id="parameter_unit_type_field">
                 <label><span>Unit Type</span><span class="hint">Loaded from unit type</span></label>
                 <select id="parameter_unit_type_id"></select>
               </div>
-        <div class="field col-2" id="parameter_role_field">
-                <label><span>Role</span><span class="hint">Loaded from role table</span></label>
+              <div class="field col-2" id="parameter_role_field">
+                <label><span id="parameter_role_label">Role</span><span class="hint" id="parameter_role_hint">Loaded from role table</span></label>
                 <select id="parameter_role_id"></select>
               </div>
 
@@ -8759,7 +8881,6 @@ textarea {
                 <label><span id="parameter_scope_table_label">Unit Target Table</span><span class="hint" id="parameter_scope_table_hint">Enter a target for each unit inside the selected unit type</span></label>
                 <div class="multisite-matrix-shell">
                   <div class="multisite-matrix-intro">
-                  
                     <div class="multisite-matrix-badge" id="parameter_scope_table_badge">Unit Type View</div>
                   </div>
                   <div id="parameterMultisiteMatrix"></div>
@@ -8781,8 +8902,8 @@ textarea {
           <div class="form-section is-hidden" id="parameterAllocationFieldsSection">
             <div class="form-grid">
               <div class="field col-3">
-                <label><span>Target  <span style="color:#ef4444;">*</span></span><span class="hint">Required</span></label>
-                <input id="parameter_target_value" type="number" step="any" placeholder="Enter Target " required />
+                <label><span>Target Value <span style="color:#ef4444;">*</span></span><span class="hint">Required</span></label>
+                <input id="parameter_target_value" type="number" step="any" placeholder="Enter target value" required />
               </div>
               <div class="field col-3">
                 <label><span>Setup Date</span><span class="hint">Effective setup date</span></label>
@@ -8840,8 +8961,17 @@ textarea {
         <div class="modal-footer">
       
           <div class="footer-actions">
-            <button class="btn btn-soft" onclick="closeParameterModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveParameterKpi()">Save Target Allocation</button>
+            <button id="parameterCancelBtn" class="btn btn-soft" type="button" onclick="closeParameterModal()">Cancel</button>
+            <button
+              id="parameterSaveBtn"
+              class="btn btn-primary"
+              type="button"
+              data-default-label="Save Target Allocation"
+              onclick="saveParameterKpi()"
+            >
+              <span class="parameter-save-spinner" aria-hidden="true"></span>
+              <span class="parameter-save-label">Save Target Allocation</span>
+            </button>
           </div>
         </div>
       </div>
@@ -8861,15 +8991,16 @@ textarea {
       let parameterSourceRows = [];
       let parameterKpiCatalog = [];
       let parameterUnitTargetState = {};
-      let parameterEditingAllocationIds = [];
       let parameterLockedUnitId = "";
       let parameterLockedZoneId = "";
       let parameterLockedZoneIds = [];
       let parameterResolvedZoneId = "";
       let parameterZoneLookupPending = false;
+      let parameterSavePending = false;
       let parameterEditMode = false;
       let chartsLoaded = false;
       let chartInstances = [];
+      const PARAMETER_ZONE_ALL_ROLE_VALUE = "__zone_all_roles__";
 
       function showToast(message) {
         const toast = document.getElementById("toast");
@@ -8966,6 +9097,7 @@ textarea {
       function getParameterRoleLabel(roleId) {
         const normalizedRoleId = String(roleId || "").trim();
         if (!normalizedRoleId) return "";
+        if (normalizedRoleId === PARAMETER_ZONE_ALL_ROLE_VALUE) return "All roles";
 
         const matchedRole = (roleOptions || []).find(
           (option) => String(option.value || "") === normalizedRoleId
@@ -8973,6 +9105,64 @@ textarea {
 
         return String(matchedRole?.label || "").split(" · ")[0].trim();
       }
+
+     function getNormalizedParameterRoleId(roleId = getParameterFieldValue("parameter_role_id")) {
+      const normalizedRoleId = String(roleId || "").trim();
+
+      if (
+        normalizedRoleId === PARAMETER_ZONE_ALL_ROLE_VALUE ||
+        normalizedRoleId === "__all_roles__"
+      ) {
+        return "";
+      }
+
+      return normalizedRoleId;
+    }
+
+  // AFTER — replace with this:
+function populateParameterRoleScopeOptions(selectedValue = "") {
+  const scopeKind = getParameterScopeKind();
+  const normalizedSelectedValue = String(selectedValue || "").trim();
+
+  if (scopeKind === "zone") {
+
+    const zoneRoles = Array.from(
+      new Set(
+        (allocationLookups.zones || [])
+          .map(z => String(z.role || "").trim())
+          .filter(Boolean)
+      )
+    )
+      .sort((a, b) => a.localeCompare(b));
+
+    const roleOptionsForZone = [
+      {
+        value: "__all_roles__",
+        label: "All roles"
+      },
+      ...zoneRoles.map(role => ({
+        value: role,
+        label: role
+      }))
+    ];
+
+    setLookupSelectOptions(
+      "parameter_role_id",
+      roleOptionsForZone,
+      "Select role",
+      normalizedSelectedValue || "__all_roles__"
+    );
+
+    return;
+  }
+
+  setLookupSelectOptions(
+    "parameter_role_id",
+    roleOptions,
+    "Select role",
+    normalizedSelectedValue
+  );
+}
 
       function getParameterSelectedUnitTypeLabel() {
         const selectedUnitTypeId = String(getParameterFieldValue("parameter_unit_type_id") || "").trim();
@@ -9117,7 +9307,7 @@ textarea {
         if (!select) return;
 
         const res = await fetch(
-          "/api/responsibles/" + responsibleId + "/kpis?search=&_ts=" + Date.now(),
+          "/api/responsibles/" + responsibleId + "/kpis?_ts=" + Date.now(),
           { cache: "no-store" }
         );
         const data = await res.json();
@@ -9222,6 +9412,14 @@ function getSelectedValues(selectId) {
   const el = document.getElementById(selectId);
   if (!el) return [];
   return Array.from(el.selectedOptions).map(o => o.value).filter(Boolean);
+}
+
+function setToleranceTypeFromRadio(type) {
+  const toleranceTypeInput = document.getElementById("tolerance_type");
+  if (!toleranceTypeInput) return;
+
+  toleranceTypeInput.value = type;
+  handleToleranceTypeChange(toleranceTypeInput);
 }
 
 function setSelectOptions(selectId, options, placeholder, selectedValue = "") {
@@ -9486,7 +9684,7 @@ function renderMultisiteUnitMatrix() {
           '<tr>' +
             '<th>' + escapeHtml(scopeLabel) + '</th>' +
             '<th>Sell Currency</th>' +
-            '<th>Target </th>' +
+            '<th>Target Value</th>' +
             '<th>Setup Date</th>' +
             '<th>KPI Unit</th>' +
             '<th>Responsible</th>' +
@@ -9512,11 +9710,11 @@ function renderMultisiteUnitMatrix() {
                 /* ── Sell Currency (read-only pill) ── */
                 '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(scopeEntry.local_currency || "-") + '</span></td>' +
  
-                /* ── Target  ── */
+                /* ── Target Value ── */
                 '<td>' +
                   '<input class="parameter-unit-target-input"' +
                     ' data-scope-kind="' + dk + '" data-scope-id="' + ds + '"' +
-                    ' type="number" step="any" placeholder="Enter Target "' +
+                    ' type="number" step="any" placeholder="Enter target value"' +
                     ' value="' + escapeHtml(state.target_value ?? "") + '" />' +
                 '</td>' +
  
@@ -9668,7 +9866,7 @@ function populateAllocationLookupOptions(values = {}) {
 
   setLookupSelectOptions("parameter_unit_id", allocationLookups.units, "Select unit", values.parameter_unit_id || values.unit_id || "");
   setLookupSelectOptions("parameter_unit_type_id", allocationLookups.unitTypes, "Select unit type", values.parameter_unit_type_id || values.unit_type_id || "");
-  setLookupSelectOptions("parameter_role_id", roleOptions, "Select role", values.parameter_role_id || values.role_id || "");
+  populateParameterRoleScopeOptions(values.parameter_role_id || values.role_id || "");
   setLookupSelectOptions("parameter_product_line_id", allocationLookups.productLines, "Select product line", values.parameter_product_line_id || values.product_line_id || "");
   setLookupSelectOptions("parameter_product_id", allocationLookups.products, "Select product", values.parameter_product_id || values.product_id || "");
   setLookupSelectOptions("parameter_market_id", allocationLookups.markets, "Select market", values.parameter_market_id || values.market_id || "");
@@ -9857,32 +10055,46 @@ function autoFillSetByFromUnit() {
 }
 
 
-
 function getParameterVisibleUnitRows() {
   const scopeKind = getParameterScopeKind();
 
+// AFTER — filter zones by the selected role:
 if (scopeKind === "zone") {
 
-  const selectedZoneRole =
-    String(
-      getParameterFieldValue("parameter_zone_role") || ""
-    ).trim();
+  const selectedRole = String(
+    getParameterFieldValue("parameter_role_id") || "__all_roles__"
+  ).trim();
 
   return (allocationLookups.zones || [])
     .filter(zoneEntry => {
 
-      if (!selectedZoneRole) return true;
+      if (selectedRole === "__all_roles__") {
+        return true;
+      }
 
-      return String(zoneEntry.role || "").trim()
-        === selectedZoneRole;
+      return (
+        String(zoneEntry.role || "").trim() === selectedRole
+      );
     })
     .map(zoneEntry => ({
       row_kind: "zone",
-      value: String(zoneEntry.value || zoneEntry.zone_id || ""),
-      label: zoneEntry.label || zoneEntry.zone_name || "",
+
+      value: String(
+        zoneEntry.value || zoneEntry.zone_id || ""
+      ),
+
+      label:
+        zoneEntry.label ||
+        zoneEntry.zone_name ||
+        "",
+
       local_currency: "",
-      responsable_zone: zoneEntry.responsable_zone || "",
-      zone_role: zoneEntry.role || ""
+
+      responsable_zone:
+        zoneEntry.responsable_zone || "",
+ 
+      role:
+        String(zoneEntry.role || "").trim()
     }));
 }
 
@@ -10014,9 +10226,9 @@ function resolveParameterResponsibleEntry(scopeEntry, state = null) {
 function getParameterResponsibleCellNote(scopeEntry, responsibleEntry) {
   const roleLabel = getParameterRoleLabel(getParameterFieldValue("parameter_role_id"));
 
-if (scopeEntry?.row_kind === "zone") {
-    return scopeEntry.zone_role || "";
-}
+  if (scopeEntry?.row_kind === "zone") {
+    return "";
+  }
 
   if (!roleLabel) {
     return "Enter the role please.";
@@ -10101,7 +10313,7 @@ function getParameterUnitMetaText(unitEntry) {
 function getParameterUnitAllocationRows() {
   const kpiUnit = getParameterSelectedKpiUnit();
   const sharedSetByPeopleId = getParameterFieldValue("parameter_set_by_people_id") || "";
-  const sharedRoleId = getParameterFieldValue("parameter_role_id");
+  const sharedRoleId = getNormalizedParameterRoleId();
   const sharedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
   const fallbackSetupDate = getParameterFieldValue("parameter_target_setup_date") || getLocalDateInputValue();
 
@@ -10146,10 +10358,11 @@ function getParameterUnitAllocationRows() {
       return {
       plant_id: scopeKind === "unit" ? scopeId : null,
       zone_id: scopeKind === "zone" ? scopeId : null,
-      unit_id: null,
-      product_id: scopeKind === "unit" ? getParameterFieldValue("parameter_product_id") : null,
+
+     unit_id: null,
+     product_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_product_id"),
         unit_type_id: scopeKind === "unit" ? (sharedUnitTypeId || String(scopeEntry.unit_type_id || "")) : null,
-        role_id: scopeKind === "unit" ? sharedRoleId : null,
+        role_id: scopeKind === "zone" ? (sharedRoleId || null) : (sharedRoleId || null),
         target_value: targetValue,
         target_setup_date: targetSetupDate,
         target_unit: kpiUnit,
@@ -10305,43 +10518,9 @@ async function lookupZoneFromManufacturingStrategy() {
 }
 
 
-function populateZoneRoleOptions(selectedValue = "") {
-
-  const select = document.getElementById("parameter_zone_role");
-
-  if (!select) return;
-
-  const roles = [...new Set(
-    (allocationLookups.zones || [])
-      .map(function(z) {
-        return String(z.role || "").trim();
-      })
-      .filter(function(role) {
-        return role;
-      })
-  )];
-
-  select.innerHTML =
-    '<option value="">All roles</option>' +
-    roles.map(function(role) {
-      return '<option value="' +
-        escapeHtml(role) +
-        '">' +
-        escapeHtml(role) +
-        '</option>';
-    }).join("");
-
-  select.value = selectedValue || "";
-}
-
 function syncParameterScopePresentation() {
   const scopeKind   = getParameterScopeKind();
   const isZoneScope = scopeKind === "zone";
-  toggleScopedParameterField(
-  "parameter_zone_role_field",
-  isZoneScope,
-  { clearOnHide: true }
-  );
  
   const kpiType      = getParameterFieldValue("parameter_kpi_type").toLowerCase();
   const isIndividual = kpiType === "individual";
@@ -10351,6 +10530,8 @@ function syncParameterScopePresentation() {
   const tableCopy  = document.getElementById("parameter_scope_table_copy");
   const tableBadge = document.getElementById("parameter_scope_table_badge");
   const zoneDisplayEl = document.getElementById("parameter_zone_resolved_display");
+  const roleLabelEl = document.getElementById("parameter_role_label");
+  const roleHintEl = document.getElementById("parameter_role_hint");
  
   /* ── bottom section: only for Individual ── */
   const allocSection = document.getElementById("parameterAllocationFieldsSection");
@@ -10383,10 +10564,15 @@ toggleScopedParameterField("parameter_zone_unit_field", false, { clearOnHide: fa
 toggleScopedParameterField("parameter_zone_product_field", false, { clearOnHide: false });
 toggleScopedParameterField("parameter_zone_resolved_field", false, { clearOnHide: false });
 
+  if (roleLabelEl) roleLabelEl.textContent = "Role";
+  if (roleHintEl) roleHintEl.textContent = isZoneScope ? "Loaded from zone table" : "Loaded from role table";
+  populateParameterRoleScopeOptions(getParameterFieldValue("parameter_role_id"));
+
   if (!isZoneScope) {
     parameterZoneLookupPending = false;
     parameterResolvedZoneId = "";
     parameterLockedZoneId   = "";
+    parameterLockedZoneIds = [];
     if (zoneDisplayEl) {
       zoneDisplayEl.value = "";
       zoneDisplayEl.placeholder = "Select unit and product first";
@@ -10403,20 +10589,22 @@ toggleScopedParameterField("parameter_zone_resolved_field", false, { clearOnHide
  
 if (isZoneScope) {
     parameterLockedUnitId = "";
+    parameterZoneLookupPending = false;
+    parameterResolvedZoneId = "";
     parameterLockedZoneId = "";
     parameterLockedZoneIds = [];
 
-    populateZoneRoleOptions(
-    getParameterFieldValue("parameter_zone_role")
-    ); 
-    toggleScopedParameterField("parameter_unit_type_field",    false, { clearOnHide: true });
-    toggleScopedParameterField("parameter_role_field",         false, { clearOnHide: true });
-    toggleScopedParameterField("parameter_zone_unit_field",    false, { clearOnHide: true });
-    toggleScopedParameterField("parameter_zone_product_field", false, { clearOnHide: true });
-    toggleScopedParameterField("parameter_zone_resolved_field",false, { clearOnHide: true });
+    /* Show zone role only; the zones themselves come directly from the zone table */
+    toggleScopedParameterField("parameter_unit_type_field", false);
+    toggleScopedParameterField("parameter_role_field", true, { clearOnHide: false });
+    toggleScopedParameterField("parameter_zone_unit_field", false);
+    toggleScopedParameterField("parameter_zone_product_field", false);
+    toggleScopedParameterField("parameter_zone_resolved_field", false);
 
     if (tableLabel) tableLabel.textContent = "Zone Target Table";
-    if (tableHint)  tableHint.textContent  = "Enter a target for each zone. The responsible and role are loaded automatically from the zone table.";
+    if (tableHint)  tableHint.textContent  = "Enter a target for each zone. The responsible is loaded automatically from the zone table.";
+    if (tableCopy)  tableCopy.textContent  =
+      "Choose a KPI and set the KPI type to Zone. The table below will list the zones from the zone table, then you can enter a target for each zone while keeping the responsible synced from the zone table.";
     if (tableBadge) tableBadge.textContent = "Zone View";
     return;
   }
@@ -10447,8 +10635,6 @@ function renderMultisiteUnitMatrix() {
   const selectedKpiId = getParameterFieldValue("parameter_kpi_id");
   const selectedUnitTypeId = getParameterFieldValue("parameter_unit_type_id");
   const selectedRoleId = getParameterFieldValue("parameter_role_id");
-  const selectedZoneUnitId = getParameterFieldValue("parameter_zone_unit_id");
-  const selectedZoneProductId = getParameterFieldValue("parameter_zone_product_id");
   const selectedKpiUnit = getParameterSelectedKpiUnit();
   const scopeLabel = scopeKind === "zone" ? "Zone" : "Unit";
 
@@ -10485,7 +10671,8 @@ function renderMultisiteUnitMatrix() {
             '<th>' + escapeHtml(scopeLabel) + '</th>' +
             '<th>Sell Currency</th>' +
             '<th>KPI Unit</th>' +
-            '<th>Target </th>' +
+            '<th>Target Value</th>' +
+            '<th>Last Best Target</th>' +
             '<th>Setup Date</th>' +
             '<th>Responsible</th>' +
           '</tr>' +
@@ -10521,15 +10708,18 @@ function renderMultisiteUnitMatrix() {
                 '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(scopeEntry.local_currency || "-") + '</span></td>' +
                 '<td><span class="parameter-kpi-unit-pill">' + escapeHtml(selectedKpiUnit || "-") + '</span></td>' +
                 '<td>' +
-                  '<input class="parameter-unit-target-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="Enter Target " value="' + escapeHtml(state.target_value ?? "") + '" />' +
+                  '<input class="parameter-unit-target-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="Enter target value" value="' + escapeHtml(state.target_value ?? "") + '" />' +
+                '</td>' +
+                '<td>' +
+                  '<input class="parameter-unit-last-best-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="number" step="any" placeholder="e.g. 3400" value="' + escapeHtml(state.last_best_target ?? "") + '" />' +
                 '</td>' +
                 '<td>' +
                   '<input class="parameter-unit-setup-date-input" data-scope-kind="' + escapeHtml(scopeEntryKind) + '" data-scope-id="' + escapeHtml(scopeId) + '" type="date" value="' + escapeHtml(normalizeParameterDateValue(state.target_setup_date ?? getParameterFieldValue("parameter_target_setup_date")) || getLocalDateInputValue()) + '" />' +
                 '</td>' +
-               '<td>' +
+                '<td>' +
                   '<input class="' + responsibleInputClass + '" type="text" readonly tabindex="-1" value="' + escapeHtml(responsibleLabel) + '" placeholder="' + escapeHtml(responsiblePlaceholder) + '" />' +
-               '</td>' +
-
+                  responsibleNoteMarkup +
+                '</td>' +
               '</tr>';
           }).join("") +
         '</tbody>' +
@@ -10851,6 +11041,15 @@ function expandAllSubjectTree() { renderSubjectTree(); }
 function collapseAllSubjectTree() { renderSubjectTree(); }
 function toggleSubjectTreeNode() { renderSubjectTree(); }
 
+function syncDefinitionTextareaHeight() {
+  const definitionEl = getKpiFieldElement("definition");
+  if (!definitionEl || definitionEl.tagName !== "TEXTAREA") return;
+
+  definitionEl.style.height = "auto";
+  definitionEl.style.overflowY = "hidden";
+  definitionEl.style.height = Math.max(definitionEl.scrollHeight, 108) + "px";
+}
+
 function findSubjectNodeForValues(values = {}) {
   const subjectNodeId = normalizeNullableFieldValue(values.subject_node_id || values.subject_id);
   const subjectText = normalizeNullableFieldValue(values.subject);
@@ -10922,6 +11121,7 @@ function selectSubjectNode(nodeId, { preserveName = false, preserveSubtitle = fa
     definitionEl.value = preserveDefinition
       ? (fallbackDefinition || node.description || "")
       : (node.description || fallbackDefinition || "");
+    syncDefinitionTextareaHeight();
   }
 
   updateSubjectTreeTrigger(node);
@@ -10959,7 +11159,10 @@ function initializeKpiHierarchySelectors(values = {}) {
   if (categoryInput) categoryInput.value = "";
   if (pathDisplayInput) pathDisplayInput.value = "";
   if (nameInput) nameInput.value = values.indicator_sub_title || "";
-  if (definitionEl) definitionEl.value = values.definition || "";
+  if (definitionEl) {
+    definitionEl.value = values.definition || "";
+    syncDefinitionTextareaHeight();
+  }
 
   const matchedNode = findSubjectNodeForValues(values);
   if (matchedNode) {
@@ -10978,6 +11181,8 @@ function initializeKpiHierarchySelectors(values = {}) {
     renderSubjectTree();
     closeSubjectTree();
   }
+
+  syncDefinitionTextareaHeight();
 }
 
 function formatReferenceKpiLabel(row) {
@@ -11055,6 +11260,8 @@ function handleCalculationModeChange() {
   const helpWrap = document.getElementById("wrap_ratio_mode_help");
 
   if (referenceWrap) referenceWrap.style.display = isRatio ? "" : "none";
+  const arrowMode = document.getElementById("calc_mode_arrow");
+  if (arrowMode) arrowMode.style.display = isRatio ? "" : "none";
   if (displayedWrap) displayedWrap.style.display = isRatio ? "" : "none";
   if (helpWrap) helpWrap.style.display = isRatio ? "" : "none";
 
@@ -11601,7 +11808,7 @@ function renderKpis(rows) {
                   <tr>
                     <th>KPI Name</th>
                     <th>Type</th>
-                    <th>Target </th>
+                    <th>Target Value</th>
                     <th class="parameter-table-actions">Actions</th>
                   </tr>
                 </thead>
@@ -12169,6 +12376,9 @@ function renderKpis(rows) {
 
       function openModal() {
         document.getElementById("modalBackdrop").classList.add("open");
+        requestAnimationFrame(() => {
+          syncDefinitionTextareaHeight();
+        });
       }
 
       function closeModal() {
@@ -12176,11 +12386,37 @@ function renderKpis(rows) {
       }
 
       function openParameterModal() {
+        setParameterSaveLoading(parameterSavePending);
         document.getElementById("parameterModalBackdrop").classList.add("open");
       }
 
-      function closeParameterModal() {
+      function closeParameterModal(force = false) {
+        if (parameterSavePending && !force) return;
         document.getElementById("parameterModalBackdrop").classList.remove("open");
+      }
+
+      function setParameterSaveLoading(isLoading) {
+        const saveBtn = document.getElementById("parameterSaveBtn");
+        const closeBtn = document.getElementById("parameterCloseBtn");
+        const cancelBtn = document.getElementById("parameterCancelBtn");
+        const labelEl = saveBtn ? saveBtn.querySelector(".parameter-save-label") : null;
+        const defaultLabel = saveBtn?.dataset?.defaultLabel || "Save Target Allocation";
+
+        if (saveBtn) {
+          saveBtn.disabled = Boolean(isLoading);
+          saveBtn.classList.toggle("is-loading", Boolean(isLoading));
+          saveBtn.setAttribute("aria-busy", isLoading ? "true" : "false");
+        }
+
+        [closeBtn, cancelBtn].forEach((btn) => {
+          if (btn) {
+            btn.disabled = Boolean(isLoading);
+          }
+        });
+
+        if (labelEl) {
+          labelEl.textContent = isLoading ? "Saving..." : defaultLabel;
+        }
       }
 
       function getParameterFieldValue(id) {
@@ -12329,7 +12565,6 @@ function syncToleranceInputs(source = null) {
     const isAbsolute = toleranceType === "absolute";
     const isRelative = toleranceType === "relative";
 
-    // Show/hide wrapper divs
     const wrapUp   = document.getElementById("wrap_up_tolerance");
     const wrapLow  = document.getElementById("wrap_low_tolerance");
     const wrapHigh = document.getElementById("wrap_high_limit");
@@ -12355,6 +12590,8 @@ function syncToleranceInputs(source = null) {
         lowToleranceInput.value = formatToleranceForInput(lowToleranceInput.value, toleranceType, "low");
       }
     }
+    // add as last line inside syncToleranceInputs():
+    if (typeof syncToleranceRadioButtons === "function") syncToleranceRadioButtons();
   }
 
       function handleToleranceTypeChange(source) {
@@ -12440,6 +12677,7 @@ function recalculateLimits(sourceOrOptions = {}, maybeOptions = {}) {
   if (definitionEl) {
     ["input", "change"].forEach((eventName) => {
       definitionEl.addEventListener(eventName, () => {
+        syncDefinitionTextareaHeight();
         updateModalOverview();
       });
     });
@@ -12481,11 +12719,19 @@ document.addEventListener("click", (event) => {
 function handleCalculationOnChange() {
   const value = getKpiFieldElement("calculation_on")?.value;
   const wrap = document.getElementById("wrap_nombre_periode");
-  if (wrap) wrap.style.display = value === "Value" ? "" : "none";
-  if (wrap && value !== "Value") {
-    const select = getKpiFieldElement("nombre_periode");
-    if (select) select.value = "1 week";
+  const select = getKpiFieldElement("nombre_periode");
+  const shouldShowNombrePeriode = value === "Average";
+
+  if (wrap) wrap.style.display = shouldShowNombrePeriode ? "" : "none";
+  const arrowTrend = document.getElementById("disp_trend_arrow");
+ if (arrowTrend) arrowTrend.style.display = value === "Yes" ? "" : "none";
+  const arrowOn = document.getElementById("calc_on_arrow");
+  if (arrowOn) arrowOn.style.display = shouldShowNombrePeriode ? "" : "none";
+  if (select) {
+    select.disabled = !shouldShowNombrePeriode;
+    if (!select.value) select.value = "1 week";
   }
+
   syncKpiRequiredState();
 }
 
@@ -12557,12 +12803,14 @@ function setKpiFieldRequired(id, isRequired) {
 
 function syncKpiRequiredState() {
   const toleranceType = getFieldValue("tolerance_type");
+  const calculationOn = getFieldValue("calculation_on");
   const calculationMode = getFieldValue("calculation_mode");
   const displayTrend = getFieldValue("display_trend");
   const minType = getFieldValue("min_type");
   const maxType = getFieldValue("max_type");
   const isRelative = String(toleranceType || "").toLowerCase() !== "absolute";
 
+  setKpiFieldRequired("nombre_periode", calculationOn === "Average");
   setKpiFieldRequired("reference_kpi_id", calculationMode === "Ratio");
   setKpiFieldRequired("regression", displayTrend === "Yes");
   setKpiFieldRequired("min", minType === "Valeur a entrer");
@@ -12618,11 +12866,6 @@ function validateKpiForm() {
       message: "Calculation On is required."
     },
     {
-      id: "nombre_periode",
-      valid: Boolean(getFieldValue("nombre_periode")),
-      message: "Nombre periode is required."
-    },
-    {
       id: "calculation_mode",
       valid: Boolean(getFieldValue("calculation_mode")),
       message: "Calculation Mode is required."
@@ -12656,19 +12899,23 @@ function validateKpiForm() {
       id: "tolerance_type",
       valid: Boolean(getFieldValue("tolerance_type")),
       message: "Tolerance Type is required."
-    },
-    {
-      id: "owner_role_id",
-      valid: Boolean(getFieldValue("owner_role_id")),
-      message: "Owner Role is required."
     }
   ];
 
+  const calculationOn = getFieldValue("calculation_on");
   const calculationMode = getFieldValue("calculation_mode");
   const displayTrend = getFieldValue("display_trend");
   const minType = getFieldValue("min_type");
   const maxType = getFieldValue("max_type");
   const toleranceType = getFieldValue("tolerance_type");
+
+  if (calculationOn === "Average") {
+    validations.push({
+      id: "nombre_periode",
+      valid: Boolean(getFieldValue("nombre_periode")),
+      message: "Nombre periode is required."
+    });
+  }
 
   if (calculationMode === "Ratio") {
     validations.push({
@@ -12808,14 +13055,14 @@ function resetForm() {
   });
 
   const toleranceTypeEl = getKpiFieldElement("tolerance_type");
-  if (toleranceTypeEl) toleranceTypeEl.value = "Relative";
+  if (toleranceTypeEl) toleranceTypeEl.value = "";
 
   const displayTrendEl = getKpiFieldElement("display_trend");
-  if (displayTrendEl) displayTrendEl.value = "No";
+  if (displayTrendEl) displayTrendEl.value = "";
 
   const calculationModeEl = getKpiFieldElement("calculation_mode");
-  if (calculationModeEl) calculationModeEl.value = "Direct";
-
+  if (calculationModeEl) calculationModeEl.value = "";
+  setFieldValue("target_auto_adjustment", "Yes");
   const minTypeEl = getKpiFieldElement("min_type");
   if (minTypeEl) minTypeEl.value = "Null";
 
@@ -12862,6 +13109,10 @@ function setFieldValue(id, value) {
   }
 
   el.value = finalValue;
+
+  if (id === "definition") {
+    syncDefinitionTextareaHeight();
+  }
 }
 
 
@@ -12903,7 +13154,7 @@ function fillForm(data) {
   setFieldValue("min", normalizeNullableFieldValue(data.min));
   setFieldValue("max", normalizeNullableFieldValue(data.max));
 
-  setFieldValue("tolerance_type", data.tolerance_type || "Relative");
+  setFieldValue("tolerance_type", data.tolerance_type || "");
   setFieldValue("up_tolerance", formatToleranceForInput(data.up_tolerance, data.tolerance_type, "up"));
   setFieldValue("low_tolerance", formatToleranceForInput(data.low_tolerance, data.tolerance_type, "low"));
   setFieldValue("high_limit", data.high_limit);
@@ -13132,7 +13383,6 @@ function fillForm(data) {
         parameterResolvedZoneId = "";
         parameterZoneLookupPending = false;
         parameterEditMode = false;
-        parameterEditingAllocationIds = [];
         resetParameterUnitTargetState();
         populateAllocationLookupOptions({});
 
@@ -13200,14 +13450,13 @@ updateParameterKpiSummary();
           parameter_target_start_date: formatParameterDateForInput(primaryRow.target_start_date),
           parameter_target_end_date: formatParameterDateForInput(primaryRow.target_end_date),
           parameter_set_by_people_id: primaryRow.set_by_people_id,
+          parameter_zone_unit_id: primaryRow.unit_id,
+          parameter_zone_product_id: primaryRow.product_id,
           parameter_approved_by_people_id: primaryRow.approved_by_people_id,
           parameter_comments: primaryRow.comments ?? ""
         };
 
         parameterEditMode = true;
-        parameterEditingAllocationIds = relatedAllocations
-          .map((row) => Number(row?.kpi_target_allocation_id))
-          .filter((allocationId) => Number.isInteger(allocationId) && allocationId > 0);
         parameterLockedUnitId = isGroupedScope
           ? ""
           : String(primaryRow.plant_id || primaryRow.unit_id || "").trim();
@@ -13226,7 +13475,21 @@ updateParameterKpiSummary();
       initializeParameterUnitTargetState(relatedAllocations);
        populateAllocationLookupOptions(mappings);
 
+     if (normalizedKpiType === "zone") {
+      setLookupSelectOptions(
+       "parameter_zone_unit_id",
+       getParameterZoneUnitOptions(),
+       "Select unit",
+       primaryRow.unit_id || primaryRow.plant_id || ""
+    );
 
+    setLookupSelectOptions(
+      "parameter_zone_product_id",
+      allocationLookups.products,
+      "Select product",
+      primaryRow.product_id || ""
+    );
+   }
 
 Object.keys(mappings).forEach(id => {
           const el = document.getElementById(id);
@@ -13241,6 +13504,24 @@ Object.keys(mappings).forEach(id => {
     handleParameterKpiTypeChange();
 
 if (normalizedKpiType === "zone") {
+  const zoneUnitEl = document.getElementById("parameter_zone_unit_id");
+  const zoneProductEl = document.getElementById("parameter_zone_product_id");
+
+  if (zoneUnitEl) {
+    zoneUnitEl.value = String(primaryRow.unit_id || primaryRow.plant_id || "");
+  }
+
+  if (zoneProductEl) {
+    zoneProductEl.value = String(primaryRow.product_id || "");
+  }
+
+  parameterLockedZoneIds = relatedAllocations
+    .map(row => String(row.zone_id || "").trim())
+    .filter(Boolean);
+
+  parameterLockedZoneId = parameterLockedZoneIds[0] || "";
+  parameterResolvedZoneId = parameterLockedZoneId;
+
   renderMultisiteUnitMatrix();
 }
 
@@ -13269,7 +13550,7 @@ updateParameterKpiSummary();
         updateParameterKpiSummary();
         document.getElementById("parameterModalTitle").textContent = "Create KPI Target Allocation";
         document.getElementById("parameterModalSubtitle").textContent =
-          "Create KPI target allocations by KPI, KPI type, unit type and role, then enter one Target  per unit.";
+          "Create KPI target allocations by KPI, KPI type, unit type and role, then enter one target value per unit.";
         openParameterModal();
       }
 
@@ -13319,25 +13600,33 @@ updateParameterKpiSummary();
       }
 
  function buildParameterPayload() {
- const scopeKind = getParameterScopeKind();
- const unitAllocations = getParameterUnitAllocationRows();
-   const primaryAllocation = unitAllocations[0] || null;
+  const scopeKind = getParameterScopeKind();
+  const kpiType = getParameterFieldValue("parameter_kpi_type");
+  const unitAllocations = getParameterUnitAllocationRows();
+  const primaryAllocation = unitAllocations[0] || null;
+
+  const roleId =
+    kpiType === "Individual"
+      ? null
+      : getNormalizedParameterRoleId();
 
    return {
     kpi_id: getParameterFieldValue("parameter_kpi_id"),
     kpi_type: getParameterFieldValue("parameter_kpi_type"),
-    existing_allocation_ids: Array.isArray(parameterEditingAllocationIds)
-      ? parameterEditingAllocationIds.slice()
-      : [],
-    unit_type_id: getParameterFieldValue("parameter_unit_type_id"),
-    role_id: getParameterFieldValue("parameter_role_id"),
+    unit_type_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_unit_type_id"),
+    role_id: getNormalizedParameterRoleId(),
     target_status: getParameterFieldValue("parameter_target_status"),
     plant_id: primaryAllocation?.plant_id || getParameterFieldValue("parameter_plant_id"),
     zone_id: primaryAllocation?.zone_id || getParameterFieldValue("parameter_zone_id"),
     function: getParameterFieldValue("parameter_function"),
     product_line_id: getParameterFieldValue("parameter_product_line_id"),
-    unit_id: getParameterFieldValue("parameter_unit_id"),
-    product_id: getParameterFieldValue("parameter_product_id"),
+    unit_id: scopeKind === "zone"
+   ? null
+   : getParameterFieldValue("parameter_unit_id"),
+
+   product_id: scopeKind === "zone"
+   ? null
+   : getParameterFieldValue("parameter_product_id"),
     market_id: getParameterFieldValue("parameter_market_id"),
     customer_id: getParameterFieldValue("parameter_customer_id"),
    target_value: primaryAllocation?.target_value || getParameterFieldValue("parameter_target_value"),
@@ -13356,6 +13645,10 @@ updateParameterKpiSummary();
   }
 
    async function saveParameterKpi() {
+  if (parameterSavePending) {
+    return;
+  }
+
   const parameterObjectId = getParameterFieldValue("parameter_object_id");
   const method = parameterObjectId ? "PUT" : "POST";
   const scopeKind = getParameterScopeKind();
@@ -13385,24 +13678,37 @@ updateParameterKpiSummary();
       return;
     }
 
-
   if (isIndividualParameterScope()) {
   const targetVal = getParameterFieldValue("parameter_target_value");
   if (!targetVal || isNaN(Number(targetVal))) {
-    showToast("Target  is required.");
+    showToast("Target Value is required.");
     const tvInput = document.getElementById("parameter_target_value");
     if (tvInput) tvInput.focus();
     return;
   }
    } else {
 const visibleRows = getParameterVisibleUnitRows();
+
+if (!visibleRows.length) {
+  showToast(
+    scopeKind === "zone"
+      ? "No zones are available from the zone table."
+      : "No units are available for the selected unit type."
+  );
+  return;
+}
+
 const missingRow = visibleRows.find((row) => {
   const state = getParameterUnitState(row.row_kind || "unit", row.value);
   return !String(state.target_value ?? "").trim();
 });
 
 if (missingRow) {
-  showToast("Target  is required for every unit.");
+  showToast(
+    scopeKind === "zone"
+      ? "Target Value is required for every zone."
+      : "Target Value is required for every unit."
+  );
 
   const input = document.querySelector(
     '.parameter-unit-target-input[data-scope-id="' + CSS.escape(String(missingRow.value)) + '"], ' +
@@ -13418,10 +13724,14 @@ if (missingRow) {
 }
     }
 
+    const payload = buildParameterPayload();
+    parameterSavePending = true;
+    setParameterSaveLoading(true);
+
     const res = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildParameterPayload())
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
@@ -13431,12 +13741,15 @@ if (missingRow) {
       return;
     }
 
-    closeParameterModal();
+    closeParameterModal(true);
     await loadParameterKpis();
     showToast(parameterObjectId ? "KPI target allocation updated" : "KPI target allocation created");
   } catch (error) {
     console.error("SAVE KPI OBJECT ERROR:", error);
     showToast("Failed to save: " + error.message);
+  } finally {
+    parameterSavePending = false;
+    setParameterSaveLoading(false);
   }
 }
 
@@ -13536,16 +13849,6 @@ if (missingRow) {
      handleParameterKpiTypeChange();
     autoFillSetByFromUnit();
     });
-    const parameterZoneRoleSelect =
-  document.getElementById("parameter_zone_role");
-
-if (parameterZoneRoleSelect) {
-
-  parameterZoneRoleSelect.addEventListener("change", () => {
-    renderMultisiteUnitMatrix();
-  });
-
-}
     }
 
     const parameterUnitTypeSelect = document.getElementById("parameter_unit_type_id");
@@ -13563,16 +13866,21 @@ if (parameterZoneRoleSelect) {
       });
     }
 
-    const parameterRoleSelect = document.getElementById("parameter_role_id");
-    if (parameterRoleSelect) {
-      parameterRoleSelect.addEventListener("change", () => {
-        if (isIndividualParameterScope()) {
-          syncIndividualParameterFields();
-          return;
-        }
-        renderMultisiteUnitMatrix();
-      });
+   const parameterRoleSelect = document.getElementById("parameter_role_id");
+if (parameterRoleSelect) {
+  parameterRoleSelect.addEventListener("change", () => {
+    if (isIndividualParameterScope()) {
+      syncIndividualParameterFields();
+      return;
     }
+    // For Zone scope: re-filter zones by the newly selected role,
+    // then reset any previously entered targets so stale rows are cleared
+    if (getParameterScopeKind() === "zone") {
+      resetParameterUnitTargetState();
+    }
+    renderMultisiteUnitMatrix();
+  });
+}
 
     const parameterPlantSelect = document.getElementById("parameter_plant_id");
      if (parameterPlantSelect) {
@@ -13638,6 +13946,19 @@ if (parameterZoneRoleSelect) {
          window.history.replaceState({}, "", currentUrl.pathname + currentUrl.search);
        }
      })();
+     function setToleranceTypeFromRadio(value) {
+  const selectEl = getKpiFieldElement("tolerance_type");
+  if (selectEl) selectEl.value = value;
+  handleToleranceTypeChange(selectEl);
+}
+
+function syncToleranceRadioButtons() {
+  const toleranceType = getFieldValue("tolerance_type") || "";
+
+  document.querySelectorAll('input[name="tolerance_type_radio"]').forEach(radio => {
+    radio.checked = radio.value === toleranceType;
+  });
+}
     </script>
   </body>
   </html>
@@ -14136,6 +14457,315 @@ const escapeHtml = (value) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+
+const buildAbsoluteAppUrl = (req, relativePath = "/") => {
+  const normalizedPath = String(relativePath || "/").startsWith("/")
+    ? String(relativePath || "/")
+    : `/${String(relativePath || "")}`;
+  const forwardedProto = normalizeOptionalTextInput(req?.headers?.["x-forwarded-proto"]);
+  const protocol = forwardedProto || req?.protocol || "http";
+  const host = normalizeOptionalTextInput(req?.get?.("host")) || `localhost:${port}`;
+  return `${protocol}://${host}${normalizedPath}`;
+};
+
+const formatKpiTargetAllocationScopeSummary = (row = {}) => {
+  const parts = [
+    normalizeOptionalTextInput(row.kpi_type) ? `Type: ${row.kpi_type}` : null,
+    normalizeOptionalTextInput(row.plant_name) ? `Plant: ${row.plant_name}` : null,
+    normalizeOptionalTextInput(row.zone_name) ? `Zone: ${row.zone_name}` : null,
+    normalizeOptionalTextInput(row.unit_name) ? `Unit: ${row.unit_name}` : null,
+    normalizeOptionalTextInput(row.unit_type_name) ? `Unit Type: ${row.unit_type_name}` : null,
+    normalizeOptionalTextInput(row.role_name) ? `Role: ${row.role_name}` : null,
+    normalizeOptionalTextInput(row.product_name) ? `Product: ${row.product_name}` : null,
+    normalizeOptionalTextInput(row.product_line_name) ? `Product Line: ${row.product_line_name}` : null,
+    normalizeOptionalTextInput(row.market_name) ? `Market: ${row.market_name}` : null,
+    normalizeOptionalTextInput(row.customer_name) ? `Customer: ${row.customer_name}` : null
+  ].filter(Boolean);
+
+  return parts.join(" | ");
+};
+
+const loadKpiTargetAllocationNotificationRows = async (allocationIds = []) => {
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(allocationIds) ? allocationIds : [allocationIds])
+        .map((value) => normalizeOptionalIntegerInput(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+
+  if (!normalizedIds.length) {
+    return [];
+  }
+
+  const subjectHierarchy = await loadSubjectHierarchyData();
+  const result = await pool.query(
+    `
+    SELECT
+      a.kpi_target_allocation_id,
+      a.kpi_id,
+      a.kpi_type,
+      a.target_value,
+      a.target_unit,
+      a.local_currency,
+      TO_CHAR(a.target_setup_date, 'YYYY-MM-DD') AS target_setup_date,
+      TO_CHAR(a.target_start_date, 'YYYY-MM-DD') AS target_start_date,
+      TO_CHAR(a.target_end_date, 'YYYY-MM-DD') AS target_end_date,
+      a.set_by_people_id,
+      assigned_people.email AS assigned_email,
+      assigned_people.name AS assigned_name,
+      assigned_people.first_name AS assigned_first_name,
+      plant.unit_name AS plant_name,
+      zone.zone_name,
+      unit_scope.unit_name AS unit_name,
+      unit_type.unit_type_name,
+      role.role_name,
+      product.product_name,
+      product_line.product_line_name,
+      market.market_name,
+      customer.customer_name,
+      k.kpi_name,
+      k.kpi_sub_title,
+      k.kpi_code,
+      primary_subject.subject_id
+    FROM public.kpi_target_allocation a
+    LEFT JOIN public.kpi k
+      ON k.kpi_id = a.kpi_id
+    LEFT JOIN public.people assigned_people
+      ON assigned_people.people_id = a.set_by_people_id
+    LEFT JOIN public.unit plant
+      ON plant.unit_id = a.plant_id
+    LEFT JOIN public.zone zone
+      ON zone.zone_id = a.zone_id
+    LEFT JOIN public.unit unit_scope
+      ON unit_scope.unit_id = a.unit_id
+    LEFT JOIN public.unit_type unit_type
+      ON unit_type.unit_type_id = a.unit_type_id
+    LEFT JOIN public.role role
+      ON role.role_id = a.role_id
+    LEFT JOIN public.product product
+      ON product.product_id = a.product_id
+    LEFT JOIN public.product_line product_line
+      ON product_line.product_line_id = a.product_line_id
+    LEFT JOIN public.market market
+      ON market.market_id = a.market_id
+    LEFT JOIN public.customer customer
+      ON customer.customer_id = a.customer_id
+    LEFT JOIN LATERAL (
+      SELECT sk.subject_id
+      FROM public.subject_kpi sk
+      WHERE sk.kpi_id = a.kpi_id
+      ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+      LIMIT 1
+    ) primary_subject ON TRUE
+    WHERE a.kpi_target_allocation_id = ANY($1::int[])
+    ORDER BY a.kpi_target_allocation_id ASC
+    `,
+    [normalizedIds]
+  );
+
+  return result.rows.map((row) => {
+    const subjectId = normalizeOptionalIntegerInput(row.subject_id);
+    const subjectPath = subjectId
+      ? subjectHierarchy.pathById.get(String(subjectId)) || ""
+      : "";
+
+    return {
+      ...row,
+      subject_path: subjectPath,
+      assigned_display_name: getPeopleDisplayName({
+        name: row.assigned_name,
+        first_name: row.assigned_first_name
+      }) || "",
+      scope_summary: formatKpiTargetAllocationScopeSummary(row)
+    };
+  });
+};
+
+const buildKpiTargetAllocationAssignedEmailHtml = ({
+  recipientName,
+  allocatorName,
+  allocations = [],
+  dashboardUrl
+}) => {
+  const normalizedAllocations = Array.isArray(allocations) ? allocations : [];
+  const primaryAllocation = normalizedAllocations[0] || {};
+  const recipientDisplayName = normalizeOptionalTextInput(recipientName) || "Responsible owner";
+  const kpiTitle =
+    normalizeOptionalTextInput(primaryAllocation.kpi_name) ||
+    normalizeOptionalTextInput(primaryAllocation.kpi_sub_title) ||
+    "Untitled KPI";
+  const kpiType = normalizeOptionalTextInput(primaryAllocation.kpi_type) || "Not specified";
+  const subjectPath =
+    normalizeOptionalTextInput(primaryAllocation.subject_path) || "No KPI hierarchy attached";
+  const scopeRows = normalizedAllocations.length
+    ? normalizedAllocations.map((row) => {
+      const targetValue = row.target_value !== null && row.target_value !== undefined
+        ? String(row.target_value).trim()
+        : "";
+      const targetUnit = normalizeOptionalTextInput(row.target_unit);
+      const formattedTarget = [targetValue, targetUnit].filter(Boolean).join(" ") || "N/A";
+      const formattedSetupDate = normalizeOptionalTextInput(row.target_setup_date)
+        ? formatDisplayDate(row.target_setup_date)
+        : "N/A";
+
+      return `
+        <tr>
+          <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#0f172a;vertical-align:top;">
+            ${escapeHtml(formattedTarget)}
+          </td>
+          <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#0f172a;vertical-align:top;">
+            ${escapeHtml(formattedSetupDate)}
+          </td>
+        </tr>
+      `;
+    }).join("")
+    : `
+      <tr>
+        <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#64748b;" colspan="3">
+          No target allocation details available.
+        </td>
+      </tr>
+    `;
+
+
+
+  return `<!DOCTYPE html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+      <title>KPI Target Allocation Assigned</title>
+    </head>
+    <body style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,'Segoe UI',sans-serif;color:#0f172a;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;background:#f4f6f8;">
+        <tr>
+          <td align="center" style="padding:24px 16px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:760px;width:100%;border-collapse:collapse;background:#ffffff;border:1px solid #e1e6eb;">
+              <tr>
+                <td style="padding:28px 32px 24px;font-size:15px;line-height:1.65;color:#0f172a;">
+                  <p style="margin:0 0 14px;">Hello ${escapeHtml(recipientDisplayName)},</p>
+                  <p style="margin:0 0 22px;">You have been assigned to a KPI target allocation.</p>
+
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-bottom:16px;">
+                    <tr>
+                      <td style="width:120px;padding:12px 14px;border:1px solid #dbe2ea;background:#f2f5f8;font-size:14px;font-weight:700;color:#0f172a;">KPI</td>
+                      <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#0f172a;">${escapeHtml(kpiTitle)}</td>
+                    </tr>
+                    <tr>
+                      <td style="width:120px;padding:12px 14px;border:1px solid #dbe2ea;background:#f2f5f8;font-size:14px;font-weight:700;color:#0f172a;">KPI Type</td>
+                      <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#0f172a;">${escapeHtml(kpiType)}</td>
+                    </tr>
+                    <tr>
+                      <td style="width:120px;padding:12px 14px;border:1px solid #dbe2ea;background:#f2f5f8;font-size:14px;font-weight:700;color:#0f172a;">Subject</td>
+                      <td style="padding:12px 14px;border:1px solid #dbe2ea;font-size:14px;color:#0f172a;">${escapeHtml(subjectPath)}</td>
+                    </tr>
+                  </table>
+
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-bottom:16px;">
+                    <tr>
+                      <th align="left" style="padding:12px 14px;border:1px solid #dbe2ea;background:#f2f5f8;font-size:14px;font-weight:700;color:#0f172a;">Target</th>
+                      <th align="left" style="padding:12px 14px;border:1px solid #dbe2ea;background:#f2f5f8;font-size:14px;font-weight:700;color:#0f172a;">Setup Date</th>
+                    </tr>
+                    ${scopeRows}
+                  </table>
+
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:0 32px 24px;font-size:13px;line-height:1.7;color:#64748b;">
+                  <div style="padding-top:18px;border-top:1px solid #e2e8f0;">
+                    This notification was sent automatically by the AVOCarbon KPI System.
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+  </html>`;
+};
+
+const sendKpiTargetAllocationAssignmentNotifications = async ({
+  req,
+  actorResponsibleId,
+  allocationIds = []
+}) => {
+  const allocationRows = await loadKpiTargetAllocationNotificationRows(allocationIds);
+  if (!allocationRows.length) {
+    return { sent: 0, skipped: 0 };
+  }
+
+  const actorContext = await loadFormResponsibleContext(actorResponsibleId);
+  const allocatorName = normalizeOptionalTextInput(actorContext?.name) || "KPI Workspace";
+  const groupedByRecipient = new Map();
+  let skippedCount = 0;
+
+  allocationRows.forEach((row) => {
+    const assignedPeopleId = normalizeOptionalIntegerInput(row.set_by_people_id);
+    const assignedEmail = normalizeOptionalTextInput(row.assigned_email);
+
+    if (!assignedPeopleId || !assignedEmail) {
+      skippedCount += 1;
+      return;
+    }
+
+    const recipientKey = String(assignedPeopleId);
+    if (!groupedByRecipient.has(recipientKey)) {
+      groupedByRecipient.set(recipientKey, {
+        peopleId: assignedPeopleId,
+        email: assignedEmail,
+        name: normalizeOptionalTextInput(row.assigned_display_name) || `Person #${assignedPeopleId}`,
+        allocations: []
+      });
+    }
+
+    groupedByRecipient.get(recipientKey).allocations.push(row);
+  });
+
+  if (!groupedByRecipient.size) {
+    return { sent: 0, skipped: skippedCount };
+  }
+
+  const transporter = createTransporter();
+  let sentCount = 0;
+
+  for (const recipient of groupedByRecipient.values()) {
+    const firstAllocation = recipient.allocations[0] || {};
+    const firstTitle =
+      normalizeOptionalTextInput(firstAllocation.kpi_sub_title) ||
+      normalizeOptionalTextInput(firstAllocation.kpi_name) ||
+      `Allocation #${firstAllocation.kpi_target_allocation_id || ""}`;
+    const subject =
+      recipient.allocations.length === 1
+        ? `KPI target allocation assigned: ${firstTitle}`
+        : `${recipient.allocations.length} KPI target allocations assigned to you`;
+    const dashboardUrl = buildAbsoluteAppUrl(
+      req,
+      `/responsible/${encodeURIComponent(String(recipient.peopleId))}/dashboard`
+    );
+
+    await transporter.sendMail({
+      from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
+      to: recipient.email,
+      subject,
+      html: buildKpiTargetAllocationAssignedEmailHtml({
+        recipientName: recipient.name,
+        allocatorName,
+        allocations: recipient.allocations,
+        dashboardUrl
+      })
+    });
+
+    sentCount += 1;
+  }
+
+  return {
+    sent: sentCount,
+    skipped: skippedCount
+  };
+};
 
 const toArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -14730,6 +15360,7 @@ const buildAssistantKpiContext = (kpis = []) =>
   kpis.slice(0, 30).map((kpi) => ({
     kpi_id: kpi.kpi_id ?? null,
     kpi_values_id: kpi.kpi_values_id ?? null,
+    kpi_code: normalizeText(kpi.kpi_code),
     title: normalizeText(kpi.title || kpi.subject) || "Untitled KPI",
     subtitle: normalizeText(kpi.subtitle || kpi.indicator_sub_title),
     unit: normalizeText(kpi.unit),
@@ -15158,11 +15789,47 @@ const buildKpiScopedKnowledgeBaseQuery = ({
   return queryParts.filter(Boolean).join("\n");
 };
 
+const buildGuidedAssistantQuestionReply = ({
+  selectedKpiSummary,
+  assistantKnowledgeContext
+}) => {
+  const guidedQuestionText = formatKpiAssistantGuidedQuestion(
+    assistantKnowledgeContext?.next_question
+  );
+
+  if (!guidedQuestionText) return null;
+
+  const lines = [];
+
+  if (selectedKpiSummary?.display_name) {
+    lines.push(`Focused KPI: ${selectedKpiSummary.display_name}.`);
+  }
+
+  if (assistantKnowledgeContext?.matched_guide?.name) {
+    lines.push(`Guide: ${assistantKnowledgeContext.matched_guide.name}.`);
+  }
+
+  lines.push("Let's collect the next important point for this KPI.");
+  lines.push(guidedQuestionText);
+
+  return lines.join("\n\n");
+};
+
 const buildKpiAssistantFallbackReply = ({
   selectedKpiSummary,
   selectedKpiDelayFocus,
-  knowledgeBaseContext
+  knowledgeBaseContext,
+  assistantKnowledgeContext
 }) => {
+  const guidedQuestionReply = buildGuidedAssistantQuestionReply({
+    selectedKpiSummary,
+    assistantKnowledgeContext
+  });
+
+  if (guidedQuestionReply) {
+    return guidedQuestionReply;
+  }
+
   const lines = [];
 
   if (selectedKpiSummary) {
@@ -15222,7 +15889,8 @@ const buildKpiAssistantFallbackReply = ({
 const buildFastKpiAssistantReply = ({
   selectedKpiSummary,
   selectedKpiDelayFocus,
-  knowledgeBaseContext
+  knowledgeBaseContext,
+  assistantKnowledgeContext
 }) => {
   const lines = [];
   const topMatches = (knowledgeBaseContext?.matches || []).slice(0, 4);
@@ -15251,6 +15919,18 @@ const buildFastKpiAssistantReply = ({
 
     lines.push(`- **Target Assessment**: ${selectedKpiSummary.target_assessment}`);
     lines.push(`- **Threshold Assessment**: ${selectedKpiSummary.threshold_assessment}`);
+  }
+
+  if (assistantKnowledgeContext?.matched_guide?.name) {
+    lines.push("");
+    lines.push(`### KPI Guide`);
+    lines.push(`- **Guide**: ${assistantKnowledgeContext.matched_guide.name}`);
+
+    if (assistantKnowledgeContext.progress?.total_questions) {
+      lines.push(
+        `- **Progress**: ${assistantKnowledgeContext.progress.answered_count}/${assistantKnowledgeContext.progress.total_questions} guided questions answered`
+      );
+    }
   }
 
   if (selectedKpiDelayFocus?.rationale) {
@@ -15304,6 +15984,15 @@ const buildFastKpiAssistantReply = ({
     });
   }
 
+  const guidedQuestionText = formatKpiAssistantGuidedQuestion(
+    assistantKnowledgeContext?.next_question
+  );
+  if (guidedQuestionText) {
+    lines.push("");
+    lines.push(`### Next Guided Question`);
+    lines.push(guidedQuestionText);
+  }
+
   return lines.join("\n");
 };
 
@@ -15323,6 +16012,11 @@ const generateKpiAssistantReply = async ({
     String(kpi.kpi_values_id) === String(selectedKpiId)
   ) || null;
   const selectedKpiSummary = buildSelectedKpiSummary(selectedKpi);
+  const assistantKnowledgeContext = buildKpiAssistantKnowledgeContext({
+    selectedKpi,
+    message,
+    conversationHistory: normalizedConversationHistory
+  });
   const selectedKpiDelayFocus = buildSelectedKpiDelayFocus(selectedKpi);
   const knowledgeBaseQuery = buildKpiScopedKnowledgeBaseQuery({
     message,
@@ -15343,7 +16037,8 @@ const generateKpiAssistantReply = async ({
   const fastLocalReply = buildFastKpiAssistantReply({
     selectedKpiSummary,
     selectedKpiDelayFocus,
-    knowledgeBaseContext
+    knowledgeBaseContext,
+    assistantKnowledgeContext
   });
 
   // if (isFastKpiAssistantRequest({
@@ -15385,6 +16080,18 @@ ${JSON.stringify(promptKnowledgeMatches, null, 2)}
 RELATED KNOWLEDGE BASE NODES
 ${JSON.stringify(promptKnowledgeRelated, null, 2)}
 
+MATCHED KPI QUESTION GUIDE
+${JSON.stringify(assistantKnowledgeContext.matched_guide, null, 2)}
+
+RELATED KPI QUESTION GUIDES
+${JSON.stringify(assistantKnowledgeContext.related_guides, null, 2)}
+
+GUIDED QUESTION PROGRESS
+${JSON.stringify(assistantKnowledgeContext.progress, null, 2)}
+
+NEXT GUIDED QUESTION
+${assistantKnowledgeContext.next_question ? JSON.stringify(assistantKnowledgeContext.next_question, null, 2) : "None"}
+
 USER MESSAGE
 ${message}
 
@@ -15395,6 +16102,8 @@ IMPORTANT
 - Do not repeat a question if the answer is already present or strongly implied in the history.
 - If the user's latest reply is short, resolve it using the immediately preceding assistant question and options.
 - Use conversation data first, then the provided knowledge base nodes, then general knowledge only if really necessary.
+- If a matched KPI question guide exists, prefer its next unanswered question over inventing a new diagnostic question.
+- Ask question by question for KPI data collection unless the user explicitly asks for a summary, suggestion, or clarification.
 - Use confirmed page/KPI context as part of the conversation evidence.
 - Use the knowledge base to support diagnosis.
 - Do not invent causes, actions, owners, deadlines, metrics, or evidence.
@@ -15410,7 +16119,8 @@ IMPORTANT
     return buildKpiAssistantFallbackReply({
       selectedKpiSummary,
       selectedKpiDelayFocus,
-      knowledgeBaseContext
+      knowledgeBaseContext,
+      assistantKnowledgeContext
     });
   }
 
@@ -15721,6 +16431,12 @@ Efficient, natural, structured diagnosis with:
 - Before asking a question, check whether that question was already asked or already answered.
 - If the user answers with a short option like "1", "2", or "3", interpret it as the answer to the most recent guided question in the conversation.
 - Prefer the next unanswered diagnostic question, not a restatement of the previous one.
+
+### 24. KPI Guide Usage
+- If a matched KPI question guide is provided, use it as the preferred questioning path.
+- Reuse the guide question wording when it fits the conversation.
+- Treat the guide questions as a checklist for memory collection on this KPI.
+- Do not jump to recommendations too early when the key guide questions are still unanswered.
 `.trim();
 
     const completion = await openai.chat.completions.create({
@@ -15753,7 +16469,8 @@ Efficient, natural, structured diagnosis with:
       buildKpiAssistantFallbackReply({
         selectedKpiSummary,
         selectedKpiDelayFocus,
-        knowledgeBaseContext
+        knowledgeBaseContext,
+        assistantKnowledgeContext
       })
     );
   } catch (err) {
@@ -15761,7 +16478,8 @@ Efficient, natural, structured diagnosis with:
     return fastLocalReply || buildKpiAssistantFallbackReply({
       selectedKpiSummary,
       selectedKpiDelayFocus,
-      knowledgeBaseContext
+      knowledgeBaseContext,
+      assistantKnowledgeContext
     });
   }
 };
@@ -20677,9 +21395,9 @@ app.get("/form", async (req, res) => {
             </div>
             <div class="assistant-messages" id="assistantMessages"></div>
             <div class="assistant-composer">
-              <div class="assistant-status" id="assistantStatus">Ask about KPI trends, quotation delays, root causes, owners, or corrective actions.</div>
+              <div class="assistant-status" id="assistantStatus">This AI support uses conversation memory and asks question by question to collect KPI diagnosis data.</div>
               <form class="assistant-form" id="assistantForm">
-                <textarea class="assistant-input" id="assistantInput" placeholder="Ask about KPIs or quote delays" rows="1"></textarea>
+                <textarea class="assistant-input" id="assistantInput" placeholder="Ask about a KPI and the assistant will guide you step by step" rows="1"></textarea>
                 <button type="submit" class="assistant-send" id="assistantSend" aria-label="Send">&#10148;</button>
               </form>
             </div>
@@ -21403,7 +22121,8 @@ function syncDomFromStore(kvId) {
            function buildAssistantGreeting() {
            return "Welcome ${responsible.name || "Responsible"}\\n\\n" +
            "Role: ${responsible.role_name || responsible.role || "Not assigned"}\\n" +
-           "Assistant: ${responsible.role_name || responsible.role || "KPI"} Assistant";
+           "Assistant: ${responsible.role_name || responsible.role || "KPI"} Assistant\\n" +
+           "I will use this conversation as memory and guide the KPI question by question.";
           }
 
            function ensureAssistantGreeting() {
@@ -21559,7 +22278,7 @@ function syncDomFromStore(kvId) {
          const card = getKpiCardById(kvId);
          const kpiName = getAssistantKpiDisplayName(card);
          setAssistantStatus(
-         "Focused on " + kpiName + ". This AI support uses the knowledge base when relevant."
+         "Focused on " + kpiName + ". This AI support uses conversation memory, KPI guides, and the knowledge base when relevant."
         );
        }
           window.openAssistantForKpi = openAssistantForKpi;
@@ -24466,7 +25185,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
       console.error(`âš ï¸ PDF generation failed for ${responsible.name}:`, pdfErr.message);
     }
 
-    // â”€â”€ SEND EMAIL (with OLD Target s in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ SEND EMAIL (with OLD target values in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const transporter = createTransporter();
     await transporter.sendMail({
       from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
