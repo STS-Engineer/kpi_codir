@@ -9068,7 +9068,7 @@ textarea {
                 <select id="unit" required>
                   <option value="kCur">kCur</option>
                   <option value="%">%</option>
-                  <option value="Pieces">Pieces</option>
+                  <option value="EA">EA</option>
                   <option value="PPM">PPM</option>
                   <option value="Number">Number</option>
                 </select>
