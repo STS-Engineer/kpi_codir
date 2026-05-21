@@ -9092,7 +9092,7 @@ textarea {
             </div>
           </div>
 
-        <button class="btn btn-soft" onclick="closeModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;">&times;</button>
+        <button class="btn btn-soft" onclick="dismissKpiModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;">&times;</button>
         </div>
 
       <div class="modal-body">
@@ -9387,7 +9387,7 @@ textarea {
       <div class="footer-actions">
       <button id="deleteBtn" class="btn btn-danger" onclick="deleteCurrentKpi()">Delete KPI</button>
      <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
-     <button class="btn btn-soft" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-soft" onclick="dismissKpiModal()">Cancel</button>
       </div>
       </div>
         </div>
@@ -9406,7 +9406,7 @@ textarea {
             </div>
           </div>
 
-          <button id="parameterCloseBtn" class="btn btn-soft" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;" type="button" onclick="closeParameterModal()">&times;</button>
+          <button id="parameterCloseBtn" class="btn btn-soft" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;" type="button" onclick="dismissParameterModal()">&times;</button>
         </div>
 
         <div class="modal-body">
@@ -9573,7 +9573,7 @@ textarea {
               <span class="parameter-save-spinner" aria-hidden="true"></span>
               <span class="parameter-save-label">Save Target Allocation</span>
             </button>
-            <button id="parameterCancelBtn" class="btn btn-soft" type="button" onclick="closeParameterModal()">Cancel</button>
+            <button id="parameterCancelBtn" class="btn btn-soft" type="button" onclick="dismissParameterModal()">Cancel</button>
           </div>
         </div>
       </div>
@@ -9600,9 +9600,41 @@ textarea {
       let parameterZoneLookupPending = false;
       let parameterSavePending = false;
       let parameterEditMode = false;
+      let kpiCreateDraft = null;
+      let parameterCreateDraft = null;
       let chartsLoaded = false;
       let chartInstances = [];
       const PARAMETER_ZONE_ALL_ROLE_VALUE = "__zone_all_roles__";
+      const PARAMETER_MODAL_FIELD_IDS = [
+        "parameter_object_id",
+        "parameter_kpi_id",
+        "parameter_kpi_type",
+        "parameter_unit_type_id",
+        "parameter_role_id",
+        "parameter_target_status",
+        "parameter_plant_id",
+        "parameter_zone_unit_id",
+        "parameter_zone_product_id",
+        "parameter_zone_resolved_display",
+        "parameter_zone_id",
+        "parameter_unit_id",
+        "parameter_function",
+        "parameter_product_line_id",
+        "parameter_product_id",
+        "parameter_market_id",
+        "parameter_customer_id",
+        "parameter_target_value",
+        "parameter_target_unit",
+        "parameter_local_currency",
+        "parameter_last_best_target",
+        "parameter_previous_target_value",
+        "parameter_target_setup_date",
+        "parameter_target_start_date",
+        "parameter_target_end_date",
+        "parameter_set_by_people_id",
+        "parameter_approved_by_people_id",
+        "parameter_comments"
+      ];
 
       function showToast(message) {
         const toast = document.getElementById("toast");
@@ -10002,6 +10034,11 @@ function getKpiFieldElement(id) {
 
   const modalRoot = document.getElementById("modalBackdrop");
   return modalRoot?.querySelector("#" + id) || document.getElementById(id);
+}
+
+function cloneDraftSnapshot(value) {
+  if (value === null || value === undefined) return value;
+  return JSON.parse(JSON.stringify(value));
 }
 
   function splitMultiValue(value) {
@@ -13207,6 +13244,149 @@ function renderKpis(rows) {
         return element ? String(element.value || "").trim() : "";
       }
 
+      function captureKpiCreateDraft() {
+        if (getFieldValue("kpi_id")) return null;
+
+        const draft = {};
+        KPI_MODAL_FIELD_IDS.forEach((id) => {
+          if (id === "kpi_id") return;
+
+          const field = getKpiFieldElement(id);
+          if (field) {
+            draft[id] = field.value ?? "";
+          }
+        });
+
+        return draft;
+      }
+
+      function restoreKpiCreateDraft(draft = null) {
+        resetForm();
+        if (!draft || typeof draft !== "object") return;
+
+        initializeKpiHierarchySelectors({
+          subject_node_id: draft.subject_node_id || "",
+          subject: draft.subject || "",
+          indicator_title: draft.indicator_title || "",
+          indicator_sub_title: draft.indicator_sub_title || "",
+          definition: draft.definition || ""
+        });
+
+        populateReferenceKpiOptions(draft.reference_kpi_id || "");
+        populateRoleOptions(draft.owner_role_id || "");
+
+        const draftFieldSkipList = new Set([
+          "subject",
+          "subject_node_id",
+          "indicator_title",
+          "indicator_sub_title",
+          "subject_path_display",
+          "definition"
+        ]);
+
+        Object.keys(draft).forEach((id) => {
+          if (draftFieldSkipList.has(id)) return;
+          setFieldValue(id, draft[id]);
+        });
+
+        handleCalculationOnChange();
+        handleDisplayTrendChange();
+        handleMinTypeChange();
+        handleMaxTypeChange();
+        handleCalculationModeChange();
+        syncKpiRequiredState();
+        syncToleranceInputs();
+        recalculateLimits();
+        updateModalOverview();
+      }
+
+      function dismissKpiModal() {
+        const isCreateMode = !getFieldValue("kpi_id");
+        if (isCreateMode) {
+          kpiCreateDraft = null;
+        }
+
+        closeModal();
+
+        if (isCreateMode) {
+          resetForm();
+        }
+      }
+
+      function captureParameterCreateDraft() {
+        if (parameterEditMode || getParameterFieldValue("parameter_object_id")) return null;
+
+        const fields = {};
+        PARAMETER_MODAL_FIELD_IDS.forEach((id) => {
+          const field = document.getElementById(id);
+          if (field) {
+            fields[id] = field.value ?? "";
+          }
+        });
+
+        return {
+          fields,
+          unitTargetState: cloneDraftSnapshot(parameterUnitTargetState || {}) || {},
+          lockedUnitId: parameterLockedUnitId || "",
+          lockedZoneId: parameterLockedZoneId || "",
+          lockedZoneIds: Array.isArray(parameterLockedZoneIds) ? parameterLockedZoneIds.slice() : [],
+          resolvedZoneId: parameterResolvedZoneId || "",
+          zoneLookupPending: Boolean(parameterZoneLookupPending)
+        };
+      }
+
+      async function restoreParameterCreateDraft(draft = null) {
+        resetParameterForm();
+        if (!draft || typeof draft !== "object") return;
+
+        const fields = draft.fields && typeof draft.fields === "object"
+          ? draft.fields
+          : {};
+
+        parameterEditMode = false;
+        parameterLockedUnitId = draft.lockedUnitId || "";
+        parameterLockedZoneId = draft.lockedZoneId || "";
+        parameterLockedZoneIds = Array.isArray(draft.lockedZoneIds) ? draft.lockedZoneIds.slice() : [];
+        parameterResolvedZoneId = draft.resolvedZoneId || "";
+        parameterZoneLookupPending = Boolean(draft.zoneLookupPending);
+        parameterUnitTargetState = cloneDraftSnapshot(draft.unitTargetState || {}) || {};
+
+        await loadKpiNames(fields.parameter_kpi_id || "");
+        populateAllocationLookupOptions(fields);
+
+        Object.keys(fields).forEach((id) => {
+          const field = document.getElementById(id);
+          if (field) {
+            field.value = fields[id] ?? "";
+          }
+        });
+
+        const unitTypeSelect = document.getElementById("parameter_unit_type_id");
+        if (unitTypeSelect) {
+          unitTypeSelect.disabled = Boolean(parameterLockedUnitId) || Boolean(parameterLockedZoneId);
+        }
+
+        syncParameterRoleDropdown();
+        handleParameterKpiTypeChange();
+        updateParameterOverview();
+        updateParameterKpiSummary();
+      }
+
+      function dismissParameterModal() {
+        if (parameterSavePending) return;
+
+        const isCreateMode = !parameterEditMode && !getParameterFieldValue("parameter_object_id");
+        if (isCreateMode) {
+          parameterCreateDraft = null;
+        }
+
+        closeParameterModal();
+
+        if (isCreateMode) {
+          resetParameterForm();
+        }
+      }
+
       function updateModalOverview() {
         const isEdit = !!getFieldValue("kpi_id");
   
@@ -13949,7 +14129,11 @@ function fillForm(data) {
 
       async function openCreateModal() {
         await loadReferenceKpis();
-        resetForm();
+        if (kpiCreateDraft) {
+          restoreKpiCreateDraft(kpiCreateDraft);
+        } else {
+          resetForm();
+        }
         document.getElementById("modalTitle").textContent = "Add New KPI";
         document.getElementById("modalSubtitle").textContent =
           "Create a new KPI with clear identity, target logic and threshold visibility. It will be linked to " + (responsibleName || "this responsible") + " when you save its target allocation.";
@@ -14071,7 +14255,13 @@ function fillForm(data) {
             return;
           }
 
+       if (isCreateMode) {
+         kpiCreateDraft = null;
+       }
        closeModal();
+       if (isCreateMode) {
+         resetForm();
+       }
        await loadKpis(document.getElementById("search").value || "");
        if (isCreateMode && savedKpi?.kpi_id) {
           showDashboard();
@@ -14122,36 +14312,7 @@ function fillForm(data) {
       }
 
       function resetParameterForm() {
-        [
-          "parameter_object_id",
-          "parameter_kpi_id",
-          "parameter_kpi_type",
-          "parameter_unit_type_id",
-          "parameter_role_id",
-          "parameter_target_status",
-          "parameter_plant_id",
-          "parameter_zone_unit_id",
-          "parameter_zone_product_id",
-          "parameter_zone_resolved_display",
-          "parameter_zone_id",
-          "parameter_unit_id",
-          "parameter_function",
-          "parameter_product_line_id",
-          "parameter_product_id",
-          "parameter_market_id",
-          "parameter_customer_id",
-          "parameter_target_value",
-          "parameter_target_unit",
-          "parameter_local_currency",
-          "parameter_last_best_target",
-          "parameter_previous_target_value",
-          "parameter_target_setup_date",
-          "parameter_target_start_date",
-          "parameter_target_end_date",
-          "parameter_set_by_people_id",
-          "parameter_approved_by_people_id",
-          "parameter_comments"
-        ].forEach(id => {
+        PARAMETER_MODAL_FIELD_IDS.forEach(id => {
           const el = document.getElementById(id);
           if (el) el.value = "";
         });
@@ -14309,24 +14470,28 @@ updateParameterKpiSummary();
       }
 
       async function openCreateParameterModal(defaults = {}) {
-        await loadKpiNames(defaults.kpi_id || "");
-        resetParameterForm();
-        const parameterDefaults = {
-          parameter_kpi_id: defaults.kpi_id || "",
-          parameter_target_value: defaults.target_value ?? "",
-          parameter_target_unit: defaults.target_unit || "",
-          parameter_set_by_people_id: defaults.set_by_people_id || responsibleId || ""
-        };
-        populateAllocationLookupOptions(parameterDefaults);
-        Object.keys(parameterDefaults).forEach((id) => {
-          const el = document.getElementById(id);
-          if (el) {
-            el.value = parameterDefaults[id] ?? "";
-          }
-        });
-        syncDashboardResponsibleAssignment();
-        updateParameterOverview();
-        updateParameterKpiSummary();
+        if (parameterCreateDraft) {
+          await restoreParameterCreateDraft(parameterCreateDraft);
+        } else {
+          await loadKpiNames(defaults.kpi_id || "");
+          resetParameterForm();
+          const parameterDefaults = {
+            parameter_kpi_id: defaults.kpi_id || "",
+            parameter_target_value: defaults.target_value ?? "",
+            parameter_target_unit: defaults.target_unit || "",
+            parameter_set_by_people_id: defaults.set_by_people_id || responsibleId || ""
+          };
+          populateAllocationLookupOptions(parameterDefaults);
+          Object.keys(parameterDefaults).forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) {
+              el.value = parameterDefaults[id] ?? "";
+            }
+          });
+          syncDashboardResponsibleAssignment();
+          updateParameterOverview();
+          updateParameterKpiSummary();
+        }
         document.getElementById("parameterModalTitle").textContent = "Create KPI Target Allocation";
         document.getElementById("parameterModalSubtitle").textContent =
           "Create KPI target allocations by KPI, KPI type, unit type and role, then enter one target value per unit.";
@@ -14519,7 +14684,13 @@ if (missingRow) {
       return;
     }
 
+    if (!parameterObjectId) {
+      parameterCreateDraft = null;
+    }
     closeParameterModal(true);
+    if (!parameterObjectId) {
+      resetParameterForm();
+    }
     await loadParameterKpis();
 
     if (parameterObjectId) {
@@ -14583,11 +14754,17 @@ if (missingRow) {
       });
 
       document.getElementById("modalBackdrop").addEventListener("click", (e) => {
-        if (e.target.id === "modalBackdrop") closeModal();
+        if (e.target.id === "modalBackdrop") {
+          kpiCreateDraft = captureKpiCreateDraft();
+          closeModal();
+        }
       });
 
       document.getElementById("parameterModalBackdrop").addEventListener("click", (e) => {
-        if (e.target.id === "parameterModalBackdrop") closeParameterModal();
+        if (e.target.id === "parameterModalBackdrop") {
+          parameterCreateDraft = captureParameterCreateDraft();
+          closeParameterModal();
+        }
       });
 
       [
