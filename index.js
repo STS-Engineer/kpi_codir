@@ -13303,14 +13303,10 @@ function renderKpis(rows) {
       function dismissKpiModal() {
         const isCreateMode = !getFieldValue("kpi_id");
         if (isCreateMode) {
-          kpiCreateDraft = null;
+          kpiCreateDraft = captureKpiCreateDraft();
         }
 
         closeModal();
-
-        if (isCreateMode) {
-          resetForm();
-        }
       }
 
       function captureParameterCreateDraft() {
@@ -13377,14 +13373,10 @@ function renderKpis(rows) {
 
         const isCreateMode = !parameterEditMode && !getParameterFieldValue("parameter_object_id");
         if (isCreateMode) {
-          parameterCreateDraft = null;
+          parameterCreateDraft = captureParameterCreateDraft();
         }
 
         closeParameterModal();
-
-        if (isCreateMode) {
-          resetParameterForm();
-        }
       }
 
       function updateModalOverview() {
