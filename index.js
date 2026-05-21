@@ -11126,7 +11126,7 @@ function getParameterUnitAllocationRows() {
      unit_id: null,
      product_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_product_id"),
         unit_type_id: scopeKind === "unit" ? (sharedUnitTypeId || String(scopeEntry.unit_type_id || "")) : null,
-        role_id: scopeKind === "zone" ? (sharedRoleId || null) : (sharedRoleId || null),
+        role_id: scopeKind === "zone" ? null : (sharedRoleId || null),
         target_value: targetValue,
         target_setup_date: targetSetupDate,
         target_unit: kpiUnit,
@@ -14383,7 +14383,7 @@ function buildParameterPayload() {
   const unitAllocations = getParameterUnitAllocationRows();
   const primaryAllocation = unitAllocations[0] || null;
 
- const roleId = getNormalizedParameterRoleId();
+ const roleId = scopeKind === "zone" ? "" : getNormalizedParameterRoleId();
 
    return {
      kpi_target_allocation_id: getParameterFieldValue("parameter_object_id") || "",
