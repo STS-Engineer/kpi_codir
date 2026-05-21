@@ -9066,7 +9066,7 @@ textarea {
               <div class="field f-unit">
                 <label><span>Unit</span></label>
                 <select id="unit" required>
-                  <option value="Currency">Currency</option>
+                  <option value="kCur">kCur</option>
                   <option value="%">%</option>
                   <option value="Pieces">Pieces</option>
                   <option value="PPM">PPM</option>
