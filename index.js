@@ -12039,7 +12039,6 @@ function renderKpis(rows) {
             <tr>
               <th>KPI Subject</th>
               <th>KPI Name</th>
-              <th>KPI Code</th>
               <th>Unit</th>
               <th>Direction</th>
               <th class="parameter-table-actions">Actions</th>
@@ -12059,10 +12058,7 @@ function renderKpis(rows) {
                     row.frequency ? "Frequency: " + row.frequency : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
-                <td>
-                  <div class="kpi-matrix-cell-main">\${escapeHtml(row.kpi_code || "-")}</div>
-                  <div class="kpi-matrix-cell-sub">\${escapeHtml(row.calculation_mode ? "Mode: " + row.calculation_mode : "No KPI code")}</div>
-                </td>
+           
                 <td>
                   <div class="kpi-matrix-cell-main">\${escapeHtml(row.unit || "-")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml(row.target !== null && row.target !== undefined && String(row.target).trim() !== "" ? "Target: " + formatParameterDisplayValue(row.target) : "No unit target")}</div>
@@ -13952,13 +13948,14 @@ function fillForm(data) {
             return;
           }
 
-          closeModal();
-          await loadKpis(document.getElementById("search").value || "");
-          if (isCreateMode && savedKpi?.kpi_id) {
-            showToast("KPI created successfully");
-            return;
-           }
-          showToast(kpiId ? "KPI updated successfully" : "KPI created successfully");
+       closeModal();
+       await loadKpis(document.getElementById("search").value || "");
+       if (isCreateMode && savedKpi?.kpi_id) {
+          showDashboard();
+          showToast("KPI created successfully");
+          return;
+        }
+        showToast(kpiId ? "KPI updated successfully" : "KPI created successfully"); 
         } catch (error) {
           console.error("SAVE KPI ERROR:", error);
           showToast("Save failed: " + error.message);
@@ -14408,8 +14405,8 @@ if (missingRow) {
       return;
     }
 
-    await showConsultTargetAllocations();
     showToast("KPI target allocation created");
+    await showConsultTargetAllocations();
   } catch (error) {
     console.error("SAVE KPI OBJECT ERROR:", error);
     showToast("Failed to save: " + error.message);
