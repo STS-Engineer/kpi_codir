@@ -794,6 +794,11 @@ const prepareKpiObjectPayload = (payload = {}) => {
   const targetUnit = normalizeOptionalTextInput(payload.target_unit);
   const targetStatus = normalizeOptionalTextInput(payload.target_status) || "Draft";
   const functionName = normalizeOptionalTextInput(payload.function);
+  const normalizedKpiType = String(kpiType || "").trim().toLowerCase();
+
+  if (normalizedKpiType === "individual" && roleId === null) {
+    throw createHttpError(400, "Role is required for Individual KPI type.");
+  }
 
   for (const [label, rawValue, numericValue] of [
     ["Plant", rawPlantId, plantId],
@@ -1466,6 +1471,7 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
       a.updated_at,
       k.kpi_name,
       k.kpi_sub_title,
+      k.frequency,
       primary_subject.subject_id AS subject_id
     FROM public.kpi_target_allocation a
     LEFT JOIN public.kpi k
@@ -1517,6 +1523,7 @@ const loadKpiTargetAllocationRowsForUi = async ({ allocationId = null, responsib
     unit_type_id: row.unit_type_id ?? row.plant_unit_type_id ?? null,
     unit_type_name: row.unit_type_name || "",
     role_name: row.role_name || "",
+    frequency: row.frequency || "",
     responsable_zone: normalizeOptionalTextInput(row.responsable_zone) || "",
     kpi_subject: row.subject_id ? subjectHierarchy.pathById.get(String(row.subject_id)) || "" : "",
     kpi_group: row.kpi_sub_title || "",
@@ -1556,13 +1563,25 @@ const buildPreparedKpiObjectRows = (
       (row) => normalizeOptionalTextInput(row?.target_value ?? row?.target) !== null
     )
     : [];
+  const baseAllocationId =
+    normalizeOptionalIntegerInput(
+      payload.kpi_target_allocation_id ?? payload.allocation_id ?? payload.parameter_object_id
+    );
 
   if (!requestedRows.length) {
-    return [prepareKpiObjectPayload(basePayload)];
+    const preparedPayload = prepareKpiObjectPayload(basePayload);
+    return [
+      baseAllocationId
+        ? {
+            ...preparedPayload,
+            kpi_target_allocation_id: baseAllocationId
+          }
+        : preparedPayload
+    ];
   }
 
-  return requestedRows.map((row) =>
-    prepareKpiObjectPayload({
+  return requestedRows.map((row) => {
+    const preparedPayload = prepareKpiObjectPayload({
       ...basePayload,
       ...row,
       kpi_id: row.kpi_id ?? payload.kpi_id,
@@ -1594,8 +1613,19 @@ const buildPreparedKpiObjectRows = (
         : (payloadHasCreatedByPeopleId ? payload.created_by_people_id : defaultCreatedByPeopleId),
       approved_by_people_id: row.approved_by_people_id ?? payload.approved_by_people_id,
       comments: row.comments ?? payload.comments
-    })
-  );
+    });
+    const rowAllocationId =
+      normalizeOptionalIntegerInput(
+        row.kpi_target_allocation_id ?? row.allocation_id
+      );
+
+    return rowAllocationId
+      ? {
+          ...preparedPayload,
+          kpi_target_allocation_id: rowAllocationId
+        }
+      : preparedPayload;
+  });
 };
 
 const getKpiObjectInsertValues = (payload = {}) => ([
@@ -1705,6 +1735,50 @@ const getKpiTargetAllocationGroupIds = async (allocationId) => {
   return groupIds.length ? groupIds : [normalizedAllocationId];
 };
 
+const getKpiTargetAllocationFamilyIds = async (allocationId) => {
+  const normalizedAllocationId = normalizeOptionalIntegerInput(allocationId);
+  if (!normalizedAllocationId) return [];
+
+  const anchorResult = await pool.query(
+    `
+    SELECT
+      kpi_target_allocation_id,
+      kpi_id,
+      created_by_people_id,
+      created_at
+    FROM public.kpi_target_allocation
+    WHERE kpi_target_allocation_id = $1
+    LIMIT 1
+    `,
+    [normalizedAllocationId]
+  );
+
+  const anchorRow = anchorResult.rows[0];
+  if (!anchorRow) return [];
+
+  const siblingResult = await pool.query(
+    `
+    SELECT kpi_target_allocation_id
+    FROM public.kpi_target_allocation
+    WHERE kpi_id = $1
+      AND COALESCE(created_by_people_id, 0) = COALESCE($2, 0)
+      AND created_at = $3
+    ORDER BY kpi_target_allocation_id ASC
+    `,
+    [
+      anchorRow.kpi_id,
+      anchorRow.created_by_people_id,
+      anchorRow.created_at
+    ]
+  );
+
+  const familyIds = siblingResult.rows
+    .map((row) => normalizeOptionalIntegerInput(row.kpi_target_allocation_id))
+    .filter((value) => Number.isInteger(value));
+
+  return familyIds.length ? familyIds : [normalizedAllocationId];
+};
+
 const loadKpiTargetAllocationGroupRowsForUi = async (allocationId) => {
   const groupIds = await getKpiTargetAllocationGroupIds(allocationId);
   if (!groupIds.length) return [];
@@ -1712,6 +1786,22 @@ const loadKpiTargetAllocationGroupRowsForUi = async (allocationId) => {
   const rowCollections = await Promise.all(
     groupIds.map((groupAllocationId) =>
       loadKpiTargetAllocationRowsForUi({ allocationId: groupAllocationId, responsibleId: null })
+    )
+  );
+
+  return rowCollections
+    .flat()
+    .filter(Boolean)
+    .sort((left, right) => Number(left.kpi_target_allocation_id) - Number(right.kpi_target_allocation_id));
+};
+
+const loadKpiTargetAllocationFamilyRowsForUi = async (allocationId) => {
+  const familyIds = await getKpiTargetAllocationFamilyIds(allocationId);
+  if (!familyIds.length) return [];
+
+  const rowCollections = await Promise.all(
+    familyIds.map((familyAllocationId) =>
+      loadKpiTargetAllocationRowsForUi({ allocationId: familyAllocationId, responsibleId: null })
     )
   );
 
@@ -4162,27 +4252,21 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
-    const existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
+    const existingFamilyRows = await loadKpiTargetAllocationFamilyRowsForUi(Number(kpiObjectId));
 
-    if (!existingGroupRows.length) {
+    if (!existingFamilyRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
     const preservedCreatedByPeopleId =
       normalizeOptionalIntegerInput(req.body.created_by_people_id) ||
-      normalizeOptionalIntegerInput(existingGroupRows[0]?.created_by_people_id) ||
+      normalizeOptionalIntegerInput(existingFamilyRows[0]?.created_by_people_id) ||
       normalizedResponsiblePeopleId;
     const preservedGroupCreatedAt =
-      existingGroupRows[0]?.created_at || new Date().toISOString();
-    const normalizedExistingGroupType = String(existingGroupRows[0]?.kpi_type || "")
-      .trim()
-      .toLowerCase();
-    const shouldPreserveMissingRows =
-      normalizedExistingGroupType === "multisite" ||
-      normalizedExistingGroupType === "zone" ||
-      existingGroupRows.length > 1;
+      existingFamilyRows[0]?.created_at || new Date().toISOString();
     const preparedRows = buildPreparedKpiObjectRows({
       ...req.body,
+      kpi_target_allocation_id: req.body.kpi_target_allocation_id || kpiObjectId,
       set_by_people_id: req.body.set_by_people_id || normalizedResponsiblePeopleId,
       created_by_people_id: req.body.created_by_people_id || preservedCreatedByPeopleId
     }, normalizedResponsiblePeopleId, preservedCreatedByPeopleId);
@@ -4190,25 +4274,36 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     client = await pool.connect();
     await client.query("BEGIN");
 
-    const existingRowsByScopeKey = new Map(
-      existingGroupRows
-        .map((row) => [getKpiTargetAllocationScopeKey(row), row])
-        .filter(([scopeKey]) => Boolean(scopeKey))
+    const existingRowsByAllocationId = new Map(
+      existingFamilyRows
+        .map((row) => [
+          normalizeOptionalIntegerInput(row.kpi_target_allocation_id),
+          row
+        ])
+        .filter(([allocationId]) => Number.isInteger(allocationId) && allocationId > 0)
     );
-    const preparedRowsByScopeKey = new Map(
-      preparedRows
+    const existingRowsByScopeKey = new Map(
+      existingFamilyRows
         .map((row) => [getKpiTargetAllocationScopeKey(row), row])
         .filter(([scopeKey]) => Boolean(scopeKey))
     );
     const resultingAllocationIds = [];
     const notificationAllocationIds = [];
+    const matchedExistingAllocationIds = new Set();
 
-    for (const [scopeKey, preparedRow] of preparedRowsByScopeKey.entries()) {
-      const existingRow = existingRowsByScopeKey.get(scopeKey);
+    for (const preparedRow of preparedRows) {
+      const preparedAllocationId = normalizeOptionalIntegerInput(preparedRow.kpi_target_allocation_id);
+      const scopeKey = getKpiTargetAllocationScopeKey(preparedRow);
+      const existingRow =
+        (preparedAllocationId
+          ? existingRowsByAllocationId.get(preparedAllocationId)
+          : null) ||
+        (scopeKey ? existingRowsByScopeKey.get(scopeKey) : null);
       const existingAssignedPeopleId = normalizeOptionalIntegerInput(existingRow?.set_by_people_id);
       const preparedAssignedPeopleId = normalizeOptionalIntegerInput(preparedRow?.set_by_people_id);
 
       if (existingRow?.kpi_target_allocation_id) {
+        matchedExistingAllocationIds.add(Number(existingRow.kpi_target_allocation_id));
         const updateResult = await client.query(
           `
           UPDATE public.kpi_target_allocation
@@ -4302,13 +4397,9 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       }
     }
 
-    for (const [scopeKey, existingRow] of existingRowsByScopeKey.entries()) {
-      if (preparedRowsByScopeKey.has(scopeKey)) continue;
-
-      if (shouldPreserveMissingRows) {
-        if (existingRow?.kpi_target_allocation_id) {
-          resultingAllocationIds.push(existingRow.kpi_target_allocation_id);
-        }
+    for (const existingRow of existingFamilyRows) {
+      const existingAllocationId = normalizeOptionalIntegerInput(existingRow?.kpi_target_allocation_id);
+      if (!existingAllocationId || matchedExistingAllocationIds.has(existingAllocationId)) {
         continue;
       }
 
@@ -4317,7 +4408,7 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
         DELETE FROM public.kpi_target_allocation
         WHERE kpi_target_allocation_id = $1
         `,
-        [existingRow.kpi_target_allocation_id]
+        [existingAllocationId]
       );
     }
 
@@ -8973,14 +9064,14 @@ textarea {
             <div class="parameter-matrix-hero">
               <div class="parameter-matrix-title">
                 <h2>KPI Matrix</h2>
-                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, responsible, target status, and target value.</p>
+                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, role, KPI frequency, responsible, target status, and target value.</p>
               </div>
               <button class="btn btn-primary parameter-matrix-add-btn" type="button" onclick="openCreateParameterModal()">+ Add Target Allocation</button>
             </div>
 
             <div class="parameter-matrix-toolbar">
               <div class="search-wrap parameter-matrix-search">
-                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, responsible, target status or target value..." />
+                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, role, frequency, responsible, target status or target value..." />
               </div>
               <div class="parameter-results-meta" id="parameterResultsMeta">0 allocations</div>
             </div>
@@ -9340,7 +9431,7 @@ textarea {
                 <select id="parameter_unit_type_id"></select>
               </div>
               <div class="field col-2" id="parameter_role_field">
-                <label><span id="parameter_role_label">Role</span></label>
+                <label><span id="parameter_role_label">Role</span><span class="hint" id="parameter_role_hint">Loaded from role table</span></label>
                 <div class="parameter-role-select" id="parameterRoleSelectShell">
                   <button
                     type="button"
@@ -9671,7 +9762,7 @@ function populateParameterRoleScopeOptions(selectedValue = "") {
     "parameter_role_id",
     roleOptions,
     "Select role",
-    normalizedSelectedValue
+    getNormalizedParameterRoleId(normalizedSelectedValue)
   );
 }
 
@@ -9788,6 +9879,7 @@ function populateParameterRoleScopeOptions(selectedValue = "") {
           if (!scopeId) return;
 
           setParameterUnitState(scopeType, scopeId, {
+            kpi_target_allocation_id: row.kpi_target_allocation_id ?? "",
             target_value: row.target_value ?? "",
             local_currency: row.local_currency ?? "",
             target_setup_date: normalizeParameterDateValue(row?.target_setup_date) || getLocalDateInputValue(),
@@ -10984,12 +11076,19 @@ function getParameterUnitAllocationRows() {
   if (isIndividualParameterScope()) {
     const plantId = String(getParameterFieldValue("parameter_plant_id") || parameterLockedUnitId || "").trim();
     const unitEntry = getParameterUnitById(plantId);
+    const existingState = plantId ? getParameterUnitState("unit", plantId) : {};
     const targetValue = String(getParameterFieldValue("parameter_target_value") || "").trim();
     const selectedResponsibleId = String(getParameterFieldValue("parameter_set_by_people_id") || "").trim();
 
     if (!targetValue) return [];
 
     return [{
+      kpi_target_allocation_id:
+        String(
+          existingState.kpi_target_allocation_id ||
+          getParameterFieldValue("parameter_object_id") ||
+          ""
+        ).trim() || null,
       plant_id: plantId || null,
       zone_id: null,
       unit_type_id: sharedUnitTypeId || String(unitEntry?.unit_type_id || "").trim() || null,
@@ -11020,6 +11119,7 @@ function getParameterUnitAllocationRows() {
       if (!targetValue) return null;
 
       return {
+      kpi_target_allocation_id: String(state.kpi_target_allocation_id ?? "").trim() || null,
       plant_id: scopeKind === "unit" ? scopeId : null,
       zone_id: scopeKind === "zone" ? scopeId : null,
 
@@ -11187,7 +11287,9 @@ function syncParameterScopePresentation() {
   const isZoneScope = scopeKind === "zone";
  
   const kpiType      = getParameterFieldValue("parameter_kpi_type").toLowerCase();
+  const hasKpiType   = Boolean(String(getParameterFieldValue("parameter_kpi_type") || "").trim());
   const isIndividual = kpiType === "individual";
+  const shouldRequireRole = hasKpiType && !isZoneScope;
  
   const tableLabel = document.getElementById("parameter_scope_table_label");
   const tableHint  = document.getElementById("parameter_scope_table_hint");
@@ -11213,7 +11315,7 @@ function syncParameterScopePresentation() {
  
   /* ── scope fields: Multisite only in the latest Individual layout ── */
   toggleScopedParameterField("parameter_unit_type_field", !isZoneScope && !isIndividual, { clearOnHide: false });
-  toggleScopedParameterField("parameter_role_field",      !isZoneScope && !isIndividual, { clearOnHide: false });
+  toggleScopedParameterField("parameter_role_field",      hasKpiType && !isZoneScope, { clearOnHide: false });
   toggleScopedParameterField("parameter_plant_field",     false, { clearOnHide: false });
   toggleScopedParameterField("parameter_previous_target_field", !isIndividual, { clearOnHide: false });
   toggleScopedParameterField("parameter_target_start_date_field", !isIndividual, { clearOnHide: false });
@@ -11228,8 +11330,16 @@ toggleScopedParameterField("parameter_zone_unit_field", false, { clearOnHide: fa
 toggleScopedParameterField("parameter_zone_product_field", false, { clearOnHide: false });
 toggleScopedParameterField("parameter_zone_resolved_field", false, { clearOnHide: false });
 
-  if (roleLabelEl) roleLabelEl.textContent = "Role";
-  if (roleHintEl) roleHintEl.textContent = isZoneScope ? "Loaded from zone table" : "Loaded from role table";
+  if (roleLabelEl) {
+    roleLabelEl.innerHTML = shouldRequireRole
+      ? 'Role <span style="color:#ef4444;">*</span>'
+      : "Role";
+  }
+  if (roleHintEl) {
+    roleHintEl.textContent = isZoneScope
+      ? "Filter zones by role or keep All roles"
+      : "Loaded from role table";
+  }
   populateParameterRoleScopeOptions(getParameterFieldValue("parameter_role_id"));
 
   if (!isZoneScope) {
@@ -11769,9 +11879,9 @@ function selectSubjectNode(nodeId, { preserveName = false, preserveSubtitle = fa
 
 
   if (definitionEl) {
-    definitionEl.value = preserveDefinition
-      ? (fallbackDefinition || node.description || "")
-      : (node.description || fallbackDefinition || "");
+    if (preserveDefinition) {
+      definitionEl.value = fallbackDefinition || "";
+    }
     syncDefinitionTextareaHeight();
   }
 
@@ -12251,6 +12361,7 @@ function renderKpis(rows) {
           row.kpi_type,
           row.unit_type_name,
           row.role_name,
+          row.frequency,
           row.target_status,
           row.plant_name,
           row.zone_name,
@@ -12457,6 +12568,8 @@ function renderKpis(rows) {
                   <tr>
                     <th>KPI Name</th>
                     <th>Type</th>
+                    <th>Role</th>
+                    <th>Frequency</th>
                     <th>Target Value</th>
                     <th class="parameter-table-actions">Actions</th>
                   </tr>
@@ -12475,7 +12588,17 @@ function renderKpis(rows) {
                           row.local_currency
                         ].filter(Boolean).join(" • ") || "No KPI type context")}</div>
                       </td>
-                  
+                      <td>
+                        <div class="parameter-matrix-cell-main">\${escapeHtml(row.role_name || "Not Set")}</div>
+                        <div class="parameter-matrix-cell-sub">\${escapeHtml([
+                          row.unit_type_name,
+                          row.function
+                        ].filter(Boolean).join(" • ") || "No role linked")}</div>
+                      </td>
+                      <td>
+                        <div class="parameter-matrix-cell-main">\${escapeHtml(row.frequency || "-")}</div>
+                        <div class="parameter-matrix-cell-sub">\${escapeHtml(row.frequency ? "Frequency from selected KPI" : "No frequency linked")}</div>
+                      </td>
                       <td>
                         <div class="parameter-matrix-target-main">\${escapeHtml(Number(row.group_row_count || 0) > 1 ? String(row.group_row_count) + " " + getParameterGroupedScopeKindLabel(row, 1) + " targets" : (formatParameterDisplayValue(row.target_value) + (row.target_unit ? " " + row.target_unit : "")))}</div>
                         <div class="parameter-matrix-target-sub">\${escapeHtml([
@@ -14255,21 +14378,18 @@ updateParameterKpiSummary();
         }
       }
 
- function buildParameterPayload() {
+function buildParameterPayload() {
   const scopeKind = getParameterScopeKind();
-  const kpiType = getParameterFieldValue("parameter_kpi_type");
   const unitAllocations = getParameterUnitAllocationRows();
   const primaryAllocation = unitAllocations[0] || null;
 
- const roleId =
-    kpiType === "Individual"
-      ? null
-      : getNormalizedParameterRoleId();
+ const roleId = getNormalizedParameterRoleId();
 
    return {
-    kpi_id: getParameterFieldValue("parameter_kpi_id"),
-    kpi_type: getParameterFieldValue("parameter_kpi_type"),
-    unit_type_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_unit_type_id"),
+     kpi_target_allocation_id: getParameterFieldValue("parameter_object_id") || "",
+     kpi_id: getParameterFieldValue("parameter_kpi_id"),
+     kpi_type: getParameterFieldValue("parameter_kpi_type"),
+     unit_type_id: scopeKind === "zone" ? null : getParameterFieldValue("parameter_unit_type_id"),
     role_id: roleId,
     target_status: getParameterFieldValue("parameter_target_status"),
     plant_id: primaryAllocation?.plant_id || getParameterFieldValue("parameter_plant_id"),
@@ -14329,8 +14449,10 @@ updateParameterKpiSummary();
       return;
     }
 
-    if (!isIndividualParameterScope() && scopeKind !== "zone" && !getParameterFieldValue("parameter_role_id")) {
-      showToast("Enter the role please");
+    if (scopeKind !== "zone" && !getNormalizedParameterRoleId()) {
+      showToast("Select the role first");
+      const roleTrigger = document.getElementById("parameterRoleTrigger");
+      if (roleTrigger) roleTrigger.focus();
       return;
     }
 
