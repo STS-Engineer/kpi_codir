@@ -3443,7 +3443,9 @@ app.get("/kpi-admin", async (req, res) => {
         if (!ok) return;
 
         try {
-          const res = await fetch('/api/kpis/' + id, { method: "DELETE" });
+          const res = await fetch('/api/kpis/' + kpiId, {
+            method: "DELETE"
+          });
           if (!res.ok) {
             showToast("Delete failed");
             return;
@@ -4770,6 +4772,8 @@ app.get("/api/manufacturing-strategy/zone", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
     
 app.get("/responsible/:responsibleId/dashboard", async (req, res) => {
   const { responsibleId } = req.params;
@@ -13014,14 +13018,7 @@ function updateKpiResultsMeta(visibleCount) {
           </thead>
           <tbody>
             \${currentRows.map(row => {
-              const isOwnedByResponsible = String(row.created_by_people_id || "") === String(responsibleId || "");
-              const editTitle = isOwnedByResponsible
-                ? "Edit KPI"
-                : "Only KPIs owned by this responsible can be edited here";
-              const deleteTitle = isOwnedByResponsible
-                ? "Delete KPI"
-                : "Only KPIs owned by this responsible can be deleted here";
-
+          
               return \`
               <tr>
                 <td>
@@ -13032,8 +13029,7 @@ function updateKpiResultsMeta(visibleCount) {
                   <div class="kpi-matrix-kpi-title">\${escapeHtml(row.indicator_sub_title || "Untitled KPI")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml([
                     row.status ? "Status: " + row.status : "",
-                    row.frequency ? "Frequency: " + row.frequency : "",
-                    !isOwnedByResponsible ? "Visible in consult mode" : ""
+                    row.frequency ? "Frequency: " + row.frequency : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
            
@@ -13060,7 +13056,7 @@ function updateKpiResultsMeta(visibleCount) {
                       </svg>
                     </button>
                 
-               \${isOwnedByResponsible ? \`
+            
                 <button
     type="button"
     class="action-btn edit-btn kpi-matrix-action-btn"
@@ -13073,9 +13069,9 @@ function updateKpiResultsMeta(visibleCount) {
       <path d="M13.5 6.5l4 4"></path>
     </svg>
   </button>
-\` : ""}
+
              
-\${isOwnedByResponsible ? \`
+
   <button
     type="button"
     class="action-btn delete-btn kpi-matrix-action-btn"
@@ -13091,7 +13087,7 @@ function updateKpiResultsMeta(visibleCount) {
       <path d="M14 11v6"></path>
     </svg>
   </button>
-\` : ""}
+
                   </div>
                 </td>
               </tr>
@@ -15016,7 +15012,7 @@ function fillForm(data) {
       async function openEditModal(kpiId) {
         try {
           await loadReferenceKpis();
-          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId);
+          const res = await fetch('/api/kpis/' + kpiId);
           if (!res.ok) throw new Error("Failed to load KPI");
 
           const data = await res.json();
@@ -15105,9 +15101,9 @@ function fillForm(data) {
         const kpiId = getSafeValue("kpi_id", { optional: true });
         const isCreateMode = !kpiId;
         const method = kpiId ? "PUT" : "POST";
-        const url = kpiId
-          ? '/api/responsibles/' + responsibleId + '/kpis/' + kpiId
-          : '/api/responsibles/' + responsibleId + '/kpis';
+       const url = kpiId
+        ? '/api/kpis/' + kpiId
+        : '/api/responsibles/' + responsibleId + '/kpis';
 
         try {
           const res = await fetch(url, {
