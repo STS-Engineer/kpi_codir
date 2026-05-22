@@ -1658,16 +1658,39 @@ const getKpiObjectInsertValues = (payload = {}) => ([
 
 const getKpiTargetAllocationScopeKey = (row = {}) => {
   const normalizedZoneId = normalizeOptionalIntegerInput(row.zone_id);
-  if (normalizedZoneId) {
-    return `zone:${normalizedZoneId}`;
-  }
-
   const normalizedUnitId = normalizeOptionalIntegerInput(row.plant_id ?? row.unit_id);
-  if (normalizedUnitId) {
-    return `unit:${normalizedUnitId}`;
+  const normalizedKpiId = normalizeOptionalIntegerInput(row.kpi_id);
+  const normalizedUnitTypeId = normalizeOptionalIntegerInput(row.unit_type_id);
+  const normalizedRoleId = normalizeOptionalIntegerInput(row.role_id);
+  const normalizedProductId = normalizeOptionalIntegerInput(row.product_id);
+  const normalizedProductLineId = normalizeOptionalIntegerInput(row.product_line_id);
+  const normalizedMarketId = normalizeOptionalIntegerInput(row.market_id);
+  const normalizedCustomerId = normalizeOptionalIntegerInput(row.customer_id);
+  const normalizedFunction = normalizeOptionalTextInput(row.function);
+  const normalizedKpiType = normalizeOptionalTextInput(row.kpi_type);
+
+  const scopeIdentifier = normalizedZoneId
+    ? `zone:${normalizedZoneId}`
+    : (normalizedUnitId ? `unit:${normalizedUnitId}` : "");
+
+  if (!scopeIdentifier) {
+    return "";
   }
 
-  return "";
+  return [
+    scopeIdentifier,
+    normalizedKpiId ? `kpi:${normalizedKpiId}` : "",
+    normalizedKpiType ? `type:${String(normalizedKpiType).toLowerCase()}` : "",
+    normalizedUnitTypeId ? `unitType:${normalizedUnitTypeId}` : "",
+    normalizedRoleId ? `role:${normalizedRoleId}` : "",
+    normalizedFunction ? `function:${String(normalizedFunction).toLowerCase()}` : "",
+    normalizedProductId ? `product:${normalizedProductId}` : "",
+    normalizedProductLineId ? `productLine:${normalizedProductLineId}` : "",
+    normalizedMarketId ? `market:${normalizedMarketId}` : "",
+    normalizedCustomerId ? `customer:${normalizedCustomerId}` : ""
+  ]
+    .filter(Boolean)
+    .join("|");
 };
 
 const getKpiTargetAllocationGroupIds = async (allocationId) => {
@@ -4252,18 +4275,20 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const normalizedResponsiblePeopleId =
       responsiblePeopleContext?.people_id ||
       normalizeOptionalIntegerInput(responsibleId);
+    const anchorAllocationId = normalizeOptionalIntegerInput(kpiObjectId);
+    const existingGroupRows = await loadKpiTargetAllocationGroupRowsForUi(Number(kpiObjectId));
     const existingFamilyRows = await loadKpiTargetAllocationFamilyRowsForUi(Number(kpiObjectId));
 
-    if (!existingFamilyRows.length) {
+    if (!existingGroupRows.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
     const preservedCreatedByPeopleId =
       normalizeOptionalIntegerInput(req.body.created_by_people_id) ||
-      normalizeOptionalIntegerInput(existingFamilyRows[0]?.created_by_people_id) ||
+      normalizeOptionalIntegerInput(existingGroupRows[0]?.created_by_people_id) ||
       normalizedResponsiblePeopleId;
     const preservedGroupCreatedAt =
-      existingFamilyRows[0]?.created_at || new Date().toISOString();
+      existingGroupRows[0]?.created_at || new Date().toISOString();
     const preparedRows = buildPreparedKpiObjectRows({
       ...req.body,
       kpi_target_allocation_id: req.body.kpi_target_allocation_id || kpiObjectId,
@@ -4274,8 +4299,11 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     client = await pool.connect();
     await client.query("BEGIN");
 
+    const availableExistingRows = existingFamilyRows.length
+      ? existingFamilyRows
+      : existingGroupRows;
     const existingRowsByAllocationId = new Map(
-      existingFamilyRows
+      availableExistingRows
         .map((row) => [
           normalizeOptionalIntegerInput(row.kpi_target_allocation_id),
           row
@@ -4283,10 +4311,21 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
         .filter(([allocationId]) => Number.isInteger(allocationId) && allocationId > 0)
     );
     const existingRowsByScopeKey = new Map(
-      existingFamilyRows
+      availableExistingRows
         .map((row) => [getKpiTargetAllocationScopeKey(row), row])
         .filter(([scopeKey]) => Boolean(scopeKey))
     );
+    const anchorExistingRow = anchorAllocationId
+      ? existingRowsByAllocationId.get(anchorAllocationId) || null
+      : null;
+    const normalizedRequestedKpiType = String(
+      normalizeOptionalTextInput(req.body.kpi_type) ||
+      normalizeOptionalTextInput(anchorExistingRow?.kpi_type) ||
+      ""
+    ).trim().toLowerCase();
+    const normalizedAnchorKpiType = String(
+      normalizeOptionalTextInput(anchorExistingRow?.kpi_type) || ""
+    ).trim().toLowerCase();
     const resultingAllocationIds = [];
     const notificationAllocationIds = [];
     const matchedExistingAllocationIds = new Set();
@@ -4297,6 +4336,9 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       const existingRow =
         (preparedAllocationId
           ? existingRowsByAllocationId.get(preparedAllocationId)
+          : null) ||
+        (!preparedAllocationId && preparedRows.length === 1 && anchorExistingRow
+          ? anchorExistingRow
           : null) ||
         (scopeKey ? existingRowsByScopeKey.get(scopeKey) : null);
       const existingAssignedPeopleId = normalizeOptionalIntegerInput(existingRow?.set_by_people_id);
@@ -4397,7 +4439,21 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       }
     }
 
-    for (const existingRow of existingFamilyRows) {
+    const rowsToPrune =
+      preparedRows.length === 1 &&
+      existingFamilyRows.length > existingGroupRows.length &&
+      (
+        normalizedRequestedKpiType === "individual" ||
+        (
+          Boolean(normalizedAnchorKpiType) &&
+          Boolean(normalizedRequestedKpiType) &&
+          normalizedAnchorKpiType !== normalizedRequestedKpiType
+        )
+      )
+        ? existingFamilyRows
+        : existingGroupRows;
+
+    for (const existingRow of rowsToPrune) {
       const existingAllocationId = normalizeOptionalIntegerInput(existingRow?.kpi_target_allocation_id);
       if (!existingAllocationId || matchedExistingAllocationIds.has(existingAllocationId)) {
         continue;
@@ -11580,6 +11636,7 @@ function getFieldValue(id) {
 const subjectTreeNodeLookup = new Map();
 let subjectTreeExpandedIds = new Set();
 let subjectTreeSelectedFlow = [];
+const SUBJECT_TREE_MAX_LEVELS = 4;
 
 function getAllSubjectTreeIds(nodes = getSubjectTreeRoots(), target = new Set()) {
   (Array.isArray(nodes) ? nodes : []).forEach((node) => {
@@ -11684,6 +11741,9 @@ function getSubjectFlowColumns() {
   var currentNodes = roots;
 
   subjectTreeSelectedFlow.forEach(function(selectedId) {
+    if (columns.length >= SUBJECT_TREE_MAX_LEVELS) {
+      return;
+    }
     var selectedNode = null;
     for (var i = 0; i < currentNodes.length; i++) {
       if (String(currentNodes[i].id) === String(selectedId)) {
@@ -11698,6 +11758,10 @@ function getSubjectFlowColumns() {
   });
 
   return columns;
+}
+
+function isSubjectTreeTerminalLevel(level) {
+  return level >= (SUBJECT_TREE_MAX_LEVELS - 1);
 }
 
 function renderSubjectFlowColumn(nodes = [], level = 0) {
@@ -11747,13 +11811,14 @@ function renderSubjectTree() {
     var filteredNodes = search
       ? nodes.filter(function(n) { return nodeMatchesSearch(n, search); })
       : nodes;
+    var isTerminalColumn = isSubjectTreeTerminalLevel(colIndex);
 
     var itemsHtml = filteredNodes.map(function(node) {
       var nodeId = String(node.id || '');
       var hasChildren = Array.isArray(node.children) && node.children.length > 0;
       var isSelected = selectedId === nodeId;
       var childCount = hasChildren ? node.children.length : 0;
-      var metaText = hasChildren
+      var metaText = hasChildren && !isTerminalColumn
         ? childCount + ' ' + (childCount === 1 ? 'child' : 'children')
         : 'Leaf · select this';
 
@@ -11765,7 +11830,7 @@ function renderSubjectTree() {
           '<span class="sf-item-name">' + (search ? highlightText(node.name || '', currentTreeSearch) : escapeHtml(node.name || '')) + '</span>' +
           '<span class="sf-item-meta">' + escapeHtml(metaText) + '</span>' +
         '</span>' +
-        '<span class="sf-arrow' + (hasChildren ? '' : ' sf-arrow-hidden') + '">&#9654;</span>' +
+        '<span class="sf-arrow' + (hasChildren && !isTerminalColumn ? '' : ' sf-arrow-hidden') + '">&#9654;</span>' +
       '</button>';
     }).join('');
 
@@ -11813,7 +11878,7 @@ function selectSubjectFlowNode(nodeId, level) {
   subjectTreeSelectedFlow[level] = String(nodeId);
 
   var hasChildren = Array.isArray(node.children) && node.children.length > 0;
-  if (hasChildren) {
+  if (hasChildren && !isSubjectTreeTerminalLevel(level)) {
     updateSubjectTreeTrigger(node);   // ← ADD THIS LINE
     renderSubjectTree();
     return;
