@@ -3711,9 +3711,10 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   const { responsibleId } = req.params;
   try {
     await ensureKpiRatioSchema();
+    const includeAll = String(req.query.include_all || "").trim() === "1";
     const rows = await loadKpiRowsForUi({
       search: req.query.search || "",
-      responsibleId
+      responsibleId: includeAll ? null : responsibleId
     });
     res.json(rows);
   } catch (error) {
@@ -3727,9 +3728,10 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
+    const includeAll = String(req.query.include_all || "").trim() === "1";
     const rows = await loadKpiRowsForUi({
       kpiId: Number(kpiId),
-      responsibleId
+      responsibleId: includeAll ? null : responsibleId
     });
 
     if (!rows.length) {
@@ -5941,6 +5943,10 @@ textarea {
         gap: 12px;
       }
 
+      .kpi-matrix-table .parameter-table-actions {
+        width: 176px;
+      }
+
       .kpi-matrix-action-btn {
         min-width: 38px;
       }
@@ -6013,6 +6019,534 @@ textarea {
         background: #ffffff;
         color: #ef4444;
         border: 1px solid rgba(239,68,68,0.18);
+      }
+
+      .kpi-view-btn {
+        background: linear-gradient(135deg, rgba(14,165,233,0.12), rgba(6,182,212,0.10));
+        color: #0891b2;
+        border: 1px solid rgba(8,145,178,0.18);
+      }
+
+      .action-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.4;
+        box-shadow: none;
+        transform: none;
+        background: #f8fafc;
+      }
+
+      .action-btn:disabled:hover {
+        transform: none;
+        box-shadow: none;
+      }
+
+      #kpiDetailsModalBackdrop {
+        align-items: center;
+        padding: 12px;
+        overflow: auto;
+      }
+
+    
+
+      .kpi-details-hero {
+        padding: 24px 26px 20px;
+        border-bottom: 1px solid rgba(226,232,240,0.9);
+      }
+
+      .kpi-details-kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: rgba(37,99,235,0.08);
+        color: #2563eb;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .kpi-details-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 18px;
+        margin-top: 16px;
+        flex-wrap: wrap;
+      }
+
+      .kpi-details-main-title {
+        font-size: 34px;
+        font-weight: 900;
+        letter-spacing: -0.04em;
+        color: #0f172a;
+        line-height: 1.05;
+      }
+
+      .kpi-details-main-subject {
+        margin-top: 10px;
+        font-size: 14px;
+        line-height: 1.7;
+        color: #64748b;
+        max-width: 760px;
+      }
+
+      .kpi-details-badges {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+      }
+
+      .kpi-details-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 9px 13px;
+        border-radius: 999px;
+        border: 1px solid rgba(148,163,184,0.18);
+        background: rgba(255,255,255,0.82);
+        color: #334155;
+        font-size: 12px;
+        font-weight: 800;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+      }
+
+      .kpi-details-pill--consult {
+        background: rgba(245,158,11,0.12);
+        color: #b45309;
+        border-color: rgba(245,158,11,0.16);
+      }
+
+      .kpi-details-side-card {
+        min-width: 240px;
+        max-width: 320px;
+        padding: 16px 18px;
+        border-radius: 22px;
+        background: linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.94));
+        color: #f8fafc;
+        box-shadow: 0 20px 42px rgba(15,23,42,0.20);
+      }
+
+      .kpi-details-side-card-label {
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.62);
+      }
+
+      .kpi-details-side-card-value {
+        margin-top: 8px;
+        font-size: 18px;
+        font-weight: 900;
+        line-height: 1.3;
+      }
+
+      .kpi-details-side-card-sub {
+        margin-top: 8px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: rgba(255,255,255,0.72);
+      }
+
+      .kpi-details-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        padding: 0 26px 22px;
+      }
+
+      .kpi-detail-metric {
+        position: relative;
+        overflow: hidden;
+        padding: 16px 18px;
+        border-radius: 22px;
+        background: rgba(255,255,255,0.94);
+        border: 1px solid rgba(148,163,184,0.16);
+        box-shadow: 0 14px 30px rgba(15,23,42,0.07);
+      }
+
+      .kpi-detail-metric::before {
+        content: "";
+        position: absolute;
+        width: 110px;
+        height: 110px;
+        right: -38px;
+        top: -48px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(37,99,235,0.10), transparent 72%);
+      }
+
+      .kpi-detail-metric-label {
+        position: relative;
+        z-index: 1;
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #94a3b8;
+      }
+
+      .kpi-detail-metric-value {
+        position: relative;
+        z-index: 1;
+        margin-top: 8px;
+        font-size: 22px;
+        font-weight: 900;
+        letter-spacing: -0.04em;
+        color: #0f172a;
+        line-height: 1.15;
+      }
+
+      .kpi-detail-metric-sub {
+        position: relative;
+        z-index: 1;
+        margin-top: 8px;
+        font-size: 12px;
+        line-height: 1.55;
+        color: #64748b;
+      }
+
+      .kpi-details-sections {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        padding: 0 26px 26px;
+      }
+
+      .kpi-detail-panel {
+        background: rgba(255,255,255,0.94);
+        border: 1px solid rgba(148,163,184,0.16);
+        border-radius: 24px;
+        box-shadow: 0 14px 30px rgba(15,23,42,0.07);
+        padding: 18px 18px 16px;
+      }
+
+      .kpi-detail-panel.full {
+        grid-column: 1 / -1;
+      }
+
+      .kpi-detail-panel-title {
+        font-size: 17px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -0.02em;
+      }
+
+      .kpi-detail-panel-subtitle {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.55;
+      }
+
+      .kpi-detail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .kpi-detail-item {
+        padding: 13px 14px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(248,250,252,0.98) 0%, rgba(255,255,255,0.98) 100%);
+        border: 1px solid rgba(226,232,240,0.95);
+      }
+
+      .kpi-detail-item-label {
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #94a3b8;
+      }
+
+      .kpi-detail-item-value {
+        margin-top: 7px;
+        font-size: 14px;
+        font-weight: 800;
+        line-height: 1.55;
+        color: #0f172a;
+        word-break: break-word;
+      }
+
+      .kpi-detail-definition {
+        margin-top: 16px;
+        padding: 18px;
+        border-radius: 18px;
+        background: linear-gradient(135deg, rgba(239,246,255,0.9), rgba(255,255,255,0.98));
+        border: 1px solid rgba(186,230,253,0.9);
+        color: #1e293b;
+        font-size: 14px;
+        line-height: 1.8;
+        white-space: pre-wrap;
+      }
+
+     #kpiDetailsModalBackdrop {
+  align-items: center;
+  padding: 8px;
+  overflow: auto;
+}
+
+.kpi-details-modal {
+  width: min(1860px, calc(100vw - 32px));
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-radius: 32px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 40px 100px rgba(15,23,42,0.28);
+}
+
+.kpi-details-modal .modal-header {
+  padding: 20px 28px 16px;
+  background:
+    radial-gradient(circle at top right, rgba(37,99,235,0.10), transparent 34%),
+    linear-gradient(135deg, rgba(255,255,255,0.98) 0%, rgba(240,249,255,0.98) 100%);
+  border-bottom: 1px solid rgba(148,163,184,0.16);
+}
+
+.kpi-details-modal .modal-header h2 {
+  font-size: 26px;
+  font-weight: 950;
+  letter-spacing: -0.05em;
+  color: #0f172a;
+}
+
+.kpi-details-modal .modal-subtitle {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+.kpi-details-modal .modal-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 20px 16px;
+  background:
+    radial-gradient(circle at top left,  rgba(37,99,235,0.05), transparent 28%),
+    radial-gradient(circle at top right, rgba(6,182,212,0.06),  transparent 24%),
+    linear-gradient(180deg, #fbfdff 0%, #f4f8fd 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kpi-details-modal .modal-footer {
+  padding: 14px 28px;
+  background: rgba(255,255,255,0.97);
+  border-top: 1px solid rgba(148,163,184,0.16);
+  backdrop-filter: blur(12px);
+}
+
+/* ── Section label ── */
+.kdr-section-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: #94a3b8;
+  padding: 0 4px 2px;
+}
+
+.kdr-section-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(148,163,184,0.25), transparent);
+  border-radius: 999px;
+}
+
+/* ── Row card ── */
+.kpi-detail-row {
+  background:
+    radial-gradient(circle at top right, rgba(37,99,235,0.05), transparent 40%),
+    linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,251,255,0.96) 100%);
+  border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 22px;
+  padding: 14px 18px;
+  display: grid;
+  gap: 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.92),
+    0 8px 24px rgba(15,23,42,0.05);
+  transition: box-shadow 0.2s ease;
+}
+
+.kpi-detail-row:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.92),
+    0 14px 32px rgba(15,23,42,0.09);
+}
+
+.kpi-detail-row.row-cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.kpi-detail-row.row-cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.kpi-detail-row.row-cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+.kpi-detail-row.row-cols-5 { grid-template-columns: repeat(5, minmax(0,1fr)); }
+.kpi-detail-row.row-cols-6 { grid-template-columns: repeat(6, minmax(0,1fr)); }
+
+/* ── Dividers between cells ── */
+.kpi-detail-row .kdr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 16px 4px 0;
+  border-right: 1px solid rgba(148,163,184,0.14);
+  margin-right: 16px;
+}
+
+.kpi-detail-row .kdr-field:last-child {
+  border-right: none;
+  padding-right: 0;
+  margin-right: 0;
+}
+
+/* ── Field label ── */
+.kdr-field .kdr-label {
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #94a3b8;
+  line-height: 1.2;
+}
+
+/* ── Field value ── */
+.kdr-field .kdr-value {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.kdr-field .kdr-value.kdr-muted {
+  color: #64748b;
+  font-weight: 700;
+}
+
+/* ── Definition row ── */
+.kpi-detail-row.row-def {
+  grid-template-columns: 1fr;
+  background:
+    radial-gradient(circle at top right, rgba(6,182,212,0.07), transparent 38%),
+    linear-gradient(135deg, rgba(239,246,255,0.92), rgba(255,255,255,0.98));
+  border-color: rgba(186,230,253,0.85);
+}
+
+.kdr-field .kdr-value.kdr-definition {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.75;
+  color: #1e293b;
+  white-space: pre-wrap;
+}
+
+/* ── Status badge inline ── */
+.kdr-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  border: 1px solid transparent;
+}
+
+.kdr-status-pill::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.kdr-status-active   { background: rgba(16,185,129,0.12); color: #059669; border-color: rgba(16,185,129,0.18); }
+.kdr-status-draft    { background: rgba(245,158,11,0.12); color: #d97706; border-color: rgba(245,158,11,0.18); }
+.kdr-status-approved { background: rgba(37,99,235,0.12);  color: #2563eb; border-color: rgba(37,99,235,0.18); }
+.kdr-status-closed   { background: rgba(148,163,184,0.16); color: #475569; border-color: rgba(148,163,184,0.22); }
+.kdr-section-label {
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #94a3b8;
+  padding: 0 2px 4px;
+}
+
+.kdr-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.kdr-status-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+      .kpi-detail-tolerance-note {
+        margin-top: 14px;
+        padding: 13px 14px;
+        border-radius: 16px;
+        background: rgba(37,99,235,0.07);
+        border: 1px solid rgba(37,99,235,0.12);
+        color: #1d4ed8;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 960px) {
+        .kpi-details-metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .kpi-details-sections {
+          grid-template-columns: 1fr;
+        }
+      }
+
+     
+
+        .kpi-details-hero,
+        .kpi-details-metrics,
+        .kpi-details-sections {
+          padding-left: 16px;
+          padding-right: 16px;
+        }
+
+        .kpi-details-metrics {
+          grid-template-columns: 1fr;
+        }
+
+        .kpi-detail-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .kpi-details-main-title {
+          font-size: 28px;
+        }
       }
 
       .empty {
@@ -9161,7 +9695,14 @@ textarea {
           <input type="hidden" id="comments" />
           <input type="hidden" id="target" />
 
-       
+          <div class="form-section">
+            <div class="kpi-main-row">
+              <div class="field f-name">
+                <label><span>KPI Name</span></label>
+                <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
+              </div>
+            </div>
+          </div>
 
           <div class="form-section">
             <div class="form-grid">
@@ -9198,18 +9739,10 @@ textarea {
                 </div>
               </div>
             </div>
-
-       
           </div>
-          
 
-          <!-- SECTION 2: KPI identity + Min/Max + Definition in one row -->
           <div class="form-section">
             <div class="kpi-main-row">
-              <div class="field f-name">
-                <label><span>KPI Name</span></label>
-                <input id="indicator_sub_title" placeholder="Type or adjust the KPI name" required />
-              </div>
               <div class="field f-unit">
                 <label><span>Unit</span></label>
                 <select id="unit" required>
@@ -9263,7 +9796,6 @@ textarea {
                 <label><span>Max Value</span><span class="hint">Enter</span></label>
                 <input id="max" placeholder="Max value" />
               </div>
-          
             </div>
           </div>
 
@@ -9449,6 +9981,32 @@ textarea {
         </div>
 
     
+      </div>
+    </div>
+
+    <div id="kpiDetailsModalBackdrop" class="modal-backdrop">
+      <div class="modal kpi-details-modal">
+        <div class="modal-header">
+          <div class="modal-title-wrap">
+            <h2>KPI Details</h2>
+            <div class="modal-subtitle">
+              Consult the full KPI definition, thresholds, and calculation logic in a focused read-only view.
+            </div>
+          </div>
+
+          <button class="btn btn-soft" onclick="dismissKpiDetailsModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;" type="button">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div id="kpiDetailsModalContent"></div>
+        </div>
+
+        <div class="modal-footer">
+          <div></div>
+          <div class="footer-actions">
+            <button class="btn btn-soft" type="button" onclick="dismissKpiDetailsModal()">Close</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -9998,7 +10556,7 @@ function populateParameterRoleScopeOptions(selectedValue = "") {
         if (!select) return;
 
         const res = await fetch(
-          "/api/responsibles/" + responsibleId + "/kpis?_ts=" + Date.now(),
+          "/api/responsibles/" + responsibleId + "/kpis?include_all=1&_ts=" + Date.now(),
           { cache: "no-store" }
         );
         const data = await res.json();
@@ -12223,6 +12781,204 @@ function getKpiStatusClass(status) {
   return "parameter-status-neutral";
 }
 
+function formatKpiDetailTimestamp(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function formatKpiDetailNumber(value, unit = "") {
+  const formatted = formatParameterDisplayValue(value);
+  if (formatted === "-") return "-";
+  return unit ? formatted + " " + unit : formatted;
+}
+
+function buildKpiDetailItem(label, value) {
+  return (
+    '<div class="kpi-detail-item">' +
+      '<div class="kpi-detail-item-label">' + escapeHtml(label) + '</div>' +
+      '<div class="kpi-detail-item-value">' + escapeHtml(value || "-") + '</div>' +
+    '</div>'
+  );
+}
+
+function renderKpiDetailsModalContent(kpi = {}) {
+  const isOwned = String(kpi.created_by_people_id || "") === String(responsibleId || "");
+  const visibilityText = isOwned ? "Owned by this responsible" : "Visible in consult mode";
+
+  function hasValue(v) {
+    if (v === null || v === undefined) return false;
+    const s = String(v).trim();
+    return s !== "" && s !== "-" && s.toLowerCase() !== "null" && s.toLowerCase() !== "undefined";
+  }
+
+  function fmtNum(v, unit) {
+    const r = formatKpiDetailNumber(v, unit || "");
+    return hasValue(r) && r !== "-" ? r : "";
+  }
+
+  function field(label, value) {
+    if (!hasValue(value)) return "";
+    return '<div class="kdr-field">' +
+      '<span class="kdr-label">' + escapeHtml(label) + '</span>' +
+      '<span class="kdr-value">' + escapeHtml(String(value)) + '</span>' +
+    '</div>';
+  }
+
+  function row(sectionLabel, colClass, ...fields) {
+    const rendered = fields.filter(Boolean).join("");
+    if (!rendered) return "";
+    return '<div class="kdr-section-label">' + escapeHtml(sectionLabel) + '</div>' +
+      '<div class="kpi-detail-row ' + colClass + '">' + rendered + '</div>';
+  }
+
+  const unit = kpi.unit || "";
+
+  /* Count filled fields per section to pick the right col class */
+  function colClass(fields) {
+    const filled = fields.filter(hasValue).length;
+    if (filled <= 2) return "row-cols-2";
+    if (filled <= 3) return "row-cols-3";
+    if (filled <= 4) return "row-cols-4";
+    if (filled <= 5) return "row-cols-5";
+    return "row-cols-6";
+  }
+
+/* ── Identity ── */
+const identityFields = [
+  kpi.indicator_sub_title,
+  kpi.full_subject_path || kpi.subject,
+  kpi.kpi_code,
+  kpi.kpi_formula
+];
+const identityHtml = row("Identity", colClass(identityFields),
+  field("KPI Name", kpi.indicator_sub_title),
+  field("Subject",  kpi.full_subject_path || kpi.subject),
+  field("KPI Code", kpi.kpi_code),
+  field("Formula",  kpi.kpi_formula)
+);
+
+  /* ── Measurement ── */
+  const measFields = [
+    kpi.unit,
+    kpi.frequency,
+    kpi.target_direction,
+    fmtNum(kpi.target, unit),
+    kpi.target_auto_adjustment
+  ];
+  const measHtml = row("Measurement", colClass(measFields),
+    field("Unit",               kpi.unit),
+    field("Frequency",          kpi.frequency),
+    field("Direction",          kpi.target_direction),
+    field("Target",             fmtNum(kpi.target, unit)),
+    field("Target Auto Adjust", kpi.target_auto_adjustment)
+  );
+
+  /* ── Calculation ── */
+  const calcFields = [
+    kpi.calculation_on,
+    kpi.calculation_mode,
+    kpi.reference_kpi_id ? "KPI #" + kpi.reference_kpi_id : "",
+    kpi.display_trend,
+    kpi.regression,
+    kpi.nombre_periode
+  ];
+  const calcHtml = row("Calculation", colClass(calcFields),
+    field("Calculation On",   kpi.calculation_on),
+    field("Calculation Mode", kpi.calculation_mode),
+    field("Reference KPI",    kpi.reference_kpi_id ? "KPI #" + kpi.reference_kpi_id : ""),
+    field("Display Trend",    kpi.display_trend),
+    field("Regression",       kpi.regression),
+    field("Periods",          kpi.nombre_periode)
+  );
+
+/* ── Range ── */
+const minTypeRaw = String(kpi.min_type || "").trim().toLowerCase();
+const maxTypeRaw = String(kpi.max_type || "").trim().toLowerCase();
+const showMin = minTypeRaw !== "" && minTypeRaw !== "null";
+const showMax = maxTypeRaw !== "" && maxTypeRaw !== "null";
+
+const minTypeLabel = minTypeRaw === "valeur a entrer" ? "Value" : kpi.min_type;
+const maxTypeLabel = maxTypeRaw === "valeur a entrer" ? "Value" : kpi.max_type;
+
+const rangeFields = [
+  showMin ? kpi.min_type : "",
+  showMin ? fmtNum(kpi.min, unit) : "",
+  showMax ? kpi.max_type : "",
+  showMax ? fmtNum(kpi.max, unit) : ""
+];
+const rangeHtml = row("Range", colClass(rangeFields),
+  showMin ? field("Min Type",  minTypeLabel) : "",
+  showMin ? field("Min Value", fmtNum(kpi.min, unit)) : "",
+  showMax ? field("Max Type",  maxTypeLabel) : "",
+  showMax ? field("Max Value", fmtNum(kpi.max, unit)) : ""
+);
+  /* ── Tolerance ── */
+/* ── Tolerance ── */
+function fmtTolerance(value) {
+  if (!hasValue(value)) return "";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  const pct = Math.abs(num) <= 1 ? num * 100 : num;
+  return parseFloat(pct.toFixed(4)) + "%";
+}
+
+  const toleranceType = String(kpi.tolerance_type || "").trim().toLowerCase();
+  const isRelative = toleranceType === "relative";
+
+  const tolFields = [
+    kpi.tolerance_type,
+    isRelative ? fmtTolerance(kpi.up_tolerance)  : kpi.up_tolerance,
+    isRelative ? fmtTolerance(kpi.low_tolerance) : kpi.low_tolerance,
+    fmtNum(kpi.high_limit, unit),
+    fmtNum(kpi.low_limit,  unit)
+  ];
+  const tolHtml = row("Tolerance", colClass(tolFields),
+    field("Tolerance Type", kpi.tolerance_type),
+    field("Up Tolerance",   isRelative ? fmtTolerance(kpi.up_tolerance)  : fmtNum(kpi.up_tolerance,  unit)),
+    field("Low Tolerance",  isRelative ? fmtTolerance(kpi.low_tolerance) : fmtNum(kpi.low_tolerance, unit)),
+    field("High Limit",     fmtNum(kpi.high_limit, unit)),
+    field("Low Limit",      fmtNum(kpi.low_limit,  unit))
+  );
+
+  /* ── Timeline ── */
+  const timeFields = [
+    formatKpiDetailTimestamp(kpi.created_at),
+    formatKpiDetailTimestamp(kpi.updated_at),
+    kpi.owner_role_id,
+    fmtNum(kpi.target, unit)
+  ];
+  const timeHtml = row("Timeline", colClass(timeFields),
+    field("Created At",    formatKpiDetailTimestamp(kpi.created_at)),
+    field("Updated At",    formatKpiDetailTimestamp(kpi.updated_at)),
+    field("Owner Role ID", kpi.owner_role_id ? String(kpi.owner_role_id) : ""),
+    field("Target",        fmtNum(kpi.target, unit))
+  );
+
+  /* ── Definition ── */
+  const defText = String(kpi.definition || "").trim();
+  const defHtml = !defText ? "" :
+    '<div class="kdr-section-label">Definition</div>' +
+    '<div class="kpi-detail-row row-def">' +
+      '<div class="kdr-field" style="grid-column:1/-1">' +
+        '<span class="kdr-label">Definition</span>' +
+        '<span class="kdr-value kdr-definition">' + escapeHtml(defText) + '</span>' +
+      '</div>' +
+    '</div>';
+
+  const html = identityHtml + measHtml + calcHtml + rangeHtml + tolHtml + timeHtml + defHtml;
+
+  const contentEl = document.getElementById("kpiDetailsModalContent");
+  if (contentEl) contentEl.innerHTML = html || '<div style="padding:20px;color:#64748b;text-align:center;">No KPI data available.</div>';
+}
+
 function updateKpiResultsMeta(visibleCount) {
   const metaEl = document.getElementById("kpiResultsMeta");
   if (!metaEl) return;
@@ -12231,7 +12987,7 @@ function updateKpiResultsMeta(visibleCount) {
   metaEl.textContent = shown + " KPI" + (shown === 1 ? "" : "s");
 }
 
-function renderKpis(rows) {
+      function renderKpis(rows) {
   currentRows = rows || [];
   updateStats(currentRows);
   updateKpiResultsMeta(currentRows.length);
@@ -12239,7 +12995,7 @@ function renderKpis(rows) {
   const grid = document.getElementById("grid");
 
   if (!currentRows.length) {
-    grid.innerHTML = '<div class="empty">No KPI found for this responsible.</div>';
+    grid.innerHTML = '<div class="empty">No KPI found.</div>';
     return;
   }
 
@@ -12257,7 +13013,16 @@ function renderKpis(rows) {
             </tr>
           </thead>
           <tbody>
-            \${currentRows.map(row => \`
+            \${currentRows.map(row => {
+              const isOwnedByResponsible = String(row.created_by_people_id || "") === String(responsibleId || "");
+              const editTitle = isOwnedByResponsible
+                ? "Edit KPI"
+                : "Only KPIs owned by this responsible can be edited here";
+              const deleteTitle = isOwnedByResponsible
+                ? "Delete KPI"
+                : "Only KPIs owned by this responsible can be deleted here";
+
+              return \`
               <tr>
                 <td>
                   <div class="kpi-matrix-kpi-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "No subject")}</div>
@@ -12267,7 +13032,8 @@ function renderKpis(rows) {
                   <div class="kpi-matrix-kpi-title">\${escapeHtml(row.indicator_sub_title || "Untitled KPI")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml([
                     row.status ? "Status: " + row.status : "",
-                    row.frequency ? "Frequency: " + row.frequency : ""
+                    row.frequency ? "Frequency: " + row.frequency : "",
+                    !isOwnedByResponsible ? "Visible in consult mode" : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
            
@@ -12283,35 +13049,54 @@ function renderKpis(rows) {
                   <div class="kpi-matrix-actions">
                     <button
                       type="button"
-                      class="action-btn edit-btn kpi-matrix-action-btn"
-                      onclick="openEditModal(\${row.kpi_id})"
-                      aria-label="Edit KPI"
-                      title="Edit KPI"
+                      class="action-btn kpi-view-btn kpi-matrix-action-btn"
+                      onclick="openKpiDetailsModal(\${row.kpi_id})"
+                      aria-label="View KPI details"
+                      title="View KPI details"
                     >
                       <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
-                        <path d="M13.5 6.5l4 4"></path>
+                        <path d="M1.5 12s3.8-7 10.5-7 10.5 7 10.5 7-3.8 7-10.5 7S1.5 12 1.5 12z"></path>
+                        <circle cx="12" cy="12" r="3.2"></circle>
                       </svg>
                     </button>
-                    <button
-                      type="button"
-                      class="action-btn delete-btn kpi-matrix-action-btn"
-                      onclick="deleteKpi(\${row.kpi_id})"
-                      aria-label="Delete KPI"
-                      title="Delete KPI"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M3 6h18"></path>
-                        <path d="M8 6V4h8v2"></path>
-                        <path d="M19 6l-1 14H6L5 6"></path>
-                        <path d="M10 11v6"></path>
-                        <path d="M14 11v6"></path>
-                      </svg>
-                    </button>
+                
+               \${isOwnedByResponsible ? \`
+                <button
+    type="button"
+    class="action-btn edit-btn kpi-matrix-action-btn"
+    onclick="openEditModal(\${row.kpi_id})"
+    aria-label="Edit KPI"
+    title="Edit KPI"
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
+      <path d="M13.5 6.5l4 4"></path>
+    </svg>
+  </button>
+\` : ""}
+             
+\${isOwnedByResponsible ? \`
+  <button
+    type="button"
+    class="action-btn delete-btn kpi-matrix-action-btn"
+    onclick="deleteKpi(\${row.kpi_id})"
+    aria-label="Delete KPI"
+    title="Delete KPI"
+  >
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18"></path>
+      <path d="M8 6V4h8v2"></path>
+      <path d="M19 6l-1 14H6L5 6"></path>
+      <path d="M10 11v6"></path>
+      <path d="M14 11v6"></path>
+    </svg>
+  </button>
+\` : ""}
                   </div>
                 </td>
               </tr>
-            \`).join("")}
+            \`;
+            }).join("")}
           </tbody>
         </table>
       </div>
@@ -12996,7 +13781,7 @@ function renderKpis(rows) {
 
       async function loadKpis(search = "") {
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?search=' + encodeURIComponent(search));
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?include_all=1&search=' + encodeURIComponent(search));
           const data = await res.json();
           renderKpis(data);
         } catch (error) {
@@ -13008,7 +13793,7 @@ function renderKpis(rows) {
 
       async function loadReferenceKpis() {
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?search=');
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?include_all=1&search=');
           const data = await res.json();
           referenceKpiRows = Array.isArray(data) ? data : [];
         } catch (error) {
@@ -13257,6 +14042,18 @@ function renderKpis(rows) {
 
       function closeModal() {
         document.getElementById("modalBackdrop").classList.remove("open");
+      }
+
+      function openKpiDetailsModalShell() {
+        document.getElementById("kpiDetailsModalBackdrop").classList.add("open");
+      }
+
+      function closeKpiDetailsModal() {
+        document.getElementById("kpiDetailsModalBackdrop").classList.remove("open");
+      }
+
+      function dismissKpiDetailsModal() {
+        closeKpiDetailsModal();
       }
 
       function openParameterModal() {
@@ -14202,6 +14999,20 @@ function fillForm(data) {
         openModal();
       }
 
+      async function openKpiDetailsModal(kpiId) {
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId + '?include_all=1');
+          if (!res.ok) throw new Error("Failed to load KPI details");
+
+          const data = await res.json();
+          renderKpiDetailsModalContent(data);
+          openKpiDetailsModalShell();
+        } catch (error) {
+          console.error("OPEN KPI DETAILS ERROR:", error);
+          showToast("Unable to load KPI details: " + error.message);
+        }
+      }
+
       async function openEditModal(kpiId) {
         try {
           await loadReferenceKpis();
@@ -14816,10 +15627,15 @@ if (missingRow) {
         }
       });
 
+      document.getElementById("kpiDetailsModalBackdrop").addEventListener("click", (e) => {
+        if (e.target.id === "kpiDetailsModalBackdrop") {
+          e.preventDefault();
+        }
+      });
+
       document.getElementById("parameterModalBackdrop").addEventListener("click", (e) => {
         if (e.target.id === "parameterModalBackdrop") {
-          parameterCreateDraft = captureParameterCreateDraft();
-          closeParameterModal();
+          e.preventDefault();
         }
       });
 
