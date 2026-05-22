@@ -14812,8 +14812,7 @@ if (missingRow) {
 
       document.getElementById("modalBackdrop").addEventListener("click", (e) => {
         if (e.target.id === "modalBackdrop") {
-          kpiCreateDraft = captureKpiCreateDraft();
-          closeModal();
+          e.preventDefault();
         }
       });
 
