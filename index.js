@@ -36,7 +36,49 @@ const actionPlanPool = new Pool({
   database: "Action Plan",
 });
 
+const OpenAI = require("openai");
+
+const openai = new OpenAI({
+  apiKey: process.env.SECRET_KEY
+});
+
 const NUMERIC_TEXT_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+const KPI_KNOWLEDGE_BASE_MAX_DEPTH = 5;
+const KPI_KNOWLEDGE_BASE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "with",
+  "de",
+  "des",
+  "du",
+  "et",
+  "la",
+  "le",
+  "les",
+  "pour",
+  "sur",
+  "une",
+  "un"
+]);
 
 const createHttpError = (statusCode, message) => {
   const error = new Error(message);
@@ -48,6 +90,52 @@ const normalizeOptionalTextInput = (value) => {
   if (value === undefined || value === null) return null;
   const text = String(value).trim();
   return text === "" ? null : text;
+};
+
+const ASSISTANT_EMPTY_TEXT_VALUES = new Set([
+  "null",
+  "undefined",
+  "not defined"
+]);
+
+const sanitizeAssistantKnowledgeBaseValue = (value) => {
+  if (value === undefined || value === null) return null;
+
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return null;
+    return ASSISTANT_EMPTY_TEXT_VALUES.has(text.toLowerCase()) ? null : text;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const cleanedItems = value
+      .map((item) => sanitizeAssistantKnowledgeBaseValue(item))
+      .filter((item) => item !== null);
+
+    return cleanedItems.length ? cleanedItems : null;
+  }
+
+  if (typeof value === "object") {
+    const cleanedEntries = Object.entries(value).reduce((accumulator, [key, entryValue]) => {
+      const cleanedValue = sanitizeAssistantKnowledgeBaseValue(entryValue);
+      if (cleanedValue !== null) {
+        accumulator[key] = cleanedValue;
+      }
+      return accumulator;
+    }, {});
+
+    return Object.keys(cleanedEntries).length ? cleanedEntries : null;
+  }
+
+  return null;
 };
 
 const normalizeOptionalNumericInput = (value, { allowPercent = false } = {}) => {
@@ -66,6 +154,349 @@ const normalizeOptionalIntegerInput = (value) => {
   const text = normalizeOptionalTextInput(value);
   if (text === null || !/^\d+$/.test(text)) return null;
   return Number(text);
+};
+
+const loadKpiKnowledgeBaseForAssistant = async (kpiId) => {
+  const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
+  if (!normalizedKpiId) return null;
+
+  const result = await pool.query(
+    `
+    SELECT
+      kpi_id,
+      kpi_name,
+      kpi_sub_title,
+      kpi_knowledge_base
+    FROM public.kpi
+    WHERE kpi_id = $1
+    LIMIT 1
+    `,
+    [normalizedKpiId]
+  );
+
+  const row = result.rows[0];
+  if (!row) return null;
+
+  return {
+    ...row,
+    kpi_knowledge_base:
+      sanitizeAssistantKnowledgeBaseValue(row.kpi_knowledge_base) || null
+  };
+};
+
+const buildStrictKpiKnowledgePrompt = (kpiRow, ragContext = null) => {
+  const kb = sanitizeAssistantKnowledgeBaseValue(kpiRow?.kpi_knowledge_base) || {};
+  const compactRagContext = ragContext?.available
+    ? sanitizeAssistantKnowledgeBaseValue({
+        summary: ragContext.summary,
+        top_matches: ragContext.top_matches
+      })
+    : null;
+
+  return `
+You are a KPI Support Assistant.
+
+CRITICAL RULES:
+- Use ONLY the KPI knowledge base JSON and matched KPI knowledge context below.
+- All answers and suggestions must come from that KPI-specific knowledge base.
+- Match the user's request against the JSON before answering.
+- NEVER invent generic causes, suggestions, or actions.
+- NEVER hardcode low limit, high limit, tolerance type, target, unit, or direction.
+- Current KPI KNOWLEDGE BASE JSON is always more important than previous conversation.
+- If previous conversation conflicts with the JSON, ignore previous conversation.
+- Always answer numeric KPI fields from the latest JSON only.
+- Use recent conversation context only to understand follow-up questions.
+- NEVER display null, undefined, empty string, or "Not defined".
+- If a field does not exist in the sanitized KPI knowledge base, omit it completely.
+- Hide empty sections completely.
+- Keep answers compact and business-friendly.
+- For diagnosis/root-cause requests, ask one question at a time.
+- Each diagnosis question must include suggestions generated from matching JSON knowledge.
+- Continue diagnosis until a probable root cause is found.
+
+MATCHED KPI KNOWLEDGE BASE RAG CONTEXT:
+${compactRagContext ? JSON.stringify(compactRagContext, null, 2) : "No focused match extracted for this request. Use the sanitized KPI JSON directly."}
+
+KPI KNOWLEDGE BASE JSON:
+${JSON.stringify(kb, null, 2)}
+
+RESPONSE LOGIC:
+
+DIAGNOSIS MODE:
+
+If the user describes a KPI problem, decrease, anomaly, weak performance, or asks for root cause analysis, start diagnosis mode.
+
+Trigger examples:
+- diminution
+- baisse
+- decrease
+- dropped
+- low performance
+- below target
+- issue
+- problème
+- root cause
+- cause racine
+- diagnose
+
+DIAGNOSIS RAG PROCESS:
+
+Step A — Understand the user request:
+- Extract the problem keywords from the user message.
+- Detect whether the user mentions decrease, target issue, financial issue, operational issue, scope issue, data issue, or root cause.
+
+Step B — Match the request against the KPI JSON:
+Search the extracted keywords inside:
+- kpi.name
+- kpi.display_name
+- kpi.explanation
+- kpi.sub_title
+- kpi.thresholds
+- kpi.target
+- kpi.calculation
+- subject_context.primary_subject_path
+- subject_context.knowledge_nodes
+- subject_context.linked_subjects
+- subject_context.cause_effect_links
+- target_allocations
+- scope_summary
+- search_index.keywords
+- search_index.subject_paths
+- search_index.allocation_scopes
+
+Step C — Generate suggestions:
+- Suggestions must come ONLY from matched or closely related JSON fields.
+- Prefer exact matches from search_index.keywords, subject path, knowledge nodes, cause-effect links, and target allocations.
+- If cause_effect_links exist, use them first.
+- If cause_effect_links are empty, use:
+  1. subject_context.primary_subject_path
+  2. subject_context.knowledge_nodes
+  3. target_allocations
+  4. scope_summary
+  5. kpi.thresholds
+  6. kpi.calculation
+- Do NOT suggest supplier, stock, overtime, planning, staffing, finance, quality, delay, budget, or cost unless those terms exist in the JSON or were explicitly mentioned by the user.
+- If the user mentions a term not found in JSON, keep it as user context and ask the user to connect it to one of the available JSON scopes/options.
+- Every suggestion must include its JSON source path.
+
+Step D — Ask one diagnostic question:
+- Ask only ONE question at a time.
+- The question must be based on the best JSON match.
+- Include 3 to 5 suggestions from the JSON.
+- Continue using conversation history until probable root cause is found.
+
+DIAGNOSIS RESPONSE FORMAT:
+
+❓<one focused question based on matched KPI knowledge>
+
+Suggestions:
+1. <suggestion from kpi_knowledge_base> — Source: <JSON path>
+2. <suggestion from kpi_knowledge_base> — Source: <JSON path>
+3. <suggestion from kpi_knowledge_base> — Source: <JSON path>
+
+ROOT CAUSE RULE:
+When enough answers are collected, return:
+
+🧩 Probable root cause
+├── Cause: <probable cause>
+├── Evidence from user answers
+├── KPI knowledge used
+└── Corrective actions based only on JSON
+
+0. SPECIFIC FIELD QUESTIONS
+
+If the user asks for ONE specific field, answer ONLY that field using the matching JSON value.
+
+Field mapping:
+- low limit => kpi.thresholds.low_limit
+- high limit => kpi.thresholds.high_limit
+- tolerance type => kpi.thresholds.tolerance_type
+- frequency => kpi.frequency
+- formula => kpi.formula
+- status => kpi.status
+- owner => kpi.ownership
+- target direction => kpi.target.direction
+- default target => kpi.target.default_value
+- target value => target_allocations[].target.value
+- unit => kpi.unit
+
+Output:
+<Field>: <JSON value>
+
+Related info:
+- Include only 1 to 3 closely related values from the same JSON area.
+- Related info must also come from JSON.
+- Do not show related info if no related values exist.
+
+1. KPI OVERVIEW QUESTIONS
+
+If the user asks:
+- what is this KPI
+- KPI overview
+- explain this KPI
+- KPI details
+- tell me about this KPI
+
+Return a compact overview using available JSON values only:
+🎯 KPI
+├── Name
+├── Unit
+├── Status
+├── Frequency
+├── Description
+└── Subject path
+
+Include compact:
+🧮 Calculation
+🎯 Target & Thresholds
+🌳 Subject Hierarchy
+
+2. TARGET QUESTIONS
+
+If user asks about target, thresholds, limits, allocations, or objective:
+Return ONLY available target information from:
+- kpi.target
+- kpi.thresholds
+- target_allocations
+
+3. CALCULATION QUESTIONS
+
+If user asks about calculation, formula, computation, or trend:
+Return ONLY available calculation information from:
+- kpi.formula
+- kpi.calculation
+
+4. SUBJECT / HIERARCHY QUESTIONS
+
+If user asks about subject, hierarchy, tree, knowledge nodes, or related subjects:
+Return ONLY available subject information from:
+- subject_context.primary_subject_path
+- subject_context.linked_subjects
+- subject_context.knowledge_nodes
+
+5. CAUSE / EFFECT QUESTIONS
+
+If user asks about causes, impact, effect, dependencies, or drivers:
+Return ONLY cause-effect information from:
+- subject_context.cause_effect_links
+
+If no links exist, say exactly:
+No cause-effect links are defined.
+
+6. RECOMMENDATION QUESTIONS
+
+If user asks about recommendations, improvement, actions, optimization, or corrective actions:
+Return ONLY recommendations directly supported by the JSON.
+If data is insufficient, say what knowledge should be added.
+
+7. FULL KNOWLEDGE TREE QUESTIONS
+
+If user asks for full tree, all knowledge, complete KPI, show everything, or detailed overview:
+Return the full KPI knowledge tree using only available JSON values.
+
+8. VAGUE FOLLOW-UP QUESTIONS
+
+If the user asks:
+- what else
+- another information
+- more
+- continue
+- why
+- explain more
+
+Use the recent conversation context to continue from the previous topic.
+Never answer "No additional information is available" if the JSON has related fields.
+
+OUTPUT STYLE RULES:
+- Use compact formatting.
+- Use trees only when useful.
+- Do not show unrelated sections.
+- Never display empty values.
+- Never display empty sections.
+`;
+};
+const normalizeKnowledgeBaseSearchText = (value) =>
+  String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenizeKnowledgeBaseText = (value, maxItems = 24) => {
+  const normalized = normalizeKnowledgeBaseSearchText(value);
+  if (!normalized) return [];
+
+  const tokens = normalized
+    .split(/[^\p{L}\p{N}_]+/u)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length > 2 &&
+        !KPI_KNOWLEDGE_BASE_STOP_WORDS.has(token)
+    );
+
+  return [...new Set(tokens)].slice(0, maxItems);
+};
+
+const flattenKnowledgeBaseStrings = (value) => {
+  if (value === undefined || value === null) return [];
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return [String(value)];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(flattenKnowledgeBaseStrings);
+  }
+
+  if (typeof value === "object") {
+    return Object.values(value).flatMap(flattenKnowledgeBaseStrings);
+  }
+
+  return [];
+};
+
+const uniqueKnowledgeBaseTexts = (values = [], maxItems = 20) => {
+  const seen = new Set();
+  const results = [];
+
+  for (const value of values) {
+    const text = normalizeOptionalTextInput(value);
+    const normalized = normalizeKnowledgeBaseSearchText(text);
+    if (!text || !normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    results.push(text);
+    if (results.length >= maxItems) break;
+  }
+
+  return results;
+};
+
+const buildKnowledgeBaseKeywordList = (values = [], maxItems = 40) => {
+  const phrases = uniqueKnowledgeBaseTexts(
+    flattenKnowledgeBaseStrings(values),
+    Math.min(maxItems, 18)
+  );
+  const tokens = uniqueKnowledgeBaseTexts(
+    phrases.flatMap((entry) => tokenizeKnowledgeBaseText(entry, maxItems)),
+    maxItems
+  );
+
+  return [...phrases, ...tokens].slice(0, maxItems);
+};
+
+const formatKnowledgeBaseTimestamp = (value) => {
+  if (!value) return null;
+  const dateValue = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dateValue.getTime())) {
+    return normalizeOptionalTextInput(value);
+  }
+  return dateValue.toISOString();
 };
 
 const getPeopleDisplayName = (row = {}) => {
@@ -379,6 +810,7 @@ const prepareResponsibleParameterKpiPayload = (payload = {}) => {
 let responsibleParameterKpiSchemaPromise = null;
 let kpiRatioSchemaPromise = null;
 let kpiObjectSchemaPromise = null;
+let kpiAssistantConversationSchemaPromise = null;
 
 const ensureKpiRatioSchema = async () => {
   if (!kpiRatioSchemaPromise) {
@@ -386,6 +818,11 @@ const ensureKpiRatioSchema = async () => {
       await pool.query(`
         ALTER TABLE public.kpi
         ADD COLUMN IF NOT EXISTS created_by_people_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi
+        ADD COLUMN IF NOT EXISTS kpi_knowledge_base JSONB
       `);
 
       await pool.query(`
@@ -576,6 +1013,186 @@ const ensureKpiObjectSchema = async () => {
   }
 
   return kpiObjectSchemaPromise;
+};
+
+const ensureKpiAssistantConversationSchema = async () => {
+  if (!kpiAssistantConversationSchemaPromise) {
+    kpiAssistantConversationSchemaPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.kpi_assistant_conversation (
+          conversation_id BIGSERIAL PRIMARY KEY,
+          people_role_assignment_id INTEGER,
+          people_id INTEGER,
+          kpi_id INTEGER,
+          conversation JSONB NOT NULL DEFAULT '[]'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS people_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS kpi_id INTEGER
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ADD COLUMN IF NOT EXISTS conversation JSONB
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ALTER COLUMN people_role_assignment_id DROP NOT NULL
+      `);
+
+      await pool.query(`
+        ALTER TABLE public.kpi_assistant_conversation
+        ALTER COLUMN conversation SET DEFAULT '[]'::jsonb
+      `);
+
+      await pool.query(`
+        UPDATE public.kpi_assistant_conversation
+        SET conversation = '[]'::jsonb
+        WHERE conversation IS NULL
+      `);
+
+      await pool.query(`
+        UPDATE public.kpi_assistant_conversation kac
+        SET people_id = pra.people_id
+        FROM public.people_role_assignment pra
+        WHERE kac.people_role_assignment_id = pra.assignment_id
+          AND kac.people_id IS NULL
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_people_role_assignment_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_people_role_assignment_id_fkey
+            FOREIGN KEY (people_role_assignment_id)
+            REFERENCES public.people_role_assignment (assignment_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_people_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_people_id_fkey
+            FOREIGN KEY (people_id)
+            REFERENCES public.people (people_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'kpi_assistant_conversation_kpi_id_fkey'
+          ) THEN
+            ALTER TABLE public.kpi_assistant_conversation
+            ADD CONSTRAINT kpi_assistant_conversation_kpi_id_fkey
+            FOREIGN KEY (kpi_id)
+            REFERENCES public.kpi (kpi_id)
+            ON UPDATE NO ACTION
+            ON DELETE SET NULL;
+          END IF;
+        END
+        $$;
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_assistant_conversation_assignment
+        ON public.kpi_assistant_conversation (people_role_assignment_id, kpi_id, updated_at DESC)
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_kpi_assistant_conversation_people
+        ON public.kpi_assistant_conversation (people_id, kpi_id, updated_at DESC)
+      `);
+    })().catch((error) => {
+      kpiAssistantConversationSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return kpiAssistantConversationSchemaPromise;
+};
+
+const loadKpiAssistantConversationRow = async (
+  db,
+  {
+    assignmentId = null,
+    peopleId = null,
+    kpiId = null,
+    forUpdate = false
+  } = {}
+) => {
+  const normalizedAssignmentId = normalizeOptionalIntegerInput(assignmentId);
+  const normalizedPeopleId = normalizeOptionalIntegerInput(peopleId);
+  const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
+
+  if (!normalizedAssignmentId && !normalizedPeopleId) {
+    return null;
+  }
+
+  const result = await db.query(
+    `
+    SELECT
+      conversation_id,
+      people_role_assignment_id,
+      people_id,
+      conversation
+    FROM public.kpi_assistant_conversation
+    WHERE kpi_id IS NOT DISTINCT FROM $3
+      AND (
+        ($1::integer IS NOT NULL AND people_role_assignment_id = $1)
+        OR (
+          $2::integer IS NOT NULL
+          AND people_id = $2
+          AND ($1::integer IS NULL OR people_role_assignment_id IS NULL)
+        )
+      )
+    ORDER BY
+      CASE
+        WHEN $1::integer IS NOT NULL AND people_role_assignment_id = $1 THEN 0
+        WHEN $2::integer IS NOT NULL AND people_id = $2 THEN 1
+        ELSE 2
+      END,
+      updated_at DESC,
+      conversation_id DESC
+    LIMIT 1
+    ${forUpdate ? "FOR UPDATE" : ""}
+    `,
+    [normalizedAssignmentId, normalizedPeopleId, normalizedKpiId]
+  );
+
+  return result.rows[0] || null;
 };
 
 const getResponsibleNameById = async (responsibleId) => {
@@ -848,8 +1465,8 @@ const prepareKpiObjectPayload = (payload = {}) => {
   };
 };
 
-const loadSubjectHierarchyData = async () => {
-  const result = await pool.query(`
+const loadSubjectHierarchyData = async (db = pool) => {
+  const result = await db.query(`
     SELECT
       subject_id,
       parent_subject_id,
@@ -934,6 +1551,578 @@ const loadSubjectHierarchyData = async () => {
     nodeMap,
     pathById
   };
+};
+
+const buildKpiKnowledgeBaseScopeLabel = (parts = []) =>
+  parts
+    .map((value) => normalizeOptionalTextInput(value))
+    .filter(Boolean)
+    .join(" / ");
+
+const buildKpiKnowledgeBaseAllocationEntry = (row = {}) => {
+  const scopeLabel = buildKpiKnowledgeBaseScopeLabel([
+    row.plant_name,
+    row.zone_name,
+    row.unit_name,
+    row.unit_type_name,
+    row.role_name,
+    row.function_name,
+    row.product_name,
+    row.product_line_name,
+    row.market_name,
+    row.customer_name
+  ]) || `Allocation ${row.kpi_target_allocation_id}`;
+
+  return {
+    allocation_id: row.kpi_target_allocation_id,
+    scope_label: scopeLabel,
+    target: {
+      value: row.target_value ?? null,
+      unit: row.target_unit || null,
+      local_currency: row.local_currency || null,
+      type: row.kpi_type || null,
+      status: row.target_status || null
+    },
+    baseline: {
+      previous_target_value: row.previous_target_value ?? null,
+      last_best_target: row.last_best_target ?? null
+    },
+    dates: {
+      setup_date: normalizeOptionalDateInput(row.target_setup_date),
+      start_date: normalizeOptionalDateInput(row.target_start_date),
+      end_date: normalizeOptionalDateInput(row.target_end_date),
+      created_at: formatKnowledgeBaseTimestamp(row.created_at),
+      updated_at: formatKnowledgeBaseTimestamp(row.updated_at)
+    },
+    scope: {
+      plant: row.plant_id ? { id: row.plant_id, name: row.plant_name || "" } : null,
+      zone: row.zone_id ? { id: row.zone_id, name: row.zone_name || "" } : null,
+      unit: row.unit_id ? { id: row.unit_id, name: row.unit_name || "" } : null,
+      unit_type: row.unit_type_id ? { id: row.unit_type_id, name: row.unit_type_name || "" } : null,
+      role: row.role_id ? { id: row.role_id, name: row.role_name || "" } : null,
+      function_name: row.function_name || null,
+      product: row.product_id ? { id: row.product_id, name: row.product_name || "" } : null,
+      product_line: row.product_line_id ? { id: row.product_line_id, name: row.product_line_name || "" } : null,
+      market: row.market_id ? { id: row.market_id, name: row.market_name || "" } : null,
+      customer: row.customer_id ? { id: row.customer_id, name: row.customer_name || "" } : null
+    },
+    people: {
+      set_by: row.set_by_people_id
+        ? { id: row.set_by_people_id, name: getPeopleDisplayName(row.set_by_people || {}) || "" }
+        : null,
+      created_by: row.created_by_people_id
+        ? { id: row.created_by_people_id, name: getPeopleDisplayName(row.created_by_people || {}) || "" }
+        : null,
+      approved_by: row.approved_by_people_id
+        ? { id: row.approved_by_people_id, name: getPeopleDisplayName(row.approved_by_people || {}) || "" }
+        : null
+    },
+    comments: normalizeOptionalTextInput(row.comments) || "",
+    keywords: buildKnowledgeBaseKeywordList([
+      scopeLabel,
+      row.function_name,
+      row.plant_name,
+      row.zone_name,
+      row.unit_name,
+      row.unit_type_name,
+      row.role_name,
+      row.product_name,
+      row.product_line_name,
+      row.market_name,
+      row.customer_name,
+      row.comments,
+      row.kpi_type,
+      row.target_status
+    ], 18)
+  };
+};
+
+const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
+  const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
+  if (!normalizedKpiId) return null;
+
+  const [
+    kpiResult,
+    subjectLinksResult,
+    targetAllocationsResult,
+    subjectHierarchy
+  ] = await Promise.all([
+    db.query(
+      `
+      SELECT
+        k.kpi_id,
+        k.kpi_name,
+        k.kpi_sub_title,
+        k.kpi_code,
+        k.kpi_explanation,
+        k.kpi_formula,
+        k.target_value,
+        k.target_direction,
+        k.target_auto_adjustment,
+        k.min_value,
+        k.min_type,
+        k.max_value,
+        k.max_type,
+        k.low_limit,
+        k.high_limit,
+        k.tolerance_type,
+        k.low_tolerance,
+        k.up_tolerance,
+        k.unit,
+        k.frequency,
+        k.nombre_periode,
+        k.calculation_mode,
+        k.calculation_on,
+        k.display_trend,
+        k.regression,
+        k.reference_kpi_id,
+        reference_kpi.kpi_name AS reference_kpi_name,
+        k.owner_role_id,
+        owner_role.role_name AS owner_role_name,
+        k.status,
+        k.comments,
+        k.created_at,
+        k.updated_at,
+        k.created_by_people_id,
+        created_by_people.name AS created_by_name,
+        created_by_people.first_name AS created_by_first_name
+      FROM public.kpi k
+      LEFT JOIN public.kpi reference_kpi
+        ON reference_kpi.kpi_id = k.reference_kpi_id
+      LEFT JOIN public.role owner_role
+        ON owner_role.role_id = k.owner_role_id
+      LEFT JOIN public.people created_by_people
+        ON created_by_people.people_id = k.created_by_people_id
+      WHERE k.kpi_id = $1
+      LIMIT 1
+      `,
+      [normalizedKpiId]
+    ),
+    db.query(
+      `
+      SELECT
+        sk.subject_kpi_id,
+        sk.subject_id,
+        sk.importance_level,
+        sk.is_primary,
+        sk.comments,
+        s.parent_subject_id,
+        s.subject_name,
+        s.subject_explanation,
+        s.subject_example,
+        s.knowledge,
+        s.status AS subject_status
+      FROM public.subject_kpi sk
+      JOIN public.subject s
+        ON s.subject_id = sk.subject_id
+      WHERE sk.kpi_id = $1
+      ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+      `,
+      [normalizedKpiId]
+    ),
+    db.query(
+      `
+      SELECT
+        a.kpi_target_allocation_id,
+        a.kpi_id,
+        a.plant_id,
+        plant.unit_name AS plant_name,
+        a.zone_id,
+        zone.zone_name,
+        a.unit_id,
+        unit_scope.unit_name AS unit_name,
+        a.unit_type_id,
+        unit_type.unit_type_name,
+        a.role_id,
+        role.role_name,
+        a."function" AS function_name,
+        a.product_id,
+        product.product_name,
+        a.product_line_id,
+        product_line.product_line_name,
+        a.market_id,
+        market.market_name,
+        a.customer_id,
+        customer.customer_name,
+        a.target_value,
+        a.target_unit,
+        a.local_currency,
+        a.kpi_type,
+        a.target_setup_date,
+        a.target_start_date,
+        a.target_end_date,
+        a.last_best_target,
+        a.previous_target_value,
+        a.target_status,
+        a.set_by_people_id,
+        a.created_by_people_id,
+        a.approved_by_people_id,
+        a.comments,
+        a.created_at,
+        a.updated_at,
+        set_by_people.name AS set_by_people_name,
+        set_by_people.first_name AS set_by_people_first_name,
+        created_by_people.name AS created_by_people_name,
+        created_by_people.first_name AS created_by_people_first_name,
+        approved_by_people.name AS approved_by_people_name,
+        approved_by_people.first_name AS approved_by_people_first_name
+      FROM public.kpi_target_allocation a
+      LEFT JOIN public.unit plant
+        ON plant.unit_id = a.plant_id
+      LEFT JOIN public.zone zone
+        ON zone.zone_id = a.zone_id
+      LEFT JOIN public.unit unit_scope
+        ON unit_scope.unit_id = a.unit_id
+      LEFT JOIN public.unit_type unit_type
+        ON unit_type.unit_type_id = a.unit_type_id
+      LEFT JOIN public.role role
+        ON role.role_id = a.role_id
+      LEFT JOIN public.product product
+        ON product.product_id = a.product_id
+      LEFT JOIN public.product_line product_line
+        ON product_line.product_line_id = a.product_line_id
+      LEFT JOIN public.market market
+        ON market.market_id = a.market_id
+      LEFT JOIN public.customer customer
+        ON customer.customer_id = a.customer_id
+      LEFT JOIN public.people set_by_people
+        ON set_by_people.people_id = a.set_by_people_id
+      LEFT JOIN public.people created_by_people
+        ON created_by_people.people_id = a.created_by_people_id
+      LEFT JOIN public.people approved_by_people
+        ON approved_by_people.people_id = a.approved_by_people_id
+      WHERE a.kpi_id = $1
+      ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.kpi_target_allocation_id DESC
+      `,
+      [normalizedKpiId]
+    ),
+    loadSubjectHierarchyData(db)
+  ]);
+
+  if (!kpiResult.rows.length) {
+    return null;
+  }
+
+  return {
+    kpi: kpiResult.rows[0],
+    subject_links: subjectLinksResult.rows,
+    target_allocations: targetAllocationsResult.rows.map((row) => ({
+      ...row,
+      set_by_people: {
+        name: row.set_by_people_name,
+        first_name: row.set_by_people_first_name
+      },
+      created_by_people: {
+        name: row.created_by_people_name,
+        first_name: row.created_by_people_first_name
+      },
+      approved_by_people: {
+        name: row.approved_by_people_name,
+        first_name: row.approved_by_people_first_name
+      }
+    })),
+    subject_hierarchy: subjectHierarchy
+  };
+};
+
+const buildKpiKnowledgeBaseDocument = (sourceData, { reason = "manual_sync" } = {}) => {
+  if (!sourceData?.kpi) return null;
+
+  const { kpi, subject_links: subjectLinks, target_allocations: targetAllocations, subject_hierarchy: subjectHierarchy } = sourceData;
+  const flatKnowledgeNodes = new Map();
+  const causeEffectLinks = new Map();
+
+  const buildSubjectTree = (subjectNode, rootSubjectId, depthFromRoot = 0) => {
+    if (!subjectNode || depthFromRoot > KPI_KNOWLEDGE_BASE_MAX_DEPTH) {
+      return null;
+    }
+
+    const childNodes = depthFromRoot >= KPI_KNOWLEDGE_BASE_MAX_DEPTH
+      ? []
+      : (Array.isArray(subjectNode.children) ? subjectNode.children : [])
+        .map((childNode) => buildSubjectTree(childNode, rootSubjectId, depthFromRoot + 1))
+        .filter(Boolean);
+
+    const nodeEntry = {
+      node_id: `subject:${subjectNode.id}`,
+      subject_id: Number(subjectNode.id),
+      parent_subject_id: normalizeOptionalIntegerInput(subjectNode.parent_id),
+      root_subject_id: normalizeOptionalIntegerInput(rootSubjectId),
+      name: subjectNode.name || `Subject ${subjectNode.id}`,
+      path: subjectHierarchy.pathById.get(String(subjectNode.id)) || subjectNode.full_path || subjectNode.name || "",
+      hierarchy_level: Number(subjectNode.level || 0),
+      depth_from_root: depthFromRoot,
+      description: subjectNode.description || "",
+      knowledge: subjectNode.why_important || "",
+      example: subjectNode.subject_example || "",
+      status: subjectNode.status || "",
+      comments: subjectNode.comment || "",
+      keywords: buildKnowledgeBaseKeywordList([
+        subjectNode.name,
+        subjectNode.full_path,
+        subjectNode.description,
+        subjectNode.why_important,
+        subjectNode.subject_example,
+        subjectNode.comment
+      ], 18),
+      children: childNodes
+    };
+
+    const flatNodeEntry = {
+      node_id: nodeEntry.node_id,
+      subject_id: nodeEntry.subject_id,
+      parent_subject_id: nodeEntry.parent_subject_id,
+      root_subject_id: nodeEntry.root_subject_id,
+      name: nodeEntry.name,
+      path: nodeEntry.path,
+      hierarchy_level: nodeEntry.hierarchy_level,
+      depth_from_root: nodeEntry.depth_from_root,
+      description: nodeEntry.description,
+      knowledge: nodeEntry.knowledge,
+      example: nodeEntry.example,
+      status: nodeEntry.status,
+      comments: nodeEntry.comments,
+      keywords: nodeEntry.keywords,
+      children_ids: childNodes.map((childNode) => childNode.node_id)
+    };
+
+    const existingFlatNode = flatKnowledgeNodes.get(flatNodeEntry.node_id);
+    if (
+      !existingFlatNode ||
+      Number(flatNodeEntry.depth_from_root) < Number(existingFlatNode.depth_from_root)
+    ) {
+      flatKnowledgeNodes.set(flatNodeEntry.node_id, flatNodeEntry);
+    }
+
+    childNodes.forEach((childNode) => {
+      const relation = {
+        source_node_id: nodeEntry.node_id,
+        source_subject_id: nodeEntry.subject_id,
+        target_node_id: childNode.node_id,
+        target_subject_id: childNode.subject_id,
+        relation_type: "parent_child_influence",
+        relation_basis: "subject_hierarchy",
+        description: `${nodeEntry.name} provides the parent context for ${childNode.name}.`
+      };
+      const relationKey = [
+        relation.source_node_id,
+        relation.target_node_id,
+        relation.relation_type
+      ].join("|");
+      if (!causeEffectLinks.has(relationKey)) {
+        causeEffectLinks.set(relationKey, relation);
+      }
+    });
+
+    return nodeEntry;
+  };
+
+  const linkedSubjects = subjectLinks.map((link) => {
+    const subjectNode = subjectHierarchy.nodeMap.get(String(link.subject_id));
+    const knowledgeTree = subjectNode
+      ? buildSubjectTree(subjectNode, link.subject_id, 0)
+      : null;
+
+    return {
+      subject_kpi_id: link.subject_kpi_id,
+      subject_id: link.subject_id,
+      is_primary: Boolean(link.is_primary),
+      importance_level: normalizeOptionalTextInput(link.importance_level) || "",
+      assignment_comments: normalizeOptionalTextInput(link.comments) || "",
+      path: subjectHierarchy.pathById.get(String(link.subject_id)) || normalizeOptionalTextInput(link.subject_name) || "",
+      subject_name: normalizeOptionalTextInput(link.subject_name) || "",
+      subject_description: normalizeOptionalTextInput(link.subject_explanation) || "",
+      subject_knowledge: normalizeOptionalTextInput(link.knowledge) || "",
+      subject_example: normalizeOptionalTextInput(link.subject_example) || "",
+      subject_status: normalizeOptionalTextInput(link.subject_status) || "",
+      keywords: buildKnowledgeBaseKeywordList([
+        link.subject_name,
+        link.subject_explanation,
+        link.knowledge,
+        link.subject_example,
+        link.comments
+      ], 18),
+      knowledge_tree: knowledgeTree
+    };
+  });
+
+  const primarySubject = linkedSubjects.find((entry) => entry.is_primary) || linkedSubjects[0] || null;
+  const allocationEntries = targetAllocations.map((row) => buildKpiKnowledgeBaseAllocationEntry(row));
+  const scopeSummary = {
+    plants: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.plant?.name), 12),
+    zones: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.zone?.name), 12),
+    units: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.unit?.name), 12),
+    unit_types: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.unit_type?.name), 12),
+    roles: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.role?.name), 12),
+    functions: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.function_name), 12),
+    products: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.product?.name), 12),
+    product_lines: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.product_line?.name), 12),
+    markets: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.market?.name), 12),
+    customers: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.customer?.name), 12)
+  };
+
+  return {
+    schema_version: "1.0.0",
+    generated_at: new Date().toISOString(),
+    generation_context: {
+      reason,
+      max_subject_depth: KPI_KNOWLEDGE_BASE_MAX_DEPTH,
+      source_tables: ["kpi", "subject_kpi", "subject", "kpi_target_allocation"],
+      purpose: ["solution_search", "training", "rag", "diagnosis"]
+    },
+    kpi: {
+      kpi_id: kpi.kpi_id,
+      name: kpi.kpi_name || "",
+      sub_title: kpi.kpi_sub_title || "",
+      display_name: [kpi.kpi_sub_title, kpi.kpi_name].filter(Boolean).join(" - ") || kpi.kpi_name || `KPI ${kpi.kpi_id}`,
+      code: kpi.kpi_code || "",
+      explanation: kpi.kpi_explanation || "",
+      formula: kpi.kpi_formula || "",
+      unit: kpi.unit || "",
+      frequency: kpi.frequency || "",
+      status: kpi.status || "",
+      comments: kpi.comments || "",
+      target: {
+        default_value: kpi.target_value ?? null,
+        direction: kpi.target_direction || null,
+        auto_adjustment: kpi.target_auto_adjustment || null
+      },
+      thresholds: {
+        min_value: kpi.min_value ?? null,
+        min_type: kpi.min_type || null,
+        max_value: kpi.max_value ?? null,
+        max_type: kpi.max_type || null,
+        low_limit: kpi.low_limit ?? null,
+        high_limit: kpi.high_limit ?? null,
+        tolerance_type: kpi.tolerance_type || null,
+        low_tolerance: kpi.low_tolerance || null,
+        up_tolerance: kpi.up_tolerance || null
+      },
+      calculation: {
+        mode: kpi.calculation_mode || null,
+        calculation_on: kpi.calculation_on || null,
+        nombre_periode: kpi.nombre_periode || null,
+        display_trend: kpi.display_trend || null,
+        regression: kpi.regression || null
+      },
+      ownership: {
+        owner_role_id: kpi.owner_role_id ?? null,
+        owner_role_name: kpi.owner_role_name || null,
+        created_by_people_id: kpi.created_by_people_id ?? null,
+        created_by_name: getPeopleDisplayName({
+          name: kpi.created_by_name,
+          first_name: kpi.created_by_first_name
+        }) || null
+      },
+      reference_kpi: kpi.reference_kpi_id
+        ? {
+            kpi_id: kpi.reference_kpi_id,
+            name: kpi.reference_kpi_name || ""
+          }
+        : null,
+      timestamps: {
+        created_at: formatKnowledgeBaseTimestamp(kpi.created_at),
+        updated_at: formatKnowledgeBaseTimestamp(kpi.updated_at)
+      }
+    },
+    subject_context: {
+      primary_subject_id: primarySubject?.subject_id || null,
+      primary_subject_path: primarySubject?.path || null,
+      linked_subjects: linkedSubjects,
+      knowledge_nodes: Array.from(flatKnowledgeNodes.values()).sort((left, right) => {
+        const depthDiff = Number(left.depth_from_root || 0) - Number(right.depth_from_root || 0);
+        if (depthDiff !== 0) return depthDiff;
+        return String(left.path || left.name || "").localeCompare(String(right.path || right.name || ""));
+      }),
+      cause_effect_links: Array.from(causeEffectLinks.values())
+    },
+    target_allocations: allocationEntries,
+    scope_summary: scopeSummary,
+    search_index: {
+      keywords: buildKnowledgeBaseKeywordList([
+        kpi.kpi_name,
+        kpi.kpi_sub_title,
+        kpi.kpi_code,
+        kpi.kpi_explanation,
+        kpi.kpi_formula,
+        primarySubject?.path,
+        linkedSubjects.map((entry) => entry.subject_name),
+        linkedSubjects.map((entry) => entry.subject_description),
+        linkedSubjects.map((entry) => entry.subject_knowledge),
+        allocationEntries.map((entry) => entry.scope_label),
+        allocationEntries.map((entry) => entry.comments),
+        Object.values(scopeSummary)
+      ], 80),
+      subject_paths: uniqueKnowledgeBaseTexts(linkedSubjects.map((entry) => entry.path), 20),
+      allocation_scopes: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope_label), 20)
+    },
+    ai_usage: {
+      instructions: "Use KPI definition first, then the subject tree and cause-effect links, then target allocation scope and comments.",
+      preferred_order: ["kpi", "subject_context", "target_allocations", "scope_summary"]
+    }
+  };
+};
+
+const refreshKpiKnowledgeBaseForKpiId = async (db, kpiId, options = {}) => {
+  const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
+  if (!normalizedKpiId) return null;
+
+  const sourceData = await loadKpiKnowledgeBaseSourceData(db, normalizedKpiId);
+  if (!sourceData) return null;
+
+  const knowledgeBase = buildKpiKnowledgeBaseDocument(sourceData, options);
+  if (!knowledgeBase) return null;
+
+  await db.query(
+    `
+    UPDATE public.kpi
+    SET kpi_knowledge_base = $2::jsonb
+    WHERE kpi_id = $1
+    `,
+    [normalizedKpiId, JSON.stringify(knowledgeBase)]
+  );
+
+  return knowledgeBase;
+};
+
+const refreshKpiKnowledgeBases = async (db, kpiIds = [], options = {}) => {
+  const uniqueKpiIds = [...new Set(
+    (Array.isArray(kpiIds) ? kpiIds : [])
+      .map((value) => normalizeOptionalIntegerInput(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  )];
+
+  for (const kpiId of uniqueKpiIds) {
+    await refreshKpiKnowledgeBaseForKpiId(db, kpiId, options);
+  }
+};
+
+const buildKpiAssistantMessagesForOpenAI = ({
+  kpiRow,
+  existingConversation,
+  message,
+  ragContext
+}) => {
+  const systemPrompt = buildStrictKpiKnowledgePrompt(kpiRow, ragContext);
+
+  return [
+    { role: "system", content: systemPrompt },
+    ...(Array.isArray(existingConversation) ? existingConversation : []).slice(-10).map((entry) => ({
+      role: entry.role,
+      content: entry.content || entry.text || ""
+    })),
+    {
+      role: "system",
+      content:
+        "Use the current KPI knowledge base JSON as the source of truth. Use the matched KPI knowledge context first, then the rest of the KPI JSON. Ignore old conversation values if they conflict."
+    },
+    { role: "user", content: message }
+  ];
+};
+
+const writeSseEvent = (res, eventName, payload) => {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 };
 
 const loadRoleOptions = async () => {
@@ -1208,6 +2397,7 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     created_at: row.created_at,
     updated_at: row.updated_at,
     created_by_people_id: row.created_by_people_id ?? null,
+    kpi_knowledge_base: row.kpi_knowledge_base ?? null,
     full_subject_path: subjectPath,
     kpi_target_allocation_id: row.kpi_target_allocation_id ?? null,
     allocation_target_value: row.allocation_target_value ?? null,
@@ -1216,6 +2406,22 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     set_by_people_id: row.set_by_people_id ?? null,
     set_by_people_display_name: setByPeopleDisplayName
   };
+};
+
+const annotateOwnedKpisForResponsible = (rows = [], responsiblePeopleId = null) => {
+  const normalizedResponsiblePeopleId = normalizeOptionalIntegerInput(responsiblePeopleId);
+
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const normalizedCreatedByPeopleId = normalizeOptionalIntegerInput(row?.created_by_people_id);
+
+    return {
+      ...row,
+      is_owned_by_responsible:
+        normalizedResponsiblePeopleId !== null &&
+        normalizedCreatedByPeopleId !== null &&
+        normalizedCreatedByPeopleId === normalizedResponsiblePeopleId
+    };
+  });
 };
 
 const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = null } = {}) => {
@@ -1262,6 +2468,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       k.created_at,
       k.updated_at,
       k.created_by_people_id,
+      k.kpi_knowledge_base,
       primary_subject.subject_id,
       assignment.kpi_target_allocation_id,
       assignment.target_value AS allocation_target_value,
@@ -1914,6 +3121,252 @@ app.get("/api/kpis/:id", async (req, res) => {
   }
 });
 
+app.post("/api/kpis/:id/knowledge-base/refresh", async (req, res) => {
+  try {
+    await ensureKpiRatioSchema();
+
+    const kb = await refreshKpiKnowledgeBaseForKpiId(pool, req.params.id, {
+      reason: "manual_refresh"
+    });
+
+    if (!kb) {
+      return res.status(404).json({ error: "KPI not found" });
+    }
+
+    res.json(kb);
+  } catch (error) {
+    console.error("Refresh KPI knowledge base error:", error);
+    res.status(500).json({ error: "Failed to refresh KPI knowledge base" });
+  }
+});
+
+app.post("/api/kpis/:id/ai-support", async (req, res) => {
+  let client;
+  const wantsStream = req.body?.stream === true || req.body?.stream === "true";
+
+  try {
+    await ensureKpiRatioSchema();
+    await ensureKpiAssistantConversationSchema();
+
+    const kpiId = normalizeOptionalIntegerInput(req.params.id);
+    const message = normalizeOptionalTextInput(req.body.message);
+    const peopleId =
+      normalizeOptionalIntegerInput(req.body.people_id) ||
+      normalizeOptionalIntegerInput(req.body.responsible_id);
+
+    if (!kpiId) {
+      return res.status(400).json({ error: "KPI ID is required." });
+    }
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required." });
+    }
+
+    if (!peopleId) {
+      return res.status(400).json({ error: "people_id or responsible_id is required." });
+    }
+
+    const kpiRow = await loadKpiKnowledgeBaseForAssistant(kpiId);
+
+    if (!kpiRow || !kpiRow.kpi_knowledge_base) {
+      return res.json({
+        answer:
+          "No KPI knowledge base is available for this KPI. Please refresh or generate kpi_knowledge_base first."
+      });
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    let conversationRow = await loadKpiAssistantConversationRow(client, {
+      peopleId,
+      kpiId,
+      forUpdate: true
+    });
+
+    if (!conversationRow) {
+      const inserted = await client.query(
+        `
+        INSERT INTO public.kpi_assistant_conversation (
+          people_id,
+          kpi_id,
+          conversation
+        )
+        VALUES ($1, $2, '[]'::jsonb)
+        RETURNING conversation_id, people_id, kpi_id, conversation
+        `,
+        [peopleId, kpiId]
+      );
+
+      conversationRow = inserted.rows[0];
+    }
+
+    const existingConversation = Array.isArray(conversationRow.conversation)
+      ? conversationRow.conversation
+      : [];
+
+    const storedKpiKnowledgeContext = buildStoredKpiKnowledgeBaseContext({
+      knowledgeBase: kpiRow.kpi_knowledge_base,
+      message,
+      conversationHistory: existingConversation,
+      selectedKpiSummary: null,
+      selectedKpi: {
+        kpi_id: kpiRow.kpi_id,
+        title: kpiRow.kpi_name,
+        subtitle: kpiRow.kpi_sub_title
+      }
+    });
+    const messagesForOpenAI = buildKpiAssistantMessagesForOpenAI({
+      kpiRow,
+      existingConversation,
+      message,
+      ragContext: storedKpiKnowledgeContext
+    });
+    let answer = "";
+
+    if (wantsStream) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+
+      const completionStream = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messagesForOpenAI,
+        temperature: 0.2,
+        stream: true
+      });
+
+      for await (const chunk of completionStream) {
+        const delta = chunk?.choices?.[0]?.delta?.content || "";
+        if (!delta) continue;
+        answer += delta;
+        writeSseEvent(res, "delta", { delta });
+      }
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messagesForOpenAI,
+        temperature: 0.2
+      });
+
+      answer = completion.choices?.[0]?.message?.content || "";
+    }
+
+    const nextConversation = [
+      ...existingConversation,
+      {
+        role: "user",
+        content: message,
+        text: message,
+        ts: Date.now()
+      },
+      {
+        role: "assistant",
+        content: answer,
+        text: answer,
+        ts: Date.now()
+      }
+    ].slice(-50);
+
+    await client.query(
+      `
+      UPDATE public.kpi_assistant_conversation
+      SET
+        conversation = $2::jsonb,
+        updated_at = NOW()
+      WHERE conversation_id = $1
+      `,
+      [conversationRow.conversation_id, JSON.stringify(nextConversation)]
+    );
+
+    await client.query("COMMIT");
+
+    if (wantsStream) {
+      writeSseEvent(res, "done", {
+        answer,
+        conversation: nextConversation,
+        kpi_id: kpiRow.kpi_id,
+        kpi_name: kpiRow.kpi_name
+      });
+      res.end();
+      return;
+    }
+
+    res.json({
+      answer,
+      conversation: nextConversation,
+      kpi_id: kpiRow.kpi_id,
+      kpi_name: kpiRow.kpi_name
+    });
+  } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
+    console.error("POST /api/kpis/:id/ai-support error:", error);
+    if (wantsStream && !res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+    }
+
+    if (wantsStream) {
+      writeSseEvent(res, "error", {
+        error: "Failed to answer KPI question"
+      });
+      res.end();
+      return;
+    }
+
+    res.status(500).json({ error: "Failed to answer KPI question" });
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+});
+
+app.delete("/api/kpis/:id/ai-support/conversation", async (req, res) => {
+  try {
+    await ensureKpiAssistantConversationSchema();
+
+    const kpiId = normalizeOptionalIntegerInput(req.params.id);
+    const peopleId =
+      normalizeOptionalIntegerInput(req.body?.people_id) ||
+      normalizeOptionalIntegerInput(req.body?.responsible_id) ||
+      normalizeOptionalIntegerInput(req.query?.people_id) ||
+      normalizeOptionalIntegerInput(req.query?.responsible_id);
+
+    if (!kpiId) {
+      return res.status(400).json({ error: "KPI ID is required." });
+    }
+
+    if (!peopleId) {
+      return res.status(400).json({ error: "people_id or responsible_id is required." });
+    }
+
+    await pool.query(
+      `
+      DELETE FROM public.kpi_assistant_conversation
+      WHERE kpi_id = $1
+        AND people_id = $2
+      `,
+      [kpiId, peopleId]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("DELETE /api/kpis/:id/ai-support/conversation error:", error);
+    res.status(500).json({ error: "Failed to reset KPI assistant conversation" });
+  }
+});
 // CREATE KPI
 app.post("/api/kpis", async (req, res) => {
   let client;
@@ -2037,6 +3490,9 @@ app.post("/api/kpis", async (req, res) => {
 
     const newKpi = result.rows[0];
     await upsertPrimarySubjectKpiLink(client, newKpi.kpi_id, resolvedSubjectId);
+    await refreshKpiKnowledgeBaseForKpiId(client, newKpi.kpi_id, {
+      reason: "kpi_created"
+    });
 
     await client.query("COMMIT");
     const rows = await loadKpiRowsForUi({ kpiId: newKpi.kpi_id });
@@ -2178,6 +3634,9 @@ app.put("/api/kpis/:id", async (req, res) => {
     }
 
     await upsertPrimarySubjectKpiLink(client, Number(req.params.id), resolvedSubjectId);
+    await refreshKpiKnowledgeBaseForKpiId(client, Number(req.params.id), {
+      reason: "kpi_updated"
+    });
     await client.query("COMMIT");
 
     const rows = await loadKpiRowsForUi({ kpiId: Number(req.params.id) });
@@ -2195,23 +3654,73 @@ app.put("/api/kpis/:id", async (req, res) => {
   }
 });
 
+const deleteKpiDependentRecords = async (client, kpiId) => {
+  const allocationResult = await client.query(
+    `
+    SELECT kpi_target_allocation_id
+    FROM public.kpi_target_allocation
+    WHERE kpi_id = $1
+    `,
+    [kpiId]
+  );
+  const allocationIds = allocationResult.rows
+    .map((row) => normalizeOptionalIntegerInput(row.kpi_target_allocation_id))
+    .filter((value) => Number.isInteger(value) && value > 0);
+
+  await client.query(
+    `DELETE FROM public.kpi_assistant_conversation WHERE kpi_id = $1`,
+    [kpiId]
+  );
+
+  if (allocationIds.length) {
+    await client.query(
+      `DELETE FROM public.kpi_result WHERE kpi_target_allocation_id = ANY($1::int[])`,
+      [allocationIds]
+    );
+  }
+
+  await client.query(
+    `DELETE FROM public.kpi_target_allocation WHERE kpi_id = $1`,
+    [kpiId]
+  );
+
+  await client.query(
+    `DELETE FROM public.subject_kpi WHERE kpi_id = $1`,
+    [kpiId]
+  );
+};
+
+const deleteKpiTargetAllocationDependentRecords = async (client, allocationIds = []) => {
+  const normalizedAllocationIds = Array.from(
+    new Set(
+      (Array.isArray(allocationIds) ? allocationIds : [allocationIds])
+        .map((value) => normalizeOptionalIntegerInput(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  );
+
+  if (!normalizedAllocationIds.length) {
+    return [];
+  }
+
+  await client.query(
+    `DELETE FROM public.kpi_result WHERE kpi_target_allocation_id = ANY($1::int[])`,
+    [normalizedAllocationIds]
+  );
+
+  return normalizedAllocationIds;
+};
+
 // DELETE KPI
 app.delete("/api/kpis/:id", async (req, res) => {
   let client;
 
   try {
+    await ensureKpiAssistantConversationSchema();
     client = await pool.connect();
     await client.query("BEGIN");
 
-    await client.query(
-      `DELETE FROM public.kpi_target_allocation WHERE kpi_id = $1`,
-      [req.params.id]
-    );
-
-    await client.query(
-      `DELETE FROM public.subject_kpi WHERE kpi_id = $1`,
-      [req.params.id]
-    );
+    await deleteKpiDependentRecords(client, req.params.id);
 
     const result = await client.query(
       `DELETE FROM public.kpi WHERE kpi_id = $1 RETURNING kpi_id`,
@@ -2863,22 +4372,8 @@ app.get("/kpi-admin", async (req, res) => {
       </div>
 
       <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-label">Total KPIs</div>
-          <div class="stat-value" id="statTotal">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Monthly KPIs</div>
-          <div class="stat-value" id="statMonthly">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">With Targets</div>
-          <div class="stat-value" id="statTargets">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Tolerance Rules</div>
-          <div class="stat-value" id="statTolerance">0</div>
-        </div>
+     
+       
       </div>
 
       <div class="toolbar">
@@ -3044,11 +4539,8 @@ app.get("/kpi-admin", async (req, res) => {
         const withTargets = rows.filter(r => r.target !== null && r.target !== undefined && String(r.target).trim() !== "").length;
         const tolerance = rows.filter(r => r.tolerance_type && String(r.tolerance_type).trim() !== "").length;
 
-        document.getElementById("statTotal").textContent = total;
-        document.getElementById("statMonthly").textContent = monthly;
-        document.getElementById("statTargets").textContent = withTargets;
-        document.getElementById("statTolerance").textContent = tolerance;
-        document.getElementById("rowCount").textContent = total;
+
+    
       }
 
       function renderTable(rows) {
@@ -3688,6 +5180,9 @@ VALUES (
 
     const newKpi = insertKpi.rows[0];
     await upsertPrimarySubjectKpiLink(client, newKpi.kpi_id, resolvedSubjectId);
+    await refreshKpiKnowledgeBaseForKpiId(client, newKpi.kpi_id, {
+      reason: "responsible_kpi_created"
+    });
 
 
     await client.query("COMMIT");
@@ -3714,11 +5209,12 @@ app.get("/api/responsibles/:responsibleId/kpis", async (req, res) => {
   try {
     await ensureKpiRatioSchema();
     const includeAll = String(req.query.include_all || "").trim() === "1";
+    const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
     const rows = await loadKpiRowsForUi({
       search: req.query.search || "",
       responsibleId: includeAll ? null : responsibleId
     });
-    res.json(rows);
+    res.json(annotateOwnedKpisForResponsible(rows, responsiblePeopleId));
   } catch (error) {
     console.error("GET /api/responsibles/:responsibleId/kpis error:", error);
     res.status(500).json({ error: "Failed to load KPIs" });
@@ -3731,6 +5227,7 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
   try {
     await ensureKpiRatioSchema();
     const includeAll = String(req.query.include_all || "").trim() === "1";
+    const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
     const rows = await loadKpiRowsForUi({
       kpiId: Number(kpiId),
       responsibleId: includeAll ? null : responsibleId
@@ -3740,7 +5237,7 @@ app.get("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
       return res.status(404).json({ error: "KPI not found" });
     }
 
-    res.json(rows[0]);
+    res.json(annotateOwnedKpisForResponsible(rows, responsiblePeopleId)[0]);
   } catch (error) {
     console.error("GET one KPI error:", error);
     res.status(500).json({ error: "Failed to load KPI" });
@@ -3905,6 +5402,7 @@ app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
 
   try {
     await ensureKpiRatioSchema();
+    await ensureKpiAssistantConversationSchema();
     const responsiblePeopleId = await resolveResponsiblePeopleId(responsibleId);
 
     if (!responsiblePeopleId) {
@@ -3930,15 +5428,7 @@ app.delete("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
       return res.status(404).json({ error: "KPI not found" });
     }
 
-    await client.query(
-      `DELETE FROM public.kpi_target_allocation WHERE kpi_id = $1`,
-      [kpiId]
-    );
-
-    await client.query(
-      `DELETE FROM public.subject_kpi WHERE kpi_id = $1`,
-      [kpiId]
-    );
+    await deleteKpiDependentRecords(client, kpiId);
 
     const result = await client.query(
       `
@@ -4120,6 +5610,7 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
   const { responsibleId } = req.params;
   let client;
   try {
+    await ensureKpiRatioSchema();
     await ensureKpiObjectSchema();
     const responsiblePeopleContext = await loadPeopleContextByPeopleId(responsibleId);
     const normalizedResponsiblePeopleId =
@@ -4142,8 +5633,14 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
     await client.query("BEGIN");
 
     const insertedIds = [];
+    const touchedKpiIds = new Set();
 
     for (const preparedRow of preparedRows) {
+      const preparedKpiId = normalizeOptionalIntegerInput(preparedRow.kpi_id);
+      if (preparedKpiId) {
+        touchedKpiIds.add(preparedKpiId);
+      }
+
       const result = await client.query(
         `
         INSERT INTO public.kpi_target_allocation (
@@ -4184,6 +5681,9 @@ app.post("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
       }
     }
 
+    await refreshKpiKnowledgeBases(client, Array.from(touchedKpiIds), {
+      reason: "target_allocation_created"
+    });
     await client.query("COMMIT");
 
     // await sendKpiTargetAllocationAssignmentNotifications({
@@ -4274,6 +5774,7 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
   let transactionCompleted = false;
 
   try {
+    await ensureKpiRatioSchema();
     await ensureKpiObjectSchema();
     const responsiblePeopleContext = await loadPeopleContextByPeopleId(responsibleId);
     const normalizedResponsiblePeopleId =
@@ -4333,8 +5834,21 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
     const resultingAllocationIds = [];
     const notificationAllocationIds = [];
     const matchedExistingAllocationIds = new Set();
+    const touchedKpiIds = new Set();
+
+    existingFamilyRows.forEach((row) => {
+      const existingKpiId = normalizeOptionalIntegerInput(row?.kpi_id);
+      if (existingKpiId) {
+        touchedKpiIds.add(existingKpiId);
+      }
+    });
 
     for (const preparedRow of preparedRows) {
+      const preparedKpiId = normalizeOptionalIntegerInput(preparedRow.kpi_id);
+      if (preparedKpiId) {
+        touchedKpiIds.add(preparedKpiId);
+      }
+
       const preparedAllocationId = normalizeOptionalIntegerInput(preparedRow.kpi_target_allocation_id);
       const scopeKey = getKpiTargetAllocationScopeKey(preparedRow);
       const existingRow =
@@ -4347,6 +5861,10 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
         (scopeKey ? existingRowsByScopeKey.get(scopeKey) : null);
       const existingAssignedPeopleId = normalizeOptionalIntegerInput(existingRow?.set_by_people_id);
       const preparedAssignedPeopleId = normalizeOptionalIntegerInput(preparedRow?.set_by_people_id);
+      const existingKpiId = normalizeOptionalIntegerInput(existingRow?.kpi_id);
+      if (existingKpiId) {
+        touchedKpiIds.add(existingKpiId);
+      }
 
       if (existingRow?.kpi_target_allocation_id) {
         matchedExistingAllocationIds.add(Number(existingRow.kpi_target_allocation_id));
@@ -4463,6 +5981,8 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
         continue;
       }
 
+      await deleteKpiTargetAllocationDependentRecords(client, existingAllocationId);
+
       await client.query(
         `
         DELETE FROM public.kpi_target_allocation
@@ -4472,6 +5992,9 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
       );
     }
 
+    await refreshKpiKnowledgeBases(client, Array.from(touchedKpiIds), {
+      reason: "target_allocation_updated"
+    });
     await client.query("COMMIT");
     transactionCompleted = true;
 
@@ -4529,26 +6052,41 @@ app.put("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
 app.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req, res) => {
   const { kpiObjectId } = req.params;
+  let client;
 
   try {
+    await ensureKpiRatioSchema();
     await ensureKpiObjectSchema();
     const groupIds = await getKpiTargetAllocationGroupIds(kpiObjectId);
     if (!groupIds.length) {
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
 
-    const result = await pool.query(
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    await deleteKpiTargetAllocationDependentRecords(client, groupIds);
+
+    const result = await client.query(
       `
       DELETE FROM public.kpi_target_allocation
       WHERE kpi_target_allocation_id = ANY($1::int[])
-      RETURNING kpi_target_allocation_id
+      RETURNING kpi_target_allocation_id, kpi_id
       `,
       [groupIds]
     );
 
     if (!result.rows.length) {
+      await client.query("ROLLBACK").catch(() => {});
       return res.status(404).json({ error: "KPI target allocation not found" });
     }
+
+    await refreshKpiKnowledgeBases(
+      client,
+      result.rows.map((row) => row.kpi_id),
+      { reason: "target_allocation_deleted" }
+    );
+    await client.query("COMMIT");
 
     res.json({
       success: true,
@@ -4557,8 +6095,15 @@ app.delete("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (r
         .filter((value) => Number.isInteger(value) && value > 0)
     });
   } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
     console.error("DELETE KPI object error:", error);
     res.status(500).json({ error: "Failed to delete KPI target allocation" });
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 
@@ -4665,6 +6210,7 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
           k.high_limit,
           k.low_limit,
           k.target,
+          k.target_direction,
           date_trunc('month', h.updated_at)::date AS month_start,
           to_char(date_trunc('month', h.updated_at), 'Mon YYYY') AS month_label,
           COALESCE(NULLIF(h.new_value, ''), '0')::numeric AS new_value_num,
@@ -4685,6 +6231,7 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
         high_limit,
         low_limit,
         target,
+        target_direction,
         month_start,
         month_label,
         new_value_num
@@ -4707,7 +6254,8 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
           values: [],
           targetValue: row.target !== null && row.target !== "" ? Number(row.target) : null,
           highLimitValue: row.high_limit !== null ? Number(row.high_limit) : null,
-          lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null
+          lowLimitValue: row.low_limit !== null ? Number(row.low_limit) : null,
+          targetDirection: row.target_direction || "Up"
         };
       }
 
@@ -4723,7 +6271,8 @@ app.get("/api/responsibles/:responsibleId/kpi-history-monthly", async (req, res)
       values: item.values,
       targetValue: item.targetValue,
       highLimitValue: item.highLimitValue,
-      lowLimitValue: item.lowLimitValue
+      lowLimitValue: item.lowLimitValue,
+      targetDirection: item.targetDirection
     }));
 
     res.json(finalRows);
@@ -9594,34 +11143,7 @@ textarea {
 
         <section id="dashboardSection">
           <div class="hero-panel">
-            <div class="hero-row">
-              <div class="hero-meta">
-                <h3>Executive KPI Management</h3>
-            </div>
-          </div>
-
-          <div class="stats-grid">
-            <div class="stat-card">
-              <div class="stat-label">Total KPIs</div>
-              <div class="stat-value" id="statTotal">0</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-label">Monthly KPIs</div>
-              <div class="stat-value" id="statMonthly">0</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-label">With Target</div>
-              <div class="stat-value" id="statTarget">0</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-label">Tolerance Rules</div>
-              <div class="stat-value" id="statTolerance">0</div>
-            </div>
-          </div>
-
+        
           <div class="kpi-matrix-shell">
             <div class="kpi-matrix-hero">
               <div class="kpi-matrix-title">
@@ -12750,10 +14272,7 @@ function handleCalculationModeChange() {
         const withTarget = rows.filter(r => r.target !== null && r.target !== undefined && String(r.target).trim() !== "").length;
         const tolerance = rows.filter(r => r.tolerance_type && String(r.tolerance_type).trim() !== "").length;
 
-        document.getElementById("statTotal").textContent = total;
-        document.getElementById("statMonthly").textContent = monthly;
-        document.getElementById("statTarget").textContent = withTarget;
-        document.getElementById("statTolerance").textContent = tolerance;
+        
       }
 
 function getLastPathSegment(pathText) {
@@ -12814,7 +14333,9 @@ function buildKpiDetailItem(label, value) {
 }
 
 function renderKpiDetailsModalContent(kpi = {}) {
-  const isOwned = String(kpi.created_by_people_id || "") === String(responsibleId || "");
+  const isOwned = typeof kpi?.is_owned_by_responsible === "boolean"
+    ? kpi.is_owned_by_responsible
+    : String(kpi.created_by_people_id || "") === String(responsibleId || "");
   const visibilityText = isOwned ? "Owned by this responsible" : "Visible in consult mode";
 
   function hasValue(v) {
@@ -12991,8 +14512,30 @@ function updateKpiResultsMeta(visibleCount) {
   metaEl.textContent = shown + " KPI" + (shown === 1 ? "" : "s");
 }
 
+function isKpiOwnedByResponsible(kpi = {}) {
+  return typeof kpi?.is_owned_by_responsible === "boolean"
+    ? kpi.is_owned_by_responsible
+    : String(kpi.created_by_people_id || "") === String(responsibleId || "");
+}
+
+function getCurrentKpiRowById(kpiId) {
+  return Array.isArray(currentRows)
+    ? currentRows.find((row) => String(row?.kpi_id || "") === String(kpiId || ""))
+    : null;
+}
+
       function renderKpis(rows) {
-  currentRows = rows || [];
+  const sortedRows = Array.isArray(rows) ? rows.slice() : [];
+  sortedRows.sort((left, right) => {
+    const leftOwned = Boolean(left?.is_owned_by_responsible);
+    const rightOwned = Boolean(right?.is_owned_by_responsible);
+    if (leftOwned !== rightOwned) {
+      return leftOwned ? -1 : 1;
+    }
+    return String(left?.indicator_sub_title || "").localeCompare(String(right?.indicator_sub_title || ""));
+  });
+
+  currentRows = sortedRows;
   updateStats(currentRows);
   updateKpiResultsMeta(currentRows.length);
 
@@ -13018,7 +14561,37 @@ function updateKpiResultsMeta(visibleCount) {
           </thead>
           <tbody>
             \${currentRows.map(row => {
-          
+              const isOwnedByResponsible = isKpiOwnedByResponsible(row);
+              const ownerActionsHtml = \`
+                <button
+                  type="button"
+                  class="action-btn edit-btn kpi-matrix-action-btn"
+                  onclick="openEditModal(\${row.kpi_id})"
+                  aria-label="Edit KPI"
+                  title="Edit KPI"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
+                    <path d="M13.5 6.5l4 4"></path>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="action-btn delete-btn kpi-matrix-action-btn"
+                  onclick="deleteKpi(\${row.kpi_id})"
+                  aria-label="Delete KPI"
+                  title="Delete KPI"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M8 6V4h8v2"></path>
+                    <path d="M19 6l-1 14H6L5 6"></path>
+                    <path d="M10 11v6"></path>
+                    <path d="M14 11v6"></path>
+                  </svg>
+                </button>
+                \`;
+
               return \`
               <tr>
                 <td>
@@ -13029,7 +14602,9 @@ function updateKpiResultsMeta(visibleCount) {
                   <div class="kpi-matrix-kpi-title">\${escapeHtml(row.indicator_sub_title || "Untitled KPI")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml([
                     row.status ? "Status: " + row.status : "",
-                    row.frequency ? "Frequency: " + row.frequency : ""
+                    row.frequency ? "Frequency: " + row.frequency : "",
+                    isOwnedByResponsible ? "My KPI" : "",
+                    !isOwnedByResponsible ? "Visible in consult mode" : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
            
@@ -13055,39 +14630,7 @@ function updateKpiResultsMeta(visibleCount) {
                         <circle cx="12" cy="12" r="3.2"></circle>
                       </svg>
                     </button>
-                
-            
-                <button
-    type="button"
-    class="action-btn edit-btn kpi-matrix-action-btn"
-    onclick="openEditModal(\${row.kpi_id})"
-    aria-label="Edit KPI"
-    title="Edit KPI"
-  >
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 20h4l10-10a2.12 2.12 0 1 0-4-4L4 16v4"></path>
-      <path d="M13.5 6.5l4 4"></path>
-    </svg>
-  </button>
-
-             
-
-  <button
-    type="button"
-    class="action-btn delete-btn kpi-matrix-action-btn"
-    onclick="deleteKpi(\${row.kpi_id})"
-    aria-label="Delete KPI"
-    title="Delete KPI"
-  >
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3 6h18"></path>
-      <path d="M8 6V4h8v2"></path>
-      <path d="M19 6l-1 14H6L5 6"></path>
-      <path d="M10 11v6"></path>
-      <path d="M14 11v6"></path>
-    </svg>
-  </button>
-
+                    \${ownerActionsHtml}
                   </div>
                 </td>
               </tr>
@@ -13624,31 +15167,36 @@ function updateKpiResultsMeta(visibleCount) {
         return Number.isFinite(numeric) ? numeric : null;
       }
 
-      function getChartValueBandColor(value, lowLimit, highLimit) {
+      function normalizeChartDirection(direction) {
+        const normalizedDirection = String(direction || "").trim().toLowerCase();
+        return normalizedDirection === "down" ? "down" : "up";
+      }
+
+      function getChartValueBandColor(value, lowLimit, highLimit, direction) {
         const numericValue = normalizeChartLimitValue(value);
         const low = normalizeChartLimitValue(lowLimit);
         const high = normalizeChartLimitValue(highLimit);
+        const resolvedDirection = normalizeChartDirection(direction);
 
         if (numericValue === null) return "rgba(148, 163, 184, 0.85)";
 
         const lowerBound = low !== null && high !== null ? Math.min(low, high) : low;
         const upperBound = low !== null && high !== null ? Math.max(low, high) : high;
 
-        if (upperBound !== null && numericValue > upperBound) {
-          return "rgba(239, 68, 68, 0.88)";
+        if (resolvedDirection === "down") {
+          return upperBound !== null && numericValue > upperBound
+            ? "rgba(239, 68, 68, 0.88)"
+            : "rgba(74, 222, 128, 0.88)";
         }
 
-        if (lowerBound !== null && numericValue < lowerBound) {
-          return "rgba(22, 163, 74, 0.92)";
-        }
-
-        return "rgba(74, 222, 128, 0.88)";
+        return lowerBound !== null && numericValue < lowerBound
+          ? "rgba(239, 68, 68, 0.88)"
+          : "rgba(74, 222, 128, 0.88)";
       }
 
-      function getChartValueBorderColor(value, lowLimit, highLimit) {
-        const color = getChartValueBandColor(value, lowLimit, highLimit);
+      function getChartValueBorderColor(value, lowLimit, highLimit, direction) {
+        const color = getChartValueBandColor(value, lowLimit, highLimit, direction);
         if (color.includes("239, 68, 68")) return "rgba(220, 38, 38, 1)";
-        if (color.includes("22, 163, 74")) return "rgba(21, 128, 61, 1)";
         return "rgba(22, 163, 74, 1)";
       }
 
@@ -13657,6 +15205,7 @@ function updateKpiResultsMeta(visibleCount) {
         beforeDatasetsDraw(chart, args, pluginOptions) {
           const low = normalizeChartLimitValue(pluginOptions?.lowLimit);
           const high = normalizeChartLimitValue(pluginOptions?.highLimit);
+          const direction = normalizeChartDirection(pluginOptions?.direction);
           const yScale = chart.scales?.y;
           const area = chart.chartArea;
 
@@ -13679,23 +15228,28 @@ function updateKpiResultsMeta(visibleCount) {
             chart.ctx.fillRect(area.left, top, area.right - area.left, height);
           };
 
+          const fillWholeArea = (fillStyle) => {
+            chart.ctx.fillStyle = fillStyle;
+            chart.ctx.fillRect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+          };
+
           chart.ctx.save();
           chart.ctx.beginPath();
           chart.ctx.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
           chart.ctx.clip();
 
-          if (upperBound !== null) {
-            drawBand(yScale.max, upperBound, "rgba(254, 226, 226, 0.55)");
-          }
-
-          if (lowerBound !== null && upperBound !== null) {
-            drawBand(upperBound, lowerBound, "rgba(220, 252, 231, 0.55)");
-          } else if (upperBound !== null) {
-            drawBand(upperBound, yScale.min, "rgba(220, 252, 231, 0.55)");
-          }
-
-          if (lowerBound !== null) {
-            drawBand(lowerBound, yScale.min, "rgba(187, 247, 208, 0.55)");
+          if (direction === "down") {
+            if (upperBound !== null) {
+              drawBand(yScale.max, upperBound, "rgba(254, 226, 226, 0.55)");
+              drawBand(upperBound, yScale.min, "rgba(220, 252, 231, 0.55)");
+            } else {
+              fillWholeArea("rgba(220, 252, 231, 0.55)");
+            }
+          } else if (lowerBound !== null) {
+            drawBand(yScale.max, lowerBound, "rgba(220, 252, 231, 0.55)");
+            drawBand(lowerBound, yScale.min, "rgba(254, 226, 226, 0.55)");
+          } else {
+            fillWholeArea("rgba(220, 252, 231, 0.55)");
           }
 
           chart.ctx.restore();
@@ -13847,10 +15401,10 @@ function updateKpiResultsMeta(visibleCount) {
               ? sourceLabels.map(() => row.lowLimitValue ?? null)
               : [];
             const barColors = Array.isArray(row.values)
-              ? row.values.map(value => getChartValueBandColor(value, row.lowLimitValue, row.highLimitValue))
+              ? row.values.map(value => getChartValueBandColor(value, row.lowLimitValue, row.highLimitValue, row.targetDirection))
               : [];
             const barBorderColors = Array.isArray(row.values)
-              ? row.values.map(value => getChartValueBorderColor(value, row.lowLimitValue, row.highLimitValue))
+              ? row.values.map(value => getChartValueBorderColor(value, row.lowLimitValue, row.highLimitValue, row.targetDirection))
               : [];
             const axisValues = [
               ...(Array.isArray(row.values) ? row.values : []),
@@ -13941,7 +15495,8 @@ function updateKpiResultsMeta(visibleCount) {
                 plugins: {
                   kpiThresholdBands: {
                     lowLimit: row.lowLimitValue,
-                    highLimit: row.highLimitValue
+                    highLimit: row.highLimitValue,
+                    direction: row.targetDirection
                   },
                   kpiFlowLine: {
                     datasetIndex: 0,
@@ -15143,27 +16698,32 @@ function fillForm(data) {
         const kpiId = getSafeValue("kpi_id", { optional: true });
         if (!kpiId) return;
 
-        const ok = confirm("Delete this KPI?");
-        if (!ok) return;
-
         await deleteKpi(kpiId, true);
       }
 
       async function deleteKpi(kpiId, fromModal = false) {
-        const ok = fromModal ? true : confirm("Delete this KPI?");
+        if (!kpiId) return;
+        const ok = confirm("Delete this KPI? This will also delete linked target allocations, KPI results, and assistant conversations.");
         if (!ok) return;
 
         try {
-          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis/' + kpiId, {
+          const res = await fetch('/api/kpis/' + kpiId, {
             method: "DELETE"
           });
 
           if (!res.ok) {
-            showToast("Delete failed");
+            const errorData = await res.json().catch(() => null);
+            showToast(errorData?.error || "Delete failed");
             return;
           }
 
-          if (fromModal) closeModal();
+          if (String(getSafeValue("kpi_id", { optional: true })) === String(kpiId)) {
+            resetForm();
+            closeModal();
+          } else if (fromModal) {
+            closeModal();
+          }
+
           await loadKpis(document.getElementById("search").value || "");
           showToast("KPI deleted");
         } catch (error) {
@@ -17275,6 +18835,287 @@ const buildAssistantKpiContext = (kpis = []) =>
       : []
   }));
 
+const parseStoredKpiKnowledgeBase = (value) => {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return typeof value === "object" ? value : null;
+};
+
+const collectStoredKpiKnowledgeTreeNodes = (treeNode, results = []) => {
+  if (!treeNode || typeof treeNode !== "object") return results;
+
+  results.push(treeNode);
+  (Array.isArray(treeNode.children) ? treeNode.children : []).forEach((childNode) => {
+    collectStoredKpiKnowledgeTreeNodes(childNode, results);
+  });
+
+  return results;
+};
+
+const flattenStoredKpiKnowledgeBaseItems = (knowledgeBase = null) => {
+  const parsedKnowledgeBase = parseStoredKpiKnowledgeBase(knowledgeBase);
+  if (!parsedKnowledgeBase) return [];
+
+  const items = [];
+  const kpiMeta = parsedKnowledgeBase.kpi || {};
+  const linkedSubjects = Array.isArray(parsedKnowledgeBase?.subject_context?.linked_subjects)
+    ? parsedKnowledgeBase.subject_context.linked_subjects
+    : [];
+  const storedKnowledgeNodes = Array.isArray(parsedKnowledgeBase?.subject_context?.knowledge_nodes)
+    ? parsedKnowledgeBase.subject_context.knowledge_nodes
+    : [];
+  const fallbackKnowledgeNodes = storedKnowledgeNodes.length
+    ? []
+    : linkedSubjects.flatMap((entry) =>
+        collectStoredKpiKnowledgeTreeNodes(entry?.knowledge_tree, [])
+      );
+  const knowledgeNodes = storedKnowledgeNodes.length
+    ? storedKnowledgeNodes
+    : fallbackKnowledgeNodes;
+  const targetAllocations = Array.isArray(parsedKnowledgeBase.target_allocations)
+    ? parsedKnowledgeBase.target_allocations
+    : [];
+
+  items.push({
+    item_id: `kpi:${kpiMeta.kpi_id ?? "selected"}`,
+    item_type: "kpi",
+    title: normalizeText(kpiMeta.display_name || kpiMeta.name) || "Selected KPI",
+    subtitle: normalizeText(kpiMeta.code),
+    description: normalizeText(kpiMeta.explanation || kpiMeta.formula || kpiMeta.comments),
+    keywords: buildKnowledgeBaseKeywordList([
+      kpiMeta.display_name,
+      kpiMeta.name,
+      kpiMeta.sub_title,
+      kpiMeta.code,
+      kpiMeta.explanation,
+      kpiMeta.formula,
+      kpiMeta.unit,
+      kpiMeta.frequency,
+      parsedKnowledgeBase?.subject_context?.primary_subject_path
+    ], 16),
+    relation_context: [],
+    metadata: {
+      unit: normalizeText(kpiMeta.unit),
+      frequency: normalizeText(kpiMeta.frequency)
+    }
+  });
+
+  knowledgeNodes.forEach((node) => {
+    if (!node || typeof node !== "object") return;
+
+    items.push({
+      item_id: normalizeText(node.node_id) || `subject:${node.subject_id ?? "unknown"}`,
+      item_type: "subject",
+      title: normalizeText(node.name || node.subject_name || node.path) || "Subject",
+      subtitle: normalizeText(node.path),
+      description: normalizeText(node.knowledge || node.description || node.example || node.comments),
+      keywords: Array.isArray(node.keywords)
+        ? node.keywords.slice(0, 18)
+        : buildKnowledgeBaseKeywordList([
+            node.name,
+            node.path,
+            node.knowledge,
+            node.description,
+            node.example,
+            node.comments
+          ], 18),
+      relation_context: Array.isArray(node.children_ids)
+        ? node.children_ids.slice(0, 5)
+        : []
+    });
+  });
+
+  targetAllocations.forEach((allocation) => {
+    if (!allocation || typeof allocation !== "object") return;
+
+    const allocationTarget = allocation.target || {};
+    const allocationScope = allocation.scope || {};
+    items.push({
+      item_id: `allocation:${allocation.allocation_id ?? "unknown"}`,
+      item_type: "allocation",
+      title: normalizeText(allocation.scope_label) || "Target allocation",
+      subtitle: normalizeText(allocationTarget.type || allocationTarget.status),
+      description: normalizeText([
+        allocation.comments,
+        allocationScope?.function_name,
+        allocationTarget.value !== null && allocationTarget.value !== undefined
+          ? `Target ${allocationTarget.value}${allocationTarget.unit ? ` ${allocationTarget.unit}` : ""}`
+          : null
+      ].filter(Boolean).join(" | ")),
+      keywords: Array.isArray(allocation.keywords)
+        ? allocation.keywords.slice(0, 18)
+        : buildKnowledgeBaseKeywordList([
+            allocation.scope_label,
+            allocation.comments,
+            allocationTarget.type,
+            allocationTarget.status,
+            allocationScope?.function_name
+          ], 18),
+      relation_context: uniqueKnowledgeBaseTexts([
+        allocationScope?.plant?.name,
+        allocationScope?.zone?.name,
+        allocationScope?.unit?.name,
+        allocationScope?.role?.name,
+        allocationScope?.product?.name,
+        allocationScope?.product_line?.name,
+        allocationScope?.market?.name,
+        allocationScope?.customer?.name
+      ], 8)
+    });
+  });
+
+  return items.filter((item) => {
+    return item && (
+      normalizeText(item.title) ||
+      normalizeText(item.description) ||
+      (Array.isArray(item.keywords) && item.keywords.length)
+    );
+  });
+};
+
+const scoreStoredKpiKnowledgeBaseItem = (item, queryText) => {
+  const titleText = normalizeKnowledgeBaseSearchText(item?.title);
+  const subtitleText = normalizeKnowledgeBaseSearchText(item?.subtitle);
+  const descriptionText = normalizeKnowledgeBaseSearchText(item?.description);
+  const keywordText = normalizeKnowledgeBaseSearchText(
+    Array.isArray(item?.keywords) ? item.keywords.join(" ") : ""
+  );
+  const relationText = normalizeKnowledgeBaseSearchText(
+    Array.isArray(item?.relation_context) ? item.relation_context.join(" ") : ""
+  );
+  const normalizedQuery = normalizeKnowledgeBaseSearchText(queryText);
+  const queryTokens = tokenizeKnowledgeBaseText(queryText, 24);
+  const matchedTerms = new Set();
+  let score = item?.item_type === "kpi" ? 2 : 0;
+
+  if (
+    normalizedQuery &&
+    (
+      titleText.includes(normalizedQuery) ||
+      subtitleText.includes(normalizedQuery) ||
+      descriptionText.includes(normalizedQuery) ||
+      keywordText.includes(normalizedQuery) ||
+      relationText.includes(normalizedQuery)
+    )
+  ) {
+    score += 70;
+  }
+
+  queryTokens.forEach((token) => {
+    if (titleText.includes(token)) {
+      matchedTerms.add(token);
+      score += 14;
+      return;
+    }
+
+    if (subtitleText.includes(token) || keywordText.includes(token)) {
+      matchedTerms.add(token);
+      score += 10;
+      return;
+    }
+
+    if (descriptionText.includes(token) || relationText.includes(token)) {
+      matchedTerms.add(token);
+      score += 6;
+    }
+  });
+
+  return {
+    score,
+    matched_terms: [...matchedTerms]
+  };
+};
+
+const buildStoredKpiKnowledgeBaseContext = ({
+  knowledgeBase,
+  message,
+  conversationHistory,
+  selectedKpiSummary,
+  selectedKpi
+}) => {
+  const parsedKnowledgeBase = parseStoredKpiKnowledgeBase(knowledgeBase);
+  if (!parsedKnowledgeBase) {
+    return {
+      available: false,
+      summary: null,
+      top_matches: []
+    };
+  }
+
+  const recentConversationInputs = normalizeAssistantConversationHistory(conversationHistory)
+    .filter((entry) => entry.role === "user")
+    .map((entry) => entry.content)
+    .slice(-4);
+  const searchQuery = [
+    message,
+    ...recentConversationInputs,
+    selectedKpiSummary?.display_name,
+    selectedKpi?.comment,
+    selectedKpi?.root_cause,
+    selectedKpi?.implemented_solution
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const flattenedItems = flattenStoredKpiKnowledgeBaseItems(parsedKnowledgeBase);
+  const scoredMatches = flattenedItems
+    .map((item) => {
+      const scoring = scoreStoredKpiKnowledgeBaseItem(item, searchQuery);
+      return {
+        ...item,
+        ...scoring
+      };
+    })
+    .filter((item) => Number(item.score || 0) > 0)
+    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
+    .slice(0, 4)
+    .map((item) => ({
+      item_id: item.item_id,
+      item_type: item.item_type,
+      title: item.title,
+      subtitle: item.subtitle || null,
+      description: item.description || null,
+      keywords: Array.isArray(item.keywords) ? item.keywords.slice(0, 8) : [],
+      relation_context: Array.isArray(item.relation_context)
+        ? item.relation_context.slice(0, 5)
+        : [],
+      matched_terms: item.matched_terms || [],
+      score: item.score
+    }));
+
+  return {
+    available: true,
+    summary: {
+      generated_at: parsedKnowledgeBase.generated_at || null,
+      primary_subject_path:
+        parsedKnowledgeBase?.subject_context?.primary_subject_path || null,
+      linked_subject_count: Array.isArray(parsedKnowledgeBase?.subject_context?.linked_subjects)
+        ? parsedKnowledgeBase.subject_context.linked_subjects.length
+        : 0,
+      knowledge_node_count: Array.isArray(parsedKnowledgeBase?.subject_context?.knowledge_nodes)
+        ? parsedKnowledgeBase.subject_context.knowledge_nodes.length
+        : flattenedItems.filter((entry) => entry.item_type === "subject").length,
+      allocation_count: Array.isArray(parsedKnowledgeBase.target_allocations)
+        ? parsedKnowledgeBase.target_allocations.length
+        : 0,
+      scope_summary: parsedKnowledgeBase.scope_summary || {},
+      keywords: Array.isArray(parsedKnowledgeBase?.search_index?.keywords)
+        ? parsedKnowledgeBase.search_index.keywords.slice(0, 18)
+        : []
+    },
+    usage: parsedKnowledgeBase.ai_usage || null,
+    top_matches: scoredMatches
+  };
+};
+
 const buildAssistantKpiDisplayName = (title, subtitle) => {
   const cleanTitle = normalizeText(title);
   const cleanSubtitle = normalizeText(subtitle);
@@ -17704,7 +19545,8 @@ const buildKpiAssistantFallbackReply = ({
   selectedKpiSummary,
   selectedKpiDelayFocus,
   knowledgeBaseContext,
-  assistantKnowledgeContext
+  assistantKnowledgeContext,
+  storedKpiKnowledgeContext
 }) => {
   const guidedQuestionReply = buildGuidedAssistantQuestionReply({
     selectedKpiSummary,
@@ -17732,6 +19574,20 @@ const buildKpiAssistantFallbackReply = ({
 
   if (selectedKpiDelayFocus?.rationale) {
     lines.push(`Delay KB relevance: ${selectedKpiDelayFocus.rationale}`);
+  }
+
+  if (storedKpiKnowledgeContext?.available) {
+    if (storedKpiKnowledgeContext.summary?.primary_subject_path) {
+      lines.push(`KPI subject path: ${storedKpiKnowledgeContext.summary.primary_subject_path}.`);
+    }
+
+    if (storedKpiKnowledgeContext.top_matches?.length) {
+      const storedSummary = storedKpiKnowledgeContext.top_matches
+        .slice(0, 3)
+        .map((entry) => `${entry.title}${entry.description ? `: ${entry.description}` : ""}`)
+        .join(" | ");
+      lines.push(`Stored KPI knowledge: ${storedSummary}.`);
+    }
   }
 
   if (knowledgeBaseContext?.matches?.length) {
@@ -17775,7 +19631,8 @@ const buildFastKpiAssistantReply = ({
   selectedKpiSummary,
   selectedKpiDelayFocus,
   knowledgeBaseContext,
-  assistantKnowledgeContext
+  assistantKnowledgeContext,
+  storedKpiKnowledgeContext
 }) => {
   const lines = [];
   const topMatches = (knowledgeBaseContext?.matches || []).slice(0, 4);
@@ -17815,6 +19672,29 @@ const buildFastKpiAssistantReply = ({
       lines.push(
         `- **Progress**: ${assistantKnowledgeContext.progress.answered_count}/${assistantKnowledgeContext.progress.total_questions} guided questions answered`
       );
+    }
+  }
+
+  if (storedKpiKnowledgeContext?.available) {
+    lines.push("");
+    lines.push(`### KPI Knowledge Base`);
+
+    if (storedKpiKnowledgeContext.summary?.primary_subject_path) {
+      lines.push(`- **Primary Subject**: ${storedKpiKnowledgeContext.summary.primary_subject_path}`);
+    }
+
+    if (
+      storedKpiKnowledgeContext.summary?.allocation_count !== null &&
+      storedKpiKnowledgeContext.summary?.allocation_count !== undefined
+    ) {
+      lines.push(`- **Allocations Covered**: ${storedKpiKnowledgeContext.summary.allocation_count}`);
+    }
+
+    if (storedKpiKnowledgeContext.top_matches?.length) {
+      storedKpiKnowledgeContext.top_matches.forEach((entry, index) => {
+        const detail = entry.description || entry.subtitle || "Relevant KPI knowledge-base entry";
+        lines.push(`${index + 1}. **${entry.title}**: ${detail}`);
+      });
     }
   }
 
@@ -17887,7 +19767,8 @@ const generateKpiAssistantReply = async ({
   selectedKpiId,
   kpis,
   message,
-  conversationHistory
+  conversationHistory,
+  selectedKpiKnowledgeBase
 }) => {
   const assistantKpis = buildAssistantKpiContext(kpis);
   const normalizedConversationHistory = normalizeAssistantConversationHistory(conversationHistory);
@@ -17901,6 +19782,13 @@ const generateKpiAssistantReply = async ({
     selectedKpi,
     message,
     conversationHistory: normalizedConversationHistory
+  });
+  const storedKpiKnowledgeContext = buildStoredKpiKnowledgeBaseContext({
+    knowledgeBase: selectedKpiKnowledgeBase,
+    message,
+    conversationHistory: normalizedConversationHistory,
+    selectedKpiSummary,
+    selectedKpi
   });
   const selectedKpiDelayFocus = buildSelectedKpiDelayFocus(selectedKpi);
   const knowledgeBaseQuery = buildKpiScopedKnowledgeBaseQuery({
@@ -17923,7 +19811,8 @@ const generateKpiAssistantReply = async ({
     selectedKpiSummary,
     selectedKpiDelayFocus,
     knowledgeBaseContext,
-    assistantKnowledgeContext
+    assistantKnowledgeContext,
+    storedKpiKnowledgeContext
   });
 
   // if (isFastKpiAssistantRequest({
@@ -17959,6 +19848,12 @@ ${selectedKpi ? JSON.stringify(selectedKpi, null, 2) : "None selected"}
 SELECTED KPI SUMMARY
 ${JSON.stringify(selectedKpiSummary, null, 2)}
 
+SELECTED KPI STORED KNOWLEDGE BASE SUMMARY
+${storedKpiKnowledgeContext?.available ? JSON.stringify(storedKpiKnowledgeContext.summary, null, 2) : "None"}
+
+SELECTED KPI STORED KNOWLEDGE BASE MATCHES
+${storedKpiKnowledgeContext?.top_matches?.length ? JSON.stringify(storedKpiKnowledgeContext.top_matches, null, 2) : "None"}
+
 MATCHED KNOWLEDGE BASE NODES
 ${JSON.stringify(promptKnowledgeMatches, null, 2)}
 
@@ -17986,6 +19881,7 @@ IMPORTANT
 - Use the available memory before asking any follow-up question.
 - Do not repeat a question if the answer is already present or strongly implied in the history.
 - If the user's latest reply is short, resolve it using the immediately preceding assistant question and options.
+- Use the stored KPI knowledge base as the KPI-specific source of subject structure, cause/effect context, and allocation scope when it is available.
 - Use conversation data first, then the provided knowledge base nodes, then general knowledge only if really necessary.
 - If a matched KPI question guide exists, prefer its next unanswered question over inventing a new diagnostic question.
 - Ask question by question for KPI data collection unless the user explicitly asks for a summary, suggestion, or clarification.
@@ -18005,7 +19901,8 @@ IMPORTANT
       selectedKpiSummary,
       selectedKpiDelayFocus,
       knowledgeBaseContext,
-      assistantKnowledgeContext
+      assistantKnowledgeContext,
+      storedKpiKnowledgeContext
     });
   }
 
@@ -18355,7 +20252,8 @@ Efficient, natural, structured diagnosis with:
         selectedKpiSummary,
         selectedKpiDelayFocus,
         knowledgeBaseContext,
-        assistantKnowledgeContext
+        assistantKnowledgeContext,
+        storedKpiKnowledgeContext
       })
     );
   } catch (err) {
@@ -18364,7 +20262,8 @@ Efficient, natural, structured diagnosis with:
       selectedKpiSummary,
       selectedKpiDelayFocus,
       knowledgeBaseContext,
-      assistantKnowledgeContext
+      assistantKnowledgeContext,
+      storedKpiKnowledgeContext
     });
   }
 };
@@ -18526,6 +20425,7 @@ const hasPublicTable = async (tableName) => {
 
 const actionPlanTableAvailabilityCache = new Map();
 const ACTION_PLAN_SUBJECT_CODE_PREFIX = "kpi-form";
+const ACTION_PLAN_SUBJECT_LINK_KEY_PREFIX = "Link key:";
 
 const hasActionPlanTable = async (tableName) => {
   const normalizedName = normalizeOptionalTextInput(tableName);
@@ -18618,6 +20518,23 @@ const buildActionPlanSubjectPattern = ({
   return `${ACTION_PLAN_SUBJECT_CODE_PREFIX}|${allocationId}|${normalizedKpiId}|%`;
 };
 
+const buildActionPlanSubjectDescriptionSearchValue = (subjectCode) => {
+  const normalizedSubjectCode = normalizeOptionalTextInput(subjectCode);
+  if (!normalizedSubjectCode) return null;
+  return `%${ACTION_PLAN_SUBJECT_LINK_KEY_PREFIX} ${normalizedSubjectCode}%`;
+};
+
+const buildActionPlanSubjectDescriptionPattern = ({
+  kpiTargetAllocationId,
+  kpiId
+}) => {
+  const subjectPattern = buildActionPlanSubjectPattern({
+    kpiTargetAllocationId,
+    kpiId
+  });
+  return buildActionPlanSubjectDescriptionSearchValue(subjectPattern);
+};
+
 const parseActionPlanSubjectCode = (value) => {
   const code = normalizeOptionalTextInput(value);
   if (!code) return null;
@@ -18647,27 +20564,59 @@ const parseActionPlanSubjectCode = (value) => {
   };
 };
 
+const extractActionPlanSubjectCodeFromDescription = (value) => {
+  const text = normalizeOptionalTextInput(value);
+  if (!text) return null;
+
+  const match = text.match(/Link key:\s*([^\s]+)/i);
+  return normalizeOptionalTextInput(match?.[1]);
+};
+
+const parseActionPlanSubjectReference = ({
+  subjectCode = null,
+  description = null
+} = {}) => {
+  return (
+    parseActionPlanSubjectCode(subjectCode) ||
+    parseActionPlanSubjectCode(extractActionPlanSubjectCodeFromDescription(description))
+  );
+};
+
 const buildActionPlanSubjectMetadata = ({
   kpiTargetAllocationId,
   kpiId,
   periodLabel,
   subject,
-  kpiName
+  kpiName,
+  subjectCode
 }) => {
-  const label =
-    normalizeOptionalTextInput(kpiName) ||
+  const subjectLabel =
     normalizeOptionalTextInput(subject) ||
+    normalizeOptionalTextInput(kpiName) ||
     `KPI ${kpiId}`;
+  const kpiLabel =
+    normalizeOptionalTextInput(kpiName) ||
+    subjectLabel;
   const periodText =
     normalizeOptionalTextInput(periodLabel) ||
     formatIsoDateValue(new Date()) ||
     "current period";
+  const normalizedSubjectCode =
+    normalizeOptionalTextInput(subjectCode) ||
+    buildActionPlanSubjectCode({
+      kpiTargetAllocationId,
+      kpiId,
+      periodLabel
+    }) ||
+    "";
 
   return {
-    title: `${label} - ${periodText}`,
+    title: subjectLabel,
     description:
-      `Corrective actions captured from the KPI form for "${label}" ` +
-      `during ${periodText}. Allocation ${kpiTargetAllocationId}, KPI ${kpiId}.`
+      `${ACTION_PLAN_SUBJECT_LINK_KEY_PREFIX} ${normalizedSubjectCode}\n` +
+      `Corrective actions captured from the KPI form for subject "${subjectLabel}" ` +
+      `and KPI "${kpiLabel}" during ${periodText}. ` +
+      `Allocation ${kpiTargetAllocationId}, KPI ${kpiId}.`
   };
 };
 
@@ -18695,8 +20644,38 @@ const resolveActionPlanResponsibleEmail = ({
   return null;
 };
 
+const findActionPlanSubjectId = async ({
+  subjectCode = null,
+  descriptionSearchValue = null
+} = {}) => {
+  const normalizedSubjectCode = normalizeOptionalTextInput(subjectCode);
+  const normalizedDescriptionSearchValue = normalizeOptionalTextInput(descriptionSearchValue);
+
+  if (!normalizedSubjectCode && !normalizedDescriptionSearchValue) {
+    return null;
+  }
+
+  const result = await actionPlanPool.query(
+    `
+    SELECT id
+    FROM public.sujet
+    WHERE
+      ($1::text IS NOT NULL AND code = $1)
+      OR ($2::text IS NOT NULL AND COALESCE(description, '') LIKE $2)
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [normalizedSubjectCode, normalizedDescriptionSearchValue]
+  );
+
+  return normalizeOptionalIntegerInput(result.rows[0]?.id);
+};
+
 const mapActionPlanActionRow = (row = {}) => {
-  const subjectInfo = parseActionPlanSubjectCode(row.sujet_code);
+  const subjectInfo = parseActionPlanSubjectReference({
+    subjectCode: row.sujet_code,
+    description: row.sujet_description
+  });
   if (!subjectInfo) return null;
 
   const status =
@@ -18742,8 +20721,16 @@ const loadActionPlanCorrectiveActionMaps = async (kpiRows = [], currentPeriodLab
       }))
       .filter(Boolean)
   ));
+  const descriptionPatterns = Array.from(new Set(
+    (Array.isArray(kpiRows) ? kpiRows : [])
+      .map((row) => buildActionPlanSubjectDescriptionPattern({
+        kpiTargetAllocationId: row.kpi_target_allocation_id ?? row.kpi_values_id,
+        kpiId: row.kpi_id
+      }))
+      .filter(Boolean)
+  ));
 
-  if (!patterns.length) {
+  if (!patterns.length && !descriptionPatterns.length) {
     return {
       currentByAllocationId: {},
       historyByAllocationId: {}
@@ -18767,15 +20754,19 @@ const loadActionPlanCorrectiveActionMaps = async (kpiRows = [], currentPeriodLab
         a.updated_at,
         a.closed_date,
         s.code AS sujet_code,
-        s.titre AS sujet_title
+        s.titre AS sujet_title,
+        s.description AS sujet_description
       FROM public.action a
       JOIN public.sujet s
         ON s.id = a.sujet_id
-      WHERE s.code LIKE ANY($1::text[])
+      WHERE (
+        ($1::text[] IS NOT NULL AND COALESCE(s.code, '') LIKE ANY($1::text[]))
+        OR ($2::text[] IS NOT NULL AND COALESCE(s.description, '') LIKE ANY($2::text[]))
+      )
         AND LOWER(COALESCE(a.type, 'action')) = 'action'
       ORDER BY COALESCE(a.updated_at, a.created_at) DESC, a.id DESC
       `,
-      [patterns]
+      [patterns.length ? patterns : null, descriptionPatterns.length ? descriptionPatterns : null]
     );
 
     const normalizedCurrentPeriod = normalizeOptionalTextInput(currentPeriodLabel);
@@ -18822,7 +20813,8 @@ const ensureActionPlanSubject = async ({
   kpiId,
   periodLabel,
   subject,
-  kpiName
+  kpiName,
+  insertedBy
 }) => {
   const subjectCode = buildActionPlanSubjectCode({
     kpiTargetAllocationId,
@@ -18830,33 +20822,34 @@ const ensureActionPlanSubject = async ({
     periodLabel
   });
   if (!subjectCode) return null;
+  const descriptionSearchValue = buildActionPlanSubjectDescriptionSearchValue(subjectCode);
 
   const metadata = buildActionPlanSubjectMetadata({
     kpiTargetAllocationId,
     kpiId,
     periodLabel,
     subject,
-    kpiName
+    kpiName,
+    subjectCode
   });
 
-  const existingSubjectRes = await actionPlanPool.query(
-    `SELECT id FROM public.sujet WHERE code = $1 LIMIT 1`,
-    [subjectCode]
-  );
-
-  const existingSubjectId = normalizeOptionalIntegerInput(existingSubjectRes.rows[0]?.id);
+  const existingSubjectId = await findActionPlanSubjectId({
+    subjectCode,
+    descriptionSearchValue
+  });
   if (existingSubjectId) {
     await actionPlanPool.query(
       `
       UPDATE public.sujet
       SET
+        code = NULL,
         titre = $2,
         description = $3,
         updated_at = NOW(),
-        inserted_by = COALESCE(inserted_by, $4)
+        inserted_by = COALESCE($4, inserted_by)
       WHERE id = $1
       `,
-      [existingSubjectId, metadata.title, metadata.description, "KPI form"]
+      [existingSubjectId, metadata.title, metadata.description, normalizeOptionalTextInput(insertedBy)]
     );
 
     return {
@@ -18871,7 +20864,7 @@ const ensureActionPlanSubject = async ({
     VALUES ($1, $2, $3, $4)
     RETURNING id
     `,
-    [subjectCode, metadata.title, metadata.description, "KPI form"]
+    [null, metadata.title, metadata.description, normalizeOptionalTextInput(insertedBy)]
   );
 
   return {
@@ -18894,6 +20887,7 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
     kpiId,
     periodLabel
   });
+  const subjectDescriptionSearchValue = buildActionPlanSubjectDescriptionSearchValue(subjectCode);
 
   if (!subjectCode || !(await canUseActionPlanCorrectiveActions())) {
     return { savedCount: 0, deletedCount: 0 };
@@ -18902,12 +20896,10 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
   const submittedActions = Array.isArray(actions) ? actions : [];
   const meaningfulActions = submittedActions.filter(hasMeaningfulCorrectiveActionInput);
 
-  const existingSubjectRes = await actionPlanPool.query(
-    `SELECT id FROM public.sujet WHERE code = $1 LIMIT 1`,
-    [subjectCode]
-  );
-
-  let sujetId = normalizeOptionalIntegerInput(existingSubjectRes.rows[0]?.id);
+  let sujetId = await findActionPlanSubjectId({
+    subjectCode,
+    descriptionSearchValue: subjectDescriptionSearchValue
+  });
   const existingActionsRes = sujetId
     ? await actionPlanPool.query(
       `
@@ -18952,7 +20944,8 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
     kpiId,
     periodLabel,
     subject,
-    kpiName
+    kpiName,
+    insertedBy: normalizeOptionalTextInput(responsibleContext?.email)
   });
   sujetId = normalizeOptionalIntegerInput(ensuredSubject?.sujetId);
   if (!sujetId) {
@@ -19532,6 +21525,8 @@ app.post("/kpi-ai-assistant", async (req, res) => {
   const client = await pool.connect();
 
   try {
+    await ensureKpiAssistantConversationSchema();
+
     const {
       responsible_id,
       week,
@@ -19580,19 +21575,22 @@ const assignmentRes = await client.query(
 
 // Fall back to using people_id directly as the conversation key
 const assignment = assignmentRes.rows[0];
+const assignmentId = normalizeOptionalIntegerInput(assignment?.assignment_id);
+const peopleId =
+  normalizeOptionalIntegerInput(responsible?.responsible_id) ||
+  normalizeOptionalIntegerInput(responsible_id);
 
-if (!assignment) {
+if (!assignmentId && !peopleId) {
   await client.query("ROLLBACK");
   return res.status(400).json({
-    error: "No active role assignment found for this responsible person"
+    error: "Responsible conversation identity is invalid"
   });
 }
-
-const conversationKey = assignment.assignment_id;
 
     const selectedId = selected_kpi_id ? Number(selected_kpi_id) : null;
 
     let kpiId = null;
+    let selectedKpiKnowledgeBase = null;
 
     if (selectedId) {
     const kpiLookupRes = await client.query(
@@ -19602,20 +21600,26 @@ const conversationKey = assignment.assignment_id;
      );
      kpiId = kpiLookupRes.rows[0]?.kpi_id ?? selectedId;
 
+    const kpiKnowledgeBaseRes = await client.query(
+    `SELECT kpi_knowledge_base
+       FROM public.kpi
+      WHERE kpi_id = $1
+      LIMIT 1`,
+     [kpiId]
+     );
+     selectedKpiKnowledgeBase = kpiKnowledgeBaseRes.rows[0]?.kpi_knowledge_base ?? null;
+
     }
 
-    const convoRes = await client.query(
-     `SELECT conversation_id, conversation
-       FROM public.kpi_assistant_conversation
-      WHERE people_role_assignment_id = $1
-       AND kpi_id IS NOT DISTINCT FROM $2
-       ORDER BY updated_at DESC
-       LIMIT 1
-       FOR UPDATE`,
-       [conversationKey, kpiId]   // ← was assignment.assignment_id
-      );
-
-    const existingConversationRow = convoRes.rows[0] || null;
+    const existingConversationRow = await loadKpiAssistantConversationRow(
+      client,
+      {
+        assignmentId,
+        peopleId,
+        kpiId,
+        forUpdate: true
+      }
+    );
 
     const conversationHistory = Array.isArray(existingConversationRow?.conversation)
       ? existingConversationRow.conversation
@@ -19627,7 +21631,8 @@ const conversationKey = assignment.assignment_id;
       selectedKpiId: kpiId,
       kpis: Array.isArray(kpis) ? kpis : [],
       message: cleanMessage,
-      conversationHistory
+      conversationHistory,
+      selectedKpiKnowledgeBase
     });
 
     const updatedConversation = [
@@ -19650,20 +21655,25 @@ const conversationKey = assignment.assignment_id;
       await client.query(
         `UPDATE public.kpi_assistant_conversation
          SET conversation = $1::jsonb,
+             people_role_assignment_id = COALESCE($2, people_role_assignment_id),
+             people_id = COALESCE($3, people_id),
              updated_at = CURRENT_TIMESTAMP
-         WHERE conversation_id = $2`,
+         WHERE conversation_id = $4`,
         [
           JSON.stringify(updatedConversation),
+          assignmentId,
+          peopleId,
           existingConversationRow.conversation_id
         ]
       );
     } else {
       await client.query(
         `INSERT INTO public.kpi_assistant_conversation
-          (people_role_assignment_id, kpi_id, conversation)
-         VALUES ($1, $2, $3::jsonb)`,
+          (people_role_assignment_id, people_id, kpi_id, conversation)
+         VALUES ($1, $2, $3, $4::jsonb)`,
         [
-          conversationKey,
+          assignmentId,
+          peopleId,
           kpiId,
           JSON.stringify(updatedConversation)
         ]
@@ -19690,6 +21700,8 @@ app.get("/kpi-ai-assistant/conversation", async (req, res) => {
   const { responsible_id, kpi_id } = req.query;
 
   try {
+    await ensureKpiAssistantConversationSchema();
+
 const assignmentRes = await pool.query(
   `
   SELECT 
@@ -19711,8 +21723,10 @@ const assignmentRes = await pool.query(
 );
 
     const assignment = assignmentRes.rows[0];
+    const assignmentId = normalizeOptionalIntegerInput(assignment?.assignment_id);
+    const peopleId = normalizeOptionalIntegerInput(responsible_id);
 
-    if (!assignment) {
+    if (!assignmentId && !peopleId) {
       return res.json({ conversation: [] });
     }
 
@@ -19733,20 +21747,18 @@ const assignmentRes = await pool.query(
       realKpiId = kpiLookupRes.rows[0]?.kpi_id ?? selectedId;
     }
 
-    const convoRes = await pool.query(
-      `
-      SELECT conversation
-      FROM public.kpi_assistant_conversation
-      WHERE people_role_assignment_id = $1
-        AND kpi_id IS NOT DISTINCT FROM $2
-      ORDER BY updated_at DESC
-      LIMIT 1
-      `,
-      [assignment.assignment_id, realKpiId]
+    const existingConversationRow = await loadKpiAssistantConversationRow(
+      pool,
+      {
+        assignmentId,
+        peopleId,
+        kpiId: realKpiId,
+        forUpdate: false
+      }
     );
 
     return res.json({
-      conversation: convoRes.rows[0]?.conversation ?? []
+      conversation: existingConversationRow?.conversation ?? []
     });
   } catch (err) {
     console.error("Fetch conversation error:", err.message);
@@ -21188,9 +23200,18 @@ app.post("/redirect", async (req, res) => {
           k.high_limit,
           k.target_direction,
           COALESCE(k.kpi_name, k.kpi_sub_title, 'KPI') AS kpi_name,
-          COALESCE(k.kpi_sub_title, k.kpi_name, 'KPI') AS subject_name
+          COALESCE(subject_link.subject_name, k.kpi_sub_title, k.kpi_name, 'KPI') AS subject_name
         FROM public.kpi_target_allocation kta
         JOIN public.kpi k ON k.kpi_id = kta.kpi_id
+        LEFT JOIN LATERAL (
+          SELECT s.subject_name
+          FROM public.subject_kpi sk
+          JOIN public.subject s
+            ON s.subject_id = sk.subject_id
+          WHERE sk.kpi_id = k.kpi_id
+          ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+          LIMIT 1
+        ) subject_link ON TRUE
         WHERE kta.kpi_target_allocation_id = $1
         LIMIT 1
         `,
@@ -21771,8 +23792,7 @@ app.get("/form", async (req, res) => {
 
           <div class="kpi-header">
             <div>
-              <div class="kpi-title">${kpi.subject}</div>
-              ${kpi.indicator_sub_title ? `<div class="kpi-subtitle">${kpi.indicator_sub_title}</div>` : ""}
+             <div class="kpi-title">${kpi.indicator_sub_title || "KPI"}</div>
             </div>
           </div>
 
@@ -22445,241 +24465,702 @@ app.get("/form", async (req, res) => {
   50%{transform:translateY(-2px);}
 }
 
-          /* â”€â”€ CA Table Modal â”€â”€ */
-        .ca-modal-overlay {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(15, 23, 42, 0.55);
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
-        z-index: 9999;
-        transition: opacity 0.25s ease, visibility 0.25s ease;
-       }
-          .ca-modal-overlay.active{opacity:1;pointer-events:auto;}
-          .ca-modal-box{
-            width:min(98vw,980px);
-            max-height:min(90vh,820px);
-            background:#fff;border-radius:22px;
-            box-shadow:0 30px 80px rgba(15,23,42,0.30);
-            display:flex;flex-direction:column;overflow:hidden;
-            transform:translateY(18px) scale(0.98);
-            transition:transform 0.22s ease;
+          /* CA Table Modal */
+          .ca-modal-overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            background: rgba(15, 23, 42, 0.62);
+            backdrop-filter: blur(8px);
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            z-index: 9999;
+            transition: opacity 0.25s ease, visibility 0.25s ease;
           }
           .ca-modal-overlay.active {
             opacity: 1;
             visibility: visible;
             pointer-events: auto;
           }
-          .ca-modal-overlay.active .ca-modal-box{transform:translateY(0) scale(1);}
-          .ca-modal-panel {
-           width: min(1100px, 92vw);
-           max-height: 90vh;
-           overflow: auto;
-           background: #fff;
-           border-radius: 18px;
-           transform: translateY(12px);
-           transition: transform 0.25s ease;
-           }
+          .ca-modal-box {
+            width: min(98.6vw, 1460px);
+            max-height: min(92vh, 900px);
+            background:
+              radial-gradient(circle at top right, rgba(59,130,246,0.08), transparent 28%),
+              linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            border-radius: 26px;
+            border: 1px solid rgba(226, 232, 240, 0.92);
+            box-shadow: 0 36px 90px rgba(15,23,42,0.28);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transform: translateY(18px) scale(0.98);
+            transition: transform 0.22s ease;
+          }
+          .ca-modal-overlay.active .ca-modal-box {
+            transform: translateY(0) scale(1);
+          }
+          .ca-modal-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 24px 28px 18px;
+            border-bottom: 1px solid rgba(226,232,240,0.92);
+            background:
+              radial-gradient(circle at top right, rgba(239,68,68,0.10), transparent 32%),
+              linear-gradient(180deg, #fff8f7 0%, #ffffff 100%);
+          }
+          .ca-modal-title {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 900;
+            letter-spacing: -0.04em;
+            color: #991b1b;
+          }
+          .ca-modal-subtitle {
+            margin: 6px 0 0;
+            font-size: 13px;
+            color: #64748b;
+            line-height: 1.55;
+          }
+          .ca-modal-close {
+            width: 44px;
+            height: 44px;
+            border: none;
+            border-radius: 999px;
+            background: #fee2e2;
+            color: #b91c1c;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: background 0.2s ease, transform 0.2s ease;
+          }
+          .ca-modal-close:hover {
+            background: #fecaca;
+            transform: translateY(-1px);
+          }
+          .ca-modal-body {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 20px 20px 24px;
+            background:
+              radial-gradient(circle at top right, rgba(59,130,246,0.05), transparent 24%),
+              linear-gradient(180deg, #fbfdff 0%, #f4f8ff 100%);
+          }
 
-          .ca-modal-overlay.active .ca-modal-panel {
-           transform: translateY(0);
-           }
-          .ca-modal-header{
-            display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
-            padding:22px 26px 18px;
-            border-bottom:1px solid #fee2e2;
-            background:linear-gradient(180deg,#fff5f5,#fff8f5);
+          .ca-table-wrap,
+          .ca-entry-editor-wrap {
+            overflow-x: auto;
+            border-radius: 22px;
+            border: 1px solid rgba(191,219,254,0.6);
+            background: rgba(255,255,255,0.96);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.92),
+              0 18px 42px rgba(15,23,42,0.07);
           }
-          .ca-modal-header-text{}
-          .ca-modal-title{margin:0;font-size:20px;font-weight:900;color:#991b1b;}
-          .ca-modal-subtitle{margin:5px 0 0;font-size:13px;color:#64748b;}
-          .ca-modal-close{
-            width:40px;height:40px;border:none;border-radius:999px;
-            background:#fee2e2;color:#b91c1c;font-size:22px;line-height:1;
-            cursor:pointer;flex-shrink:0;transition:background 0.2s;
-          }
-          .ca-modal-close:hover{background:#fecaca;}
-          .ca-modal-body{flex:1;min-height:0;overflow:auto;padding:22px 26px;}
 
-          /* Table */
-          .ca-table-wrap{overflow-x:auto;border-radius:14px;border:1px solid #fee2e2;}
-          .ca-table{
-            width:100%;border-collapse:collapse;font-size:13px;
+          .ca-table,
+          .ca-entry-editor-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 13px;
+            table-layout: fixed;
           }
-          .ca-table thead tr{background:#fff5f5;}
-          .ca-table th{
-            padding:12px 14px;text-align:left;font-size:11px;font-weight:800;
-            text-transform:uppercase;letter-spacing:0.6px;color:#991b1b;
-            border-bottom:2px solid #fecaca;white-space:nowrap;
+
+          .ca-table {
+            min-width: 1080px;
           }
-          .ca-table td{
-            padding:12px 14px;border-bottom:1px solid #fef2f2;
-            vertical-align:top;color:#374151;line-height:1.5;
+
+          .ca-entry-editor-table {
+            min-width: 1040px;
           }
-          .ca-col-actions{
-            width: 130px;
+
+          .ca-table thead tr,
+          .ca-entry-editor-table thead tr {
+            background:
+              radial-gradient(circle at top right, rgba(239,68,68,0.08), transparent 34%),
+              linear-gradient(180deg, #fff9f7 0%, #edf5ff 100%);
+          }
+
+          .ca-table th,
+          .ca-entry-editor-table th {
+            padding: 16px 16px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.11em;
+            color: #52637d;
+            border-bottom: 1px solid rgba(226,232,240,0.96);
+            white-space: nowrap;
+          }
+
+          .ca-table td,
+          .ca-entry-editor-table td {
+            padding: 16px;
+            border-bottom: 1px solid rgba(241,245,249,0.96);
+            vertical-align: top;
+            color: #334155;
+            line-height: 1.55;
+            background: rgba(255,255,255,0.98);
+          }
+
+          .ca-table tbody tr:hover td {
+            background: linear-gradient(180deg, #fbfdff 0%, #f8fbff 100%);
+          }
+
+          .ca-table tbody tr:nth-child(even) td {
+            background: rgba(248,251,255,0.92);
+          }
+
+          .ca-table tr:last-child td,
+          .ca-entry-editor-table tr:last-child td {
+            border-bottom: none;
+          }
+
+          .ca-table .ca-col-num {
+            width: 52px;
+            font-weight: 900;
+            color: #0f172a;
+          }
+
+          .ca-col-actions,
+          .ca-entry-actions-col {
             text-align: right;
             white-space: nowrap;
           }
 
-          .ca-table td.ca-col-actions{
-            text-align: right;
-            white-space: nowrap;
+          .ca-table-empty {
+            text-align: center;
+            padding: 56px 24px;
+            color: #64748b;
+            font-size: 14px;
+            line-height: 1.7;
+            background:
+              radial-gradient(circle at top center, rgba(59,130,246,0.06), transparent 34%),
+              linear-gradient(180deg, #fbfdff 0%, #f8fbff 100%);
           }
 
+          .ca-table-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+          }
 
-.ca-table-edit-btn,
-.ca-table-delete-btn{
-  appearance: none;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  height: 34px;
-  min-width: 34px;
-  padding: 0 12px;
+          .ca-table-copy-title {
+            font-size: 13px;
+            font-weight: 800;
+            color: #172033;
+            line-height: 1.55;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+          }
+
+          .ca-table-copy-meta {
+            font-size: 11px;
+            font-weight: 700;
+            color: #94a3b8;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+          }
+
+          .ca-date-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 36px;
+            padding: 0 12px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(14,165,233,0.08));
+            color: #1d4ed8;
+            font-size: 12px;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            border: 1px solid rgba(147,197,253,0.48);
+          }
+
+          .ca-responsible-cell {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+          }
+
+          .ca-responsible-avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, rgba(37,99,235,0.14), rgba(16,185,129,0.12));
+            color: #1d4ed8;
+            font-size: 12px;
+            font-weight: 900;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+            flex-shrink: 0;
+          }
+
+          .ca-responsible-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+          }
+
+          .ca-responsible-name {
+            font-size: 13px;
+            font-weight: 800;
+            color: #172033;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+
+          .ca-responsible-role {
+            font-size: 11px;
+            color: #94a3b8;
+          }
+
+          .ca-table-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+
+          .ca-table-status,
+          .ca-entry-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 900;
+            border: 1px solid transparent;
+          }
+
+          .ca-table-status::before,
+          .ca-entry-status-pill::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            opacity: 0.88;
+          }
+
+          .ca-table-status.open,
+          .ca-entry-status-pill.open {
+            background: rgba(239,68,68,0.10);
+            color: #b91c1c;
+            border-color: rgba(239,68,68,0.14);
+          }
+          .ca-table-status.closed,
+          .ca-table-status.completed,
+          .ca-entry-status-pill.closed,
+          .ca-entry-status-pill.completed {
+            background: rgba(16,185,129,0.12);
+            color: #047857;
+            border-color: rgba(16,185,129,0.16);
+          }
+          .ca-table-status.waiting-for-validation,
+          .ca-entry-status-pill.waiting-for-validation {
+            background: rgba(245,158,11,0.12);
+            color: #b45309;
+            border-color: rgba(245,158,11,0.16);
+          }
+
+          .ca-table-edit-btn,
+          .ca-table-delete-btn {
+            appearance: none;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            height: 36px;
+            min-width: 36px;
+            padding: 0 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1;
+            cursor: pointer;
+            transition:
+              background 0.18s ease,
+              color 0.18s ease,
+              border-color 0.18s ease,
+              box-shadow 0.18s ease,
+              transform 0.18s ease;
+          }
+
+          .ca-table-edit-btn {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            color: #2563eb;
+            border-color: #bfdbfe;
+            box-shadow: 0 8px 18px rgba(37,99,235,0.08);
+          }
+          .ca-table-edit-btn:hover {
+            background: #eff6ff;
+            border-color: #93c5fd;
+            box-shadow: 0 14px 26px rgba(37,99,235,0.12);
+            transform: translateY(-1px);
+          }
+
+          .ca-table-delete-btn {
+            background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
+            color: #dc2626;
+            border-color: #fecaca;
+            box-shadow: 0 8px 18px rgba(220,38,38,0.08);
+            padding: 0;
+            font-size: 16px;
+            font-weight: 700;
+          }
+          .ca-table-delete-btn:hover {
+            background: #fef2f2;
+            border-color: #fca5a5;
+            box-shadow: 0 14px 26px rgba(220,38,38,0.12);
+            transform: translateY(-1px);
+          }
+
+          .ca-table-edit-btn:focus-visible,
+          .ca-table-delete-btn:focus-visible {
+            outline: none;
+            box-shadow:
+              0 0 0 3px rgba(59, 130, 246, 0.18),
+              0 8px 18px rgba(15, 23, 42, 0.10);
+          }
+
+          .ca-tbl-btn {
+            border: 1px solid rgba(226,232,240,0.9);
+            border-radius: 12px;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 800;
+            cursor: pointer;
+            background: #ffffff;
+            color: #475569;
+            transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+          }
+          .ca-tbl-delete {
+            color: #dc2626;
+            border-color: #fecaca;
+            background: #fff7f7;
+          }
+          .ca-tbl-delete:hover {
+            background: #fef2f2;
+            border-color: #fca5a5;
+          }
+
+          .ca-modal-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: 18px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+            padding: 0 4px;
+          }
+
+          .ca-modal-toolbar-note {
+            font-size: 12px;
+            color: #64748b;
+            line-height: 1.5;
+            max-width: 520px;
+          }
+
+     .ca-modal-add-row-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
+  gap: 8px;
+
+  padding: 12px 18px;
+
+  border: 1px solid #1d4ed8;
+  border-radius: 999px;
+
+  background: linear-gradient(135deg,#2563eb,#3b82f6);
+  color: #ffffff;
+
+  font-size: 13px;
+  font-weight: 900;
+
   cursor: pointer;
-  transition:
-    background 0.18s ease,
-    color 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
+
+  transition: all 0.18s ease;
+
+  box-shadow: 0 12px 28px rgba(37,99,235,0.18);
 }
 
-.ca-table-edit-btn{
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  color: #1d4ed8;
-  border-color: #bfdbfe;
-  box-shadow: 0 2px 6px rgba(29, 78, 216, 0.08);
-}
-
-.ca-table-edit-btn:hover{
-  background: #eff6ff;
-  border-color: #93c5fd;
-  box-shadow: 0 6px 14px rgba(29, 78, 216, 0.14);
+.ca-modal-add-row-btn:hover {
+  background: linear-gradient(135deg,#1d4ed8,#2563eb);
   transform: translateY(-1px);
-}
-  .ca-table-edit-btn:active{
-  transform: translateY(0);
-  box-shadow: 0 2px 6px rgba(29, 78, 216, 0.08);
+  box-shadow: 0 16px 32px rgba(37,99,235,0.24);
 }
 
-.ca-table-delete-btn{
-  background: linear-gradient(180deg, #ffffff 0%, #fff7f7 100%);
-  color: #dc2626;
-  border-color: #fecaca;
-  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.08);
-  padding: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
+          .ca-modal-form-section {
+            margin-top: 10px;
+            border: 1px solid rgba(147,197,253,0.42);
+            border-radius: 24px;
+            overflow: hidden;
+            background:
+              radial-gradient(circle at top right, rgba(59,130,246,0.08), transparent 24%),
+              linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(246,250,255,0.99) 100%);
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.92),
+              0 20px 44px rgba(15,23,42,0.08);
+          }
 
-.ca-table-delete-btn:hover{
-  background: #fef2f2;
-  border-color: #fca5a5;
-  box-shadow: 0 6px 14px rgba(220, 38, 38, 0.14);
-  transform: translateY(-1px);
-}
+          .ca-modal-form-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 18px 20px;
+            background:
+              radial-gradient(circle at top right, rgba(59,130,246,0.10), transparent 24%),
+              linear-gradient(180deg, #ffffff 0%, #f1f7ff 100%);
+            border-bottom: 1px solid rgba(226,232,240,0.96);
+          }
 
-.ca-table-delete-btn:active{
-  transform: translateY(0);
-  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.08);
-}
+          .ca-modal-form-header-main {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+          }
 
-.ca-table-edit-btn:focus-visible,
-.ca-table-delete-btn:focus-visible{
-  outline: none;
-  box-shadow:
-    0 0 0 3px rgba(59, 130, 246, 0.18),
-    0 4px 12px rgba(15, 23, 42, 0.10);
-}
+          .ca-modal-form-title {
+            display: block;
+            font-size: 17px;
+            font-weight: 900;
+            color: #0f172a;
+            letter-spacing: -0.02em;
+          }
 
-.ca-table-delete-btn:focus-visible{
-  box-shadow:
-    0 0 0 3px rgba(239, 68, 68, 0.18),
-    0 4px 12px rgba(15, 23, 42, 0.10);
-}
+          .ca-modal-form-caption {
+            font-size: 12px;
+            color: #64748b;
+          }
 
-          .ca-table tr:last-child td{border-bottom:none;}
-          .ca-table tr:hover td{background:#fff5f5;}
-          .ca-table .ca-col-num{width:36px;font-weight:800;color:#b91c1c;}
-          .ca-table .ca-col-actions{width:100px;text-align:right;white-space:nowrap;}
-          .ca-table-empty{
-            text-align:center;padding:40px 20px;color:#94a3b8;font-size:14px;
+          .ca-modal-form-tags {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
           }
-          .ca-table-status{
-            display:inline-block;padding:3px 10px;border-radius:999px;
-            font-size:11px;font-weight:700;
-            background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;
-          }
-          .ca-table-status.open{background:#fef2f2;color:#b91c1c;border-color:#fecaca;}
-          .ca-table-status.closed,.ca-table-status.completed{background:#ecfdf5;color:#047857;border-color:#a7f3d0;}
-          .ca-table-status.waiting-for-validation{background:#fff7ed;color:#c2410c;border-color:#fed7aa;}
 
-          .ca-tbl-btn{
-            border:none;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;cursor:pointer;
+          .ca-modal-form-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 30px;
+            padding: 0 12px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(14,165,233,0.08));
+            color: #1d4ed8;
+            font-size: 11px;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            border: 1px solid rgba(147,197,253,0.4);
           }
-          .ca-tbl-edit{background:#eff6ff;color:#1d4ed8;}
-          .ca-tbl-edit:hover{background:#dbeafe;}
-          .ca-tbl-delete{background:#fef2f2;color:#dc2626;margin-left:5px;}
-          .ca-tbl-delete:hover{background:#fee2e2;}
 
-          /* Modal form */
-          .ca-modal-form-section{
-            margin-top:22px;
-            border:1.5px solid #fecaca;
-            border-radius:16px;
-            overflow:hidden;
+          .ca-modal-form-chip::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            opacity: 0.88;
           }
-          .ca-modal-form-header{
-            display:flex;align-items:center;justify-content:space-between;
-            padding:14px 18px;background:#fff5f5;
-            border-bottom:1px solid #fecaca;
+
+          .ca-entry-editor-wrap {
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
           }
-          .ca-modal-form-title{font-size:14px;font-weight:800;color:#991b1b;}
-          .ca-modal-form-body{padding:18px;display:grid;gap:14px;}
-          .ca-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
-          .ca-modal-field label{display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;}
-          .ca-modal-input,.ca-modal-textarea,.ca-modal-select{
-            width:100%;padding:10px 12px;border:1.5px solid #f28b82;border-radius:8px;
-            font-size:13px;font-family:inherit;background:#fff;box-sizing:border-box;
+
+          .ca-entry-editor-table {
+            min-width: 1040px;
           }
-          .ca-modal-textarea{min-height:72px;resize:vertical;}
-          .ca-modal-input:focus,.ca-modal-textarea:focus,.ca-modal-select:focus{
-            border-color:#d32f2f;outline:none;box-shadow:0 0 0 3px rgba(211,47,47,0.10);
+
+          .ca-entry-editor-table tbody tr {
+            position: relative;
           }
-          .ca-modal-form-footer{
-            display:flex;justify-content:flex-end;gap:10px;
-            padding:14px 18px;
-            border-top:1px solid #fecaca;background:#fff5f5;
+
+          .ca-entry-editor-table td {
+            vertical-align: top;
+            background: linear-gradient(180deg, rgba(252,254,255,0.99) 0%, rgba(244,249,255,0.99) 100%);
           }
-          .ca-modal-cancel-btn{
-            padding:9px 20px;border:1px solid #d1d5db;border-radius:8px;
-            background:#fff;color:#374151;font-size:13px;font-weight:700;cursor:pointer;
+
+          .ca-entry-editor-table tbody tr td:first-child {
+            box-shadow: inset 4px 0 0 #2563eb;
           }
-          .ca-modal-save-btn{
-            padding:9px 24px;border:none;border-radius:8px;
-            background:linear-gradient(135deg,#ef4444,#dc2626);
-            color:white;font-size:13px;font-weight:700;cursor:pointer;
-            box-shadow:0 4px 12px rgba(220,38,38,0.22);
+
+          .ca-entry-index-col {
+            width: 94px;
           }
-          .ca-modal-add-row-btn{
-            display:inline-flex;align-items:center;gap:8px;
-            margin-top:16px;
-            padding:10px 18px;border:1.5px dashed #fca5a5;border-radius:10px;
-            background:transparent;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;
-            transition:background 0.15s;width:100%;justify-content:center;
+
+          .ca-draft-cell {
+            min-width: 94px;
           }
-          .ca-modal-add-row-btn:hover{background:#fff5f5;}
+
+          .ca-draft-badge {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 12px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(14,165,233,0.08));
+            border: 1px solid rgba(147,197,253,0.4);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+          }
+
+          .ca-draft-badge-kicker {
+            font-size: 10px;
+            font-weight: 900;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: #2563eb;
+          }
+
+          .ca-draft-badge strong {
+            font-size: 13px;
+            font-weight: 900;
+            color: #0f172a;
+            line-height: 1.4;
+          }
+
+          .ca-editor-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          }
+
+          .ca-editor-cell-note {
+            font-size: 11px;
+            line-height: 1.45;
+            color: #64748b;
+          }
+
+          .ca-editor-status-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 100%;
+            padding: 12px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.88);
+            border: 1px solid rgba(226,232,240,0.9);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.92);
+          }
+
+          .ca-modal-input,
+          .ca-modal-textarea,
+          .ca-modal-select {
+            width: 100%;
+            padding: 12px 13px;
+            border: 1px solid rgba(191,219,254,0.7);
+            border-radius: 14px;
+            font-size: 13px;
+            font-family: inherit;
+            background: #ffffff;
+            color: #0f172a;
+            box-sizing: border-box;
+            box-shadow:
+              inset 0 1px 0 rgba(255,255,255,0.92),
+              0 6px 14px rgba(15,23,42,0.03);
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+          }
+
+          .ca-modal-input {
+            min-height: 46px;
+          }
+
+          .ca-modal-textarea {
+            min-height: 92px;
+            resize: vertical;
+            line-height: 1.55;
+          }
+
+          .ca-modal-input:focus,
+          .ca-modal-textarea:focus,
+          .ca-modal-select:focus {
+            border-color: #60a5fa;
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(59,130,246,0.10);
+            transform: translateY(-1px);
+          }
+
+          .ca-entry-actions-cell {
+            min-width: 210px;
+          }
+
+          .ca-entry-actions-stack {
+            display: flex;
+            flex-direction: row;
+            width: 100%;
+            min-width: 200px;
+            justify-content: stretch;
+            gap: 12px;
+            align-items: center;
+            padding: 2px 0;
+          }
+
+          .ca-modal-cancel-btn,
+          .ca-modal-save-btn {
+            width: auto;
+            flex: 1 1 0;
+            min-width: 104px;
+            min-height: 44px;
+            padding: 0 18px;
+            border-radius: 14px;
+            font-size: 13px;
+            font-weight: 900;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+          }
+
+          .ca-modal-cancel-btn {
+            border: 1px solid rgba(203,213,225,0.96);
+            background: #ffffff;
+            color: #334155;
+          }
+          .ca-modal-cancel-btn:hover {
+            background: #f8fafc;
+            transform: translateY(-1px);
+          }
+
+          .ca-modal-save-btn {
+            border: none;
+            background: linear-gradient(135deg, #2563eb, #0ea5e9);
+            color: white;
+            box-shadow: 0 12px 24px rgba(37,99,235,0.22);
+          }
+          .ca-modal-save-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 16px 30px rgba(37,99,235,0.28);
+          }
+
+          .ca-entry-editor-table .ca-modal-save-btn,
+          .ca-entry-editor-table .ca-modal-cancel-btn {
+            font-size: 13px;
+          }
 
           /* â”€â”€ Modals (chart + history) â”€â”€ */
           body.chart-modal-open{overflow:hidden;}
@@ -22928,6 +25409,8 @@ app.get("/form", async (req, res) => {
           .close-action-confirm-text{
             margin:0;font-size:15px;line-height:1.7;color:#475569;
           }
+
+          
           .close-action-confirm-body{padding:22px 24px 24px;}
           .close-action-confirm-note{
             padding:14px 16px;border-radius:16px;background:#fff7ed;border:1px solid #fed7aa;
@@ -23070,11 +25553,23 @@ app.get("/form", async (req, res) => {
               max-height:94vh;
               border-radius:16px;
              }
-            .ca-modal-box{max-height:min(94vh,820px);}
+            .ca-modal-box{
+              width: min(100vw - 12px, 1240px);
+              max-height: 94vh;
+              border-radius: 18px;
+            }
           }
           @media(max-width:700px){
             .ca-dates-grid{grid-template-columns:1fr;}
-            .ca-modal-form-row{grid-template-columns:1fr;}
+            .ca-modal-body{padding:16px 14px 18px;}
+            .ca-modal-header{padding:18px 18px 14px;}
+            .ca-modal-title{
+             font-size:18px;
+             font-weight:900;
+             color:#1e3a8a;
+             }
+            .ca-modal-toolbar{align-items:stretch;}
+            .ca-modal-add-row-btn{width:100%;justify-content:center;}
             .kpi-history-panel{width:calc(100% - 8px);}
             .kpi-card-actions{flex-direction:column;align-items:stretch;}
             .kpi-card-actions-right{justify-content:flex-end;}
@@ -23179,6 +25674,15 @@ app.get("/form", async (req, res) => {
               <!-- Table of existing actions -->
               <div class="ca-table-wrap">
                 <table class="ca-table" id="caModalTable">
+                  <colgroup>
+                    <col style="width:5%;">
+                    <col style="width:24%;">
+                    <col style="width:26%;">
+                    <col style="width:11%;">
+                    <col style="width:16%;">
+                    <col style="width:9%;">
+                    <col style="width:9%;">
+                  </colgroup>
                   <thead>
                     <tr>
                       <th class="ca-col-num">#</th>
@@ -23196,41 +25700,82 @@ app.get("/form", async (req, res) => {
                 </table>
               </div>
 
-              <!-- Add new / Edit form -->
-              <button type="button" class="ca-modal-add-row-btn" id="caModalAddRowBtn">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 1v12M1 7h12"/></svg>
-                Add New Corrective Action
-              </button>
+              <div class="ca-modal-toolbar">
+                <button type="button" class="ca-modal-add-row-btn" id="caModalAddRowBtn">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 1v12M1 7h12"/></svg>
+                  Add New Corrective Action
+                </button>
+               
+              </div>
 
               <div class="ca-modal-form-section" id="caModalFormSection" style="display:none;">
                 <div class="ca-modal-form-header">
-                  <span class="ca-modal-form-title" id="caModalFormTitle">New Corrective Action</span>
+                  <div class="ca-modal-form-header-main">
+                    <span class="ca-modal-form-title" id="caModalFormTitle">New Corrective Action</span>
+                    <div class="ca-modal-form-caption" id="caModalFormCaption">Inline action editor in professional table format.</div>
+                
+                  </div>
                   <button type="button" class="ca-tbl-btn ca-tbl-delete" id="caModalFormCollapse">&times; Cancel</button>
                 </div>
-                <div class="ca-modal-form-body">
-                  <input type="hidden" id="caModalEditIndex" value="">
-                  <div class="ca-modal-form-row">
-                    <div class="ca-modal-field">
-                      <label>Due Date <span class="ca-required">*</span></label>
-                      <input type="date" id="caModalDueDate" class="ca-modal-input">
-                    </div>
-                    <div class="ca-modal-field">
-                      <label>Responsible <span class="ca-required">*</span></label>
-                      <input type="text" id="caModalResponsible" class="ca-modal-input" placeholder="Name">
-                    </div>
-                  </div>
-                  <div class="ca-modal-field">
-                    <label>Root Cause <span class="ca-required">*</span></label>
-                    <textarea id="caModalRootCause" class="ca-modal-textarea" placeholder="Describe the root cause..."></textarea>
-                  </div>
-                  <div class="ca-modal-field">
-                    <label>Immediate Action / Solution <span class="ca-required">*</span></label>
-                    <textarea id="caModalSolution" class="ca-modal-textarea" placeholder="Describe the implemented solution..."></textarea>
-                  </div>
-                </div>
-                <div class="ca-modal-form-footer">
-                  <button type="button" class="ca-modal-cancel-btn" id="caModalCancelForm">Cancel</button>
-                  <button type="button" class="ca-modal-save-btn" id="caModalSaveForm">Save Action</button>
+                <input type="hidden" id="caModalEditIndex" value="">
+                <div class="ca-entry-editor-wrap">
+                  <table class="ca-entry-editor-table">
+                    <colgroup>
+                      <col style="width:10%;">
+                      <col style="width:14%;">
+                      <col style="width:18%;">
+                      <col style="width:24%;">
+                      <col style="width:12%;">
+                      <col style="width:22%;">
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>Due Date <span class="ca-required">*</span></th>
+                        <th>Responsible <span class="ca-required">*</span></th>
+                        <th>Root Cause <span class="ca-required">*</span></th>
+                        <th>Immediate Action / Solution <span class="ca-required">*</span></th>
+                        <th>Status</th>
+                        <th class="ca-entry-actions-col">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                      
+                        <td>
+                          <div class="ca-editor-cell">
+                            <input type="date" id="caModalDueDate" class="ca-modal-input">
+                          </div>
+                        </td>
+                        <td>
+                          <div class="ca-editor-cell">
+                            <input type="text" id="caModalResponsible" class="ca-modal-input" placeholder="Responsible name">
+                          </div>
+                        </td>
+                        <td>
+                          <div class="ca-editor-cell">
+                            <textarea id="caModalRootCause" class="ca-modal-textarea" placeholder="Describe the root cause..."></textarea>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="ca-editor-cell">
+                            <textarea id="caModalSolution" class="ca-modal-textarea" placeholder="Describe the immediate action or implemented solution..."></textarea>
+                          </div>
+                        </td>
+                        <td>
+                          <div class="ca-editor-status-panel">
+                            <span class="ca-entry-status-pill open" id="caModalStatusBadge">Open</span>
+                            <div class="ca-editor-cell-note" id="caModalStatusNote">New actions start with Open status.</div>
+                          </div>
+                        </td>
+                        <td class="ca-entry-actions-cell">
+                          <div class="ca-entry-actions-stack">
+                            <button type="button" class="ca-modal-cancel-btn" id="caModalCancelForm">Cancel</button>
+                            <button type="button" class="ca-modal-save-btn" id="caModalSaveForm">Save Action</button>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
@@ -23479,20 +26024,90 @@ function getCaModalActions(kvId) {
 
        tbody.innerHTML = actions.map((a, i) => {
       const sc = statusClass(a.status);
+      const responsibleName = String(a.responsible || "").trim();
+      const responsibleInitial = responsibleName ? responsibleName.charAt(0).toUpperCase() : "?";
       return \`<tr>
       <td class="ca-col-num">\${i + 1}</td>
-      <td title="\${escapeHtml(a.root_cause)}">\${escapeHtml(truncate(a.root_cause, 60))}</td>
-      <td title="\${escapeHtml(a.implemented_solution)}">\${escapeHtml(truncate(a.implemented_solution, 60))}</td>
-      <td>\${escapeHtml(a.due_date)}</td>
-      <td>\${escapeHtml(a.responsible)}</td>
+      <td title="\${escapeHtml(a.root_cause)}">
+        <div class="ca-table-copy">
+          <div class="ca-table-copy-title">\${escapeHtml(truncate(a.root_cause, 110))}</div>
+          <div class="ca-table-copy-meta">Cause analysis</div>
+        </div>
+      </td>
+      <td title="\${escapeHtml(a.implemented_solution)}">
+        <div class="ca-table-copy">
+          <div class="ca-table-copy-title">\${escapeHtml(truncate(a.implemented_solution, 110))}</div>
+          <div class="ca-table-copy-meta">Immediate response</div>
+        </div>
+      </td>
+      <td><span class="ca-date-chip">\${escapeHtml(a.due_date)}</span></td>
+      <td>
+        <div class="ca-responsible-cell">
+          <span class="ca-responsible-avatar">\${escapeHtml(responsibleInitial)}</span>
+          <span class="ca-responsible-copy">
+            <span class="ca-responsible-name">\${escapeHtml(responsibleName || "Not assigned")}</span>
+            <span class="ca-responsible-role">Action owner</span>
+          </span>
+        </div>
+      </td>
       <td>\${a.status ? \`<span class="ca-table-status \${sc}">\${escapeHtml(a.status)}</span>\` : "&mdash;"}</td>
       <td class="ca-col-actions">
-        <button type="button" class="ca-table-edit-btn" onclick="caModalOpenForm(\${i})">Edit</button>
-        <button type="button" class="ca-table-delete-btn" onclick="caModalDeleteAction(\${i})">&times;</button>
+        <div class="ca-table-actions">
+          <button type="button" class="ca-table-edit-btn" onclick="caModalOpenForm(\${i})">Edit</button>
+          <button type="button" class="ca-table-delete-btn" onclick="caModalDeleteAction(\${i})">&times;</button>
+        </div>
       </td>
        </tr>\`;
         }).join("");
       }
+
+    function updateCaModalEditorMeta(action = null, editIndex = null) {
+      const statusBadge = document.getElementById("caModalStatusBadge");
+      const statusNote = document.getElementById("caModalStatusNote");
+      const saveBtn = document.getElementById("caModalSaveForm");
+      const formCaption = document.getElementById("caModalFormCaption");
+      const formChip = document.getElementById("caModalFormChip");
+      const rowMode = document.getElementById("caModalRowMode");
+      const normalizedStatus = getCanonicalCorrectiveActionStatus(action && action.status) || "Open";
+      const statusClass = statusClassName(normalizedStatus);
+      const isEditing = editIndex !== null && editIndex !== undefined && editIndex >= 0;
+
+      if (statusBadge) {
+        statusBadge.textContent = normalizedStatus;
+        statusBadge.className = "ca-entry-status-pill " + statusClass;
+      }
+
+      if (statusNote) {
+        statusNote.textContent = isEditing
+          ? "Editing keeps the current status until it is changed later in the workflow."
+          : "New actions start with Open status.";
+      }
+
+      if (saveBtn) {
+        saveBtn.textContent = isEditing
+          ? "Update Action"
+          : "Save Action";
+      }
+
+      if (formCaption) {
+        formCaption.textContent = isEditing
+          ? "Refine the selected corrective action directly inside the table editor."
+          : "Add a new corrective action directly inside the structured draft row.";
+      }
+
+      if (formChip) {
+        formChip.textContent = isEditing ? "Edit row" : "Draft row";
+      }
+
+      if (rowMode) {
+        rowMode.textContent = isEditing ? ("Editing #" + (Number(editIndex) + 1)) : "New action";
+      }
+    }
+
+    function statusClassName(status) {
+      const value = String(status || "Open").trim().toLowerCase().replace(/\s+/g, "-");
+      return value || "open";
+    }
 
     function caModalOpenForm(editIndex) {
      const section = document.getElementById("caModalFormSection");
@@ -23511,6 +26126,7 @@ function getCaModalActions(kvId) {
     document.getElementById("caModalResponsible").value = a.responsible || "";
     document.getElementById("caModalRootCause").value = a.root_cause || "";
     document.getElementById("caModalSolution").value = a.implemented_solution || "";
+    updateCaModalEditorMeta(a, editIndex);
   } else {
     if (formTitle) formTitle.textContent = "New Corrective Action";
     if (editIdx) editIdx.value = "";
@@ -23518,6 +26134,7 @@ function getCaModalActions(kvId) {
       const el = document.getElementById(id);
       if (el) el.value = "";
     });
+    updateCaModalEditorMeta(null, null);
   }
 
   section.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -23530,6 +26147,7 @@ function getCaModalActions(kvId) {
           function caModalCollapseForm() {
             const section = document.getElementById("caModalFormSection");
             if (section) section.style.display = "none";
+            updateCaModalEditorMeta(null, null);
           }
 
 function caModalSaveForm() {
@@ -23656,8 +26274,8 @@ function syncDomFromStore(kvId) {
 
             const modalTitle = document.getElementById("caModalTitle");
             const modalSubtitle = document.getElementById("caModalSubtitle");
-            if (modalTitle) modalTitle.textContent = "Corrective Actions â€” " + title.trim();
-            if (modalSubtitle) modalSubtitle.textContent = "Add, edit, or remove corrective action entries";
+            if (modalTitle) modalTitle.textContent = " ";
+            if (modalSubtitle) modalSubtitle.textContent = "";
 
             caModalCollapseForm();
             renderCaModalTable(kvId);
@@ -23939,13 +26557,36 @@ function syncDomFromStore(kvId) {
             if (!assistantMessages) return;
             const msg = document.createElement("div");
             msg.className = "assistant-message " + role;
-            msg.innerHTML = String(text || "")
+            msg.innerHTML = formatAssistantMessageHtml(text);
+            assistantMessages.appendChild(msg);
+            assistantMessages.scrollTop = assistantMessages.scrollHeight;
+          }
+
+          function formatAssistantMessageHtml(text, showCursor) {
+            const safeText = String(text || "")
               .replace(/&/g, "&amp;")
               .replace(/</g, "&lt;")
               .replace(/>/g, "&gt;")
               .split("\\n")
               .join("<br>");
+            return showCursor
+              ? safeText + '<span class="assistant-cursor">|</span>'
+              : safeText;
+          }
+
+          function appendStreamingAssistantMessage(role, initialText) {
+            if (!assistantMessages) return null;
+            const msg = document.createElement("div");
+            msg.className = "assistant-message " + role;
+            msg.innerHTML = formatAssistantMessageHtml(initialText || "", role === "assistant");
             assistantMessages.appendChild(msg);
+            assistantMessages.scrollTop = assistantMessages.scrollHeight;
+            return msg;
+          }
+
+          function updateStreamingAssistantMessage(messageNode, text, isComplete) {
+            if (!messageNode) return;
+            messageNode.innerHTML = formatAssistantMessageHtml(text || "", !isComplete);
             assistantMessages.scrollTop = assistantMessages.scrollHeight;
           }
 
@@ -24005,7 +26646,7 @@ function syncDomFromStore(kvId) {
 
            function buildAssistantGreeting() {
            return "Welcome ${responsible.name || "Responsible"}\\n\\n" +
-           "Role: ${responsible.role_name || responsible.role || "Not assigned"}\\n" +
+           "Role: ${responsible.role_name || responsible.role || "General access"}\\n" +
            "Assistant: ${responsible.role_name || responsible.role || "KPI"} Assistant\\n" +
            "I will use this conversation as memory and guide the KPI question by question.";
           }
@@ -24149,7 +26790,21 @@ function syncDomFromStore(kvId) {
             if (assistantLauncher) assistantLauncher.innerHTML = "&#129302;";
           }
 
-          function resetAssistantForTesting() {
+          async function resetAssistantForTesting() {
+            const selectedCard = getKpiCardById(assistantState.selectedKpiId);
+            const realKpiId = selectedCard?.dataset?.kpiId;
+
+            if (realKpiId) {
+              try {
+                await fetch(
+                  "/api/kpis/" + encodeURIComponent(realKpiId) + "/ai-support/conversation?responsible_id=" + encodeURIComponent("${responsible_id}"),
+                  { method: "DELETE" }
+                );
+              } catch (error) {
+                // Keep local reset behavior even if the server reset fails.
+              }
+            }
+
             clearAssistantThreads();
             renderAssistantConversation();
             setAssistantStatus("Assistant reset. Start the workflow again.");
@@ -24174,6 +26829,7 @@ async function sendAssistantPrompt(message) {
   if (!cleanMessage || assistantState.pending) return;
 
   const resolvedMessage = resolveAssistantUserMessage(cleanMessage);
+  let streamedMessageNode = null;
 
   assistantState.pending = true;
   if (assistantSend) assistantSend.disabled = true;
@@ -24183,46 +26839,157 @@ async function sendAssistantPrompt(message) {
   setAssistantStatus("Thinking...");
 
   try {
-    const res = await fetch("/kpi-ai-assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-       responsible_id: "${responsible_id}",
-       week: "${week}",
-       selected_kpi_id: assistantState.selectedKpiId,
-       kpis: collectAssistantKpis(),
-       message: resolvedMessage
-      })
-    });
+   const selectedCard = getKpiCardById(assistantState.selectedKpiId);
+   const realKpiId = selectedCard?.dataset?.kpiId;
 
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!realKpiId) {
+  throw new Error("No KPI selected.");
+  }
 
-    const assistantReply = data.reply || "I could not generate a response.";
-    if (Array.isArray(data.conversation)) {
-    const thread = getCurrentAssistantThread();
-    thread.messages = data.conversation.map((entry) => ({
-    role: entry.role,
-    text: entry.text || entry.content,
-    contextText: entry.content || entry.text,
-    ts: entry.ts || Date.now()
-    })).filter((entry) => entry.role && entry.text);
-   }
-    pushAssistantThreadMessage("assistant", assistantReply, assistantReply);
+  const res = await fetch("/api/kpis/" + encodeURIComponent(realKpiId) + "/ai-support", {
+   method: "POST",
+   headers: { "Content-Type": "application/json" },
+   body: JSON.stringify({
+    message: resolvedMessage,
+    responsible_id: "${responsible_id}",
+    stream: true
+  })
+  });
 
-    await addAssistantMessage(
-      "assistant",
-      assistantReply
-    );
+    const responseType = String(res.headers.get("content-type") || "").toLowerCase();
+    if (!res.ok && !responseType.includes("text/event-stream")) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || "Request failed");
+    }
 
+    if (!responseType.includes("text/event-stream") || !res.body) {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+
+      const assistantReply = data.answer || "I could not generate a response.";
+      if (Array.isArray(data.conversation)) {
+        const thread = getCurrentAssistantThread();
+        thread.messages = data.conversation.map((entry) => ({
+          role: entry.role,
+          text: entry.text || entry.content,
+          contextText: entry.content || entry.text,
+          ts: entry.ts || Date.now()
+        })).filter((entry) => entry.role && entry.text);
+      } else {
+        pushAssistantThreadMessage("assistant", assistantReply, assistantReply);
+      }
+
+      await addAssistantMessage("assistant", assistantReply);
+      setAssistantStatus("AI assistant is ready.");
+      return;
+    }
+
+    streamedMessageNode = appendStreamingAssistantMessage("assistant", "");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamedAnswer = "";
+    let finalPayload = null;
+    let streamedError = "";
+    setAssistantStatus("Streaming response from the KPI knowledge base...");
+
+    const processStreamEvent = (rawEvent) => {
+      const eventLines = String(rawEvent || "")
+      .split(/\\r?\\n/)
+      .filter(Boolean);
+    if (!eventLines.length) return;
+
+      let eventName = "message";
+      const dataLines = [];
+
+      eventLines.forEach((line) => {
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+          return;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trim());
+        }
+      });
+
+      if (!dataLines.length) return;
+
+      let payload = null;
+     try {
+    payload = JSON.parse(dataLines.join("\\n"));
+    } catch (error) {
+     payload = { value: dataLines.join("\\n") };
+     }
+
+      if (eventName === "delta") {
+        const delta = String(payload?.delta || "");
+        if (!delta) return;
+        streamedAnswer += delta;
+        updateStreamingAssistantMessage(streamedMessageNode, streamedAnswer, false);
+        return;
+      }
+
+      if (eventName === "done") {
+        finalPayload = payload || null;
+        return;
+      }
+
+      if (eventName === "error") {
+        streamedError = String(payload?.error || "I could not answer right now. Please try again.");
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.indexOf("\\n\\n");
+
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        processStreamEvent(rawEvent);
+        separatorIndex = buffer.indexOf("\\n\\n");
+      }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      processStreamEvent(buffer);
+    }
+
+    if (streamedError) {
+      throw new Error(streamedError);
+    }
+
+    const assistantReply = String(finalPayload?.answer || streamedAnswer || "").trim() || "I could not generate a response.";
+
+    if (Array.isArray(finalPayload?.conversation)) {
+      const thread = getCurrentAssistantThread();
+      thread.messages = finalPayload.conversation.map((entry) => ({
+        role: entry.role,
+        text: entry.text || entry.content,
+        contextText: entry.content || entry.text,
+        ts: entry.ts || Date.now()
+      })).filter((entry) => entry.role && entry.text);
+    } else {
+      pushAssistantThreadMessage("assistant", assistantReply, assistantReply);
+    }
+
+    updateStreamingAssistantMessage(streamedMessageNode, assistantReply, true);
     setAssistantStatus("AI assistant is ready.");
   } catch (err) {
     const fallbackReply = "I could not answer right now. Please try again.";
     pushAssistantThreadMessage("assistant", fallbackReply, fallbackReply);
-    await addAssistantMessage(
-      "assistant",
-      fallbackReply
-    );
+    if (streamedMessageNode) {
+      updateStreamingAssistantMessage(streamedMessageNode, fallbackReply, true);
+    } else {
+      await addAssistantMessage(
+        "assistant",
+        fallbackReply
+      );
+    }
     setAssistantStatus("AI assistant is unavailable.");
   } finally {
     assistantState.pending = false;
@@ -24531,25 +27298,31 @@ async function sendAssistantPrompt(message) {
             return lines;
           }
 
-          function getPointColor(value, lowLimit, highLimit) {
+          function normalizePointDirection(direction) {
+            const normalizedDirection = String(direction || "").trim().toLowerCase();
+            return normalizedDirection === "down" ? "down" : "up";
+          }
+
+          function getPointColor(value, lowLimit, highLimit, direction) {
             const val = parseFloat(value);
             const rawLow = parseFloat(lowLimit);
             const rawHigh = parseFloat(highLimit);
+            const resolvedDirection = normalizePointDirection(direction);
             const hasLow = !isNaN(rawLow);
             const hasHigh = !isNaN(rawHigh);
             const lower = hasLow && hasHigh ? Math.min(rawLow, rawHigh) : hasLow ? rawLow : null;
             const upper = hasLow && hasHigh ? Math.max(rawLow, rawHigh) : hasHigh ? rawHigh : null;
 
             if (isNaN(val)) return "#94a3b8";
-            if (upper !== null && val > upper) return "#e34b24";
-            if (lower !== null && val < lower) return "#2f6b22";
-            return "#b7dc58";
+            if (resolvedDirection === "down") {
+              return upper !== null && val > upper ? "#e34b24" : "#b7dc58";
+            }
+            return lower !== null && val < lower ? "#e34b24" : "#b7dc58";
           }
 
-          function getPointBorderColor(value, lowLimit, highLimit) {
-            const fill = getPointColor(value, lowLimit, highLimit);
+          function getPointBorderColor(value, lowLimit, highLimit, direction) {
+            const fill = getPointColor(value, lowLimit, highLimit, direction);
             if (fill === "#e34b24") return "#ba3415";
-            if (fill === "#2f6b22") return "#1f4d17";
             if (fill === "#b7dc58") return "#86a93a";
             return "#64748b";
           }
@@ -24594,10 +27367,11 @@ async function sendAssistantPrompt(message) {
             const lowLimit = parseFloat(card.dataset.lowLimit);
             const highLimit = parseFloat(card.dataset.highLimit);
             const target = parseFloat(card.dataset.target);
+            const goodDirection = card.dataset.goodDirection || "up";
             let labels = [], values = [];
             try { labels = JSON.parse(card.dataset.historyLabels || "[]"); values = JSON.parse(card.dataset.historyValues || "[]"); } catch(e){}
-            const colors = values.map(v => getPointColor(v, lowLimit, highLimit));
-            const borderColors = values.map(v => getPointBorderColor(v, lowLimit, highLimit));
+            const colors = values.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
+            const borderColors = values.map(v => getPointBorderColor(v, lowLimit, highLimit, goodDirection));
             const bounds = computeBounds(values, lowLimit, target, highLimit);
             kpiCharts[kvId] = new Chart(canvas.getContext("2d"), {
               type:"bar",
@@ -24621,9 +27395,10 @@ async function sendAssistantPrompt(message) {
             if (!card) return;
             const chart = kpiCharts[kvId]; if (!chart) return;
             const lowLimit = parseFloat(card.dataset.lowLimit), highLimit = parseFloat(card.dataset.highLimit), target = parseFloat(card.dataset.target);
+            const goodDirection = card.dataset.goodDirection || "up";
             const data = chart.data.datasets[0].data;
-            const colors = data.map(v => getPointColor(v, lowLimit, highLimit));
-            const borderColors = data.map(v => getPointBorderColor(v, lowLimit, highLimit));
+            const colors = data.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
+            const borderColors = data.map(v => getPointBorderColor(v, lowLimit, highLimit, goodDirection));
             chart.data.datasets[0].backgroundColor = colors;
             chart.data.datasets[0].borderColor = borderColors;
             const bounds = computeBounds(data, lowLimit, target, highLimit);
