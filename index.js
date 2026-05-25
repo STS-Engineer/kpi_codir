@@ -20620,7 +20620,64 @@ const buildActionPlanSubjectMetadata = ({
   };
 };
 
-const resolveActionPlanResponsibleEmail = ({
+const actionPlanResponsibleEmailCache = new Map();
+
+const findResponsibleEmailByDisplayName = async (responsibleName) => {
+  const normalizedResponsibleName = normalizeOptionalTextInput(responsibleName);
+  if (!normalizedResponsibleName) return null;
+
+  const cacheKey = normalizedResponsibleName.toLowerCase();
+  if (actionPlanResponsibleEmailCache.has(cacheKey)) {
+    return actionPlanResponsibleEmailCache.get(cacheKey);
+  }
+
+  const peopleResult = await pool.query(
+    `
+    SELECT p.email
+    FROM public.people p
+    WHERE
+      LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($1)
+      OR LOWER(COALESCE(p.name, '')) = LOWER($1)
+      OR LOWER(COALESCE(p.first_name, '')) = LOWER($1)
+    ORDER BY
+      CASE
+        WHEN LOWER(TRIM(CONCAT_WS(' ', COALESCE(p.first_name, ''), COALESCE(p.name, '')))) = LOWER($1) THEN 0
+        WHEN LOWER(COALESCE(p.name, '')) = LOWER($1) THEN 1
+        WHEN LOWER(COALESCE(p.first_name, '')) = LOWER($1) THEN 2
+        ELSE 3
+      END,
+      p.people_id ASC
+    LIMIT 1
+    `,
+    [normalizedResponsibleName]
+  );
+
+  let resolvedEmail = normalizeOptionalTextInput(peopleResult.rows[0]?.email);
+
+  if (!resolvedEmail) {
+    try {
+      const legacyResponsibleResult = await pool.query(
+        `
+        SELECT email
+        FROM public."Responsible"
+        WHERE LOWER(COALESCE(name, '')) = LOWER($1)
+        ORDER BY responsible_id ASC
+        LIMIT 1
+        `,
+        [normalizedResponsibleName]
+      );
+
+      resolvedEmail = normalizeOptionalTextInput(legacyResponsibleResult.rows[0]?.email);
+    } catch (error) {
+      resolvedEmail = null;
+    }
+  }
+
+  actionPlanResponsibleEmailCache.set(cacheKey, resolvedEmail);
+  return resolvedEmail;
+};
+
+const resolveActionPlanResponsibleEmail = async ({
   responsibleName,
   responsibleContext
 }) => {
@@ -20641,7 +20698,7 @@ const resolveActionPlanResponsibleEmail = ({
     return normalizedContextEmail;
   }
 
-  return null;
+  return findResponsibleEmailByDisplayName(normalizedResponsibleName);
 };
 
 const findActionPlanSubjectId = async ({
@@ -20968,7 +21025,7 @@ const syncActionPlanCorrectiveActionsForPeriod = async ({
     const responsibleName =
       normalizeOptionalTextInput(action.responsibleName ?? action.responsible) ||
       normalizeOptionalTextInput(responsibleContext?.name);
-    const responsibleEmail = resolveActionPlanResponsibleEmail({
+    const responsibleEmail = await resolveActionPlanResponsibleEmail({
       responsibleName,
       responsibleContext
     });
@@ -23480,6 +23537,14 @@ app.get("/api/kpi-chart-data", async (req, res) => {
 app.get("/form", async (req, res) => {
   try {
     const { responsible_id, week } = req.query;
+    const correctiveActionResponsibleOptions = [
+      "Olivier SPICKER",
+      "Roberto GONZALEZ",
+      "Olivier GRIMAUD",
+      "Eric SUSZYLO",
+      "Manoj SUDHAKARAN",
+      "Matthieu SIMONNET"
+    ];
     const {
       responsible,
       kpis,
@@ -23923,6 +23988,15 @@ app.get("/form", async (req, res) => {
         </div>
       `;
     });
+
+    const defaultCorrectiveActionResponsible = correctiveActionResponsibleOptions.includes(
+      String(responsible?.name || "").trim()
+    )
+      ? String(responsible.name).trim()
+      : "";
+    const correctiveActionResponsibleOptionsHtml = correctiveActionResponsibleOptions
+      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+      .join("");
 
     res.send(`
       <!DOCTYPE html>
@@ -24566,6 +24640,11 @@ app.get("/form", async (req, res) => {
               0 18px 42px rgba(15,23,42,0.07);
           }
 
+          .ca-table-wrap {
+            max-height: 320px;
+            overflow-y: auto;
+          }
+
           .ca-table,
           .ca-entry-editor-table {
             width: 100%;
@@ -24592,7 +24671,7 @@ app.get("/form", async (req, res) => {
 
           .ca-table th,
           .ca-entry-editor-table th {
-            padding: 16px 16px;
+            padding: 14px 16px;
             text-align: left;
             font-size: 11px;
             font-weight: 900;
@@ -24605,7 +24684,7 @@ app.get("/form", async (req, res) => {
 
           .ca-table td,
           .ca-entry-editor-table td {
-            padding: 16px;
+            padding: 14px 16px;
             border-bottom: 1px solid rgba(241,245,249,0.96);
             vertical-align: top;
             color: #334155;
@@ -25049,6 +25128,122 @@ app.get("/form", async (req, res) => {
             display: flex;
             flex-direction: column;
             gap: 8px;
+          }
+
+          .ca-responsible-select {
+            position: relative;
+            width: 100%;
+          }
+
+          .ca-responsible-trigger {
+            width: 100%;
+            min-height: 46px;
+            padding: 12px 40px 12px 13px;
+            border: 1px solid rgba(191,219,254,0.7);
+            border-radius: 14px;
+            background: #ffffff;
+            color: #0f172a;
+            font-size: 13px;
+            font-family: inherit;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            cursor: pointer;
+            text-align: left;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+          }
+
+          .ca-responsible-trigger:hover {
+            border-color: #93c5fd;
+          }
+
+          .ca-responsible-select.is-open .ca-responsible-trigger,
+          .ca-responsible-trigger:focus-visible {
+            border-color: #60a5fa;
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(59,130,246,0.10);
+            transform: translateY(-1px);
+          }
+
+          .ca-responsible-trigger.is-placeholder .ca-responsible-trigger-label {
+            color: #64748b;
+          }
+
+          .ca-responsible-trigger-label {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+
+          .ca-responsible-trigger-chevron {
+            position: absolute;
+            right: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #334155;
+            font-size: 15px;
+            pointer-events: none;
+          }
+
+          .ca-responsible-menu {
+            position: fixed;
+            z-index: 12050;
+            background: #ffffff;
+            border: 1px solid rgba(191,219,254,0.95);
+            border-radius: 16px;
+            box-shadow: 0 22px 44px rgba(15,23,42,0.18);
+            padding: 8px;
+          }
+
+          .ca-responsible-menu[hidden] {
+            display: none !important;
+          }
+
+          .ca-responsible-options {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 340px;
+            overflow: auto;
+          }
+
+          .ca-responsible-option {
+            width: 100%;
+            border: none;
+            border-radius: 12px;
+            background: transparent;
+            color: #0f172a;
+            font-size: 13px;
+            font-family: inherit;
+            padding: 10px 12px;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+          }
+
+          .ca-responsible-option:hover {
+            background: #eff6ff;
+            color: #1d4ed8;
+          }
+
+          .ca-responsible-option.is-selected {
+            background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(14,165,233,0.10));
+            color: #1d4ed8;
+            font-weight: 700;
+          }
+
+          .ca-responsible-option.is-placeholder {
+            color: #64748b;
+          }
+
+          .ca-modal-select-native {
+            position: absolute;
+            width: 0;
+            height: 0;
+            opacity: 0;
+            pointer-events: none;
           }
 
           .ca-editor-cell-note {
@@ -25748,7 +25943,24 @@ app.get("/form", async (req, res) => {
                         </td>
                         <td>
                           <div class="ca-editor-cell">
-                            <input type="text" id="caModalResponsible" class="ca-modal-input" placeholder="Responsible name">
+                            <div class="ca-responsible-select" id="caModalResponsibleShell">
+                              <button
+                                type="button"
+                                class="ca-responsible-trigger is-placeholder"
+                                id="caModalResponsibleTrigger"
+                                aria-haspopup="listbox"
+                                aria-expanded="false">
+                                <span class="ca-responsible-trigger-label" id="caModalResponsibleTriggerLabel">Select responsible</span>
+                                <span class="ca-responsible-trigger-chevron" aria-hidden="true">▾</span>
+                              </button>
+                              <div class="ca-responsible-menu" id="caModalResponsibleMenu" hidden>
+                                <div class="ca-responsible-options" id="caModalResponsibleOptions" role="listbox" aria-label="Responsible options"></div>
+                              </div>
+                              <select id="caModalResponsible" class="ca-modal-select ca-modal-select-native" tabindex="-1" aria-hidden="true">
+                                <option value="">Select responsible</option>
+                                ${correctiveActionResponsibleOptionsHtml}
+                              </select>
+                            </div>
                           </div>
                         </td>
                         <td>
@@ -26124,17 +26336,18 @@ function getCaModalActions(kvId) {
     if (formTitle) formTitle.textContent = "Edit Action #" + (editIndex + 1);
     if (editIdx) editIdx.value = String(editIndex);
     document.getElementById("caModalDueDate").value = a.due_date || "";
-    document.getElementById("caModalResponsible").value = a.responsible || "";
+    setCaModalResponsibleValue(a.responsible || "");
     document.getElementById("caModalRootCause").value = a.root_cause || "";
     document.getElementById("caModalSolution").value = a.implemented_solution || "";
     updateCaModalEditorMeta(a, editIndex);
   } else {
     if (formTitle) formTitle.textContent = "New Corrective Action";
     if (editIdx) editIdx.value = "";
-    ["caModalDueDate","caModalResponsible","caModalRootCause","caModalSolution"].forEach(id => {
+    ["caModalDueDate","caModalRootCause","caModalSolution"].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.value = "";
     });
+    setCaModalResponsibleValue(DEFAULT_CA_RESPONSIBLE);
     updateCaModalEditorMeta(null, null);
   }
 
@@ -26148,6 +26361,7 @@ function getCaModalActions(kvId) {
           function caModalCollapseForm() {
             const section = document.getElementById("caModalFormSection");
             if (section) section.style.display = "none";
+            closeCaResponsibleDropdown();
             updateCaModalEditorMeta(null, null);
           }
 
@@ -26289,6 +26503,7 @@ function syncDomFromStore(kvId) {
           function closeCaTableModal() {
             const overlay = document.getElementById("caTableModal");
             if (!overlay) return;
+            closeCaResponsibleDropdown();
             overlay.classList.remove("active");
             overlay.setAttribute("aria-hidden", "true");
             if (!document.querySelector(".chart-modal-overlay.active") &&
@@ -27030,6 +27245,149 @@ async function sendAssistantPrompt(message) {
           const kpiCharts = {};
           let expandedChart = null;
           let expandedChartKpiValuesId = null;
+          const CA_RESPONSIBLE_OPTIONS = ${JSON.stringify(correctiveActionResponsibleOptions)};
+          const DEFAULT_CA_RESPONSIBLE = ${JSON.stringify(defaultCorrectiveActionResponsible)};
+
+          function getCaResponsibleDropdownElements() {
+            return {
+              shell: document.getElementById("caModalResponsibleShell"),
+              trigger: document.getElementById("caModalResponsibleTrigger"),
+              triggerLabel: document.getElementById("caModalResponsibleTriggerLabel"),
+              menu: document.getElementById("caModalResponsibleMenu"),
+              options: document.getElementById("caModalResponsibleOptions"),
+              select: document.getElementById("caModalResponsible")
+            };
+          }
+
+          function closeCaResponsibleDropdown({ restoreFocus = false } = {}) {
+            const { shell, trigger, menu } = getCaResponsibleDropdownElements();
+            if (!shell || !trigger || !menu) return;
+
+            shell.classList.remove("is-open");
+            menu.hidden = true;
+            trigger.setAttribute("aria-expanded", "false");
+
+            if (restoreFocus) {
+              trigger.focus();
+            }
+          }
+
+          function ensureCaResponsibleDropdownPortal() {
+            const { menu } = getCaResponsibleDropdownElements();
+            if (!menu) return;
+
+            if (menu.parentElement !== document.body) {
+              document.body.appendChild(menu);
+            }
+          }
+
+          function renderCaResponsibleDropdownOptions() {
+            const { options, select } = getCaResponsibleDropdownElements();
+            if (!options || !select) return;
+
+            const nativeOptions = Array.from(select.options || []);
+            const selectedValue = String(select.value || "");
+            const visibleOptions = nativeOptions.filter((option) => String(option.value || "") !== "");
+
+            options.innerHTML = visibleOptions.map((option) => {
+              const value = String(option.value || "");
+              const label = String(option.text || option.label || value || "Select responsible");
+              const isSelected = value === selectedValue;
+
+              return '<button type="button" class="ca-responsible-option' +
+                (isSelected ? ' is-selected' : '') +
+                '" role="option" aria-selected="' + (isSelected ? "true" : "false") +
+                '" data-value="' + escapeHtml(value) + '">' +
+                escapeHtml(label) +
+              '</button>';
+            }).join("");
+          }
+
+          function positionCaResponsibleDropdown() {
+            const { trigger, menu, options } = getCaResponsibleDropdownElements();
+            if (!trigger || !menu || !options || menu.hidden) return;
+
+            const triggerRect = trigger.getBoundingClientRect();
+            const availableBelow = Math.max(window.innerHeight - triggerRect.bottom - 18, 180);
+            menu.style.top = Math.round(triggerRect.bottom + 8) + "px";
+            menu.style.left = Math.round(triggerRect.left) + "px";
+            menu.style.width = Math.round(triggerRect.width) + "px";
+            menu.style.maxHeight = Math.round(Math.min(availableBelow, 360)) + "px";
+            options.style.maxHeight = Math.round(Math.min(Math.max(availableBelow - 16, 164), 340)) + "px";
+          }
+
+          function ensureCaResponsibleDropdownSpace() {
+            const { trigger, menu } = getCaResponsibleDropdownElements();
+            const modalBody = trigger?.closest(".ca-modal-body");
+            if (!trigger || !menu || !modalBody) return;
+
+            const triggerRect = trigger.getBoundingClientRect();
+            const desiredHeight = Math.min(menu.scrollHeight || 320, 360);
+            const overflow = triggerRect.bottom + desiredHeight + 16 - window.innerHeight;
+
+            if (overflow > 0) {
+              modalBody.scrollTop += overflow;
+            }
+          }
+
+          function syncCaResponsibleDropdown() {
+            const { trigger, triggerLabel, options, select } = getCaResponsibleDropdownElements();
+            if (!trigger || !triggerLabel || !options || !select) return;
+
+            const nativeOptions = Array.from(select.options || []);
+            const selectedValue = String(select.value || "");
+            const selectedOption = nativeOptions.find(
+              (option) => String(option.value || "") === selectedValue
+            );
+            const placeholderText = nativeOptions[0]?.text || "Select responsible";
+
+            triggerLabel.textContent = selectedOption?.text || placeholderText;
+            trigger.classList.toggle("is-placeholder", !selectedValue);
+            renderCaResponsibleDropdownOptions();
+            closeCaResponsibleDropdown();
+          }
+
+          function applyCaResponsibleDropdownValue(nextValue = "") {
+            const { select } = getCaResponsibleDropdownElements();
+            if (!select) return;
+
+            select.value = String(nextValue || "").trim();
+            syncCaResponsibleDropdown();
+          }
+
+          function toggleCaResponsibleDropdown(forceOpen) {
+            const { shell, trigger, menu, select } = getCaResponsibleDropdownElements();
+            if (!shell || !trigger || !menu || !select) return;
+
+            const shouldOpen = typeof forceOpen === "boolean"
+              ? forceOpen
+              : menu.hidden;
+
+            if (!shouldOpen) {
+              closeCaResponsibleDropdown();
+              return;
+            }
+
+            renderCaResponsibleDropdownOptions();
+            ensureCaResponsibleDropdownPortal();
+            shell.classList.add("is-open");
+            menu.hidden = false;
+            trigger.setAttribute("aria-expanded", "true");
+            ensureCaResponsibleDropdownSpace();
+            positionCaResponsibleDropdown();
+            requestAnimationFrame(positionCaResponsibleDropdown);
+          }
+
+          function setCaModalResponsibleValue(value) {
+            const { select } = getCaResponsibleDropdownElements();
+            if (!select) return;
+
+            const normalizedValue = String(value || "").trim();
+            select.value = CA_RESPONSIBLE_OPTIONS.includes(normalizedValue)
+              ? normalizedValue
+              : "";
+            syncCaResponsibleDropdown();
+          }
 
           async function refreshKpiChartFromServer(kvId) {
   const card = document.querySelector('.kpi-card[data-kpi-values-id="' + kvId + '"]');
@@ -28120,10 +28478,50 @@ function getFallbackCurrentMonthLabel(card, labels) {
             if (caModalCancelForm) caModalCancelForm.addEventListener("click", caModalCollapseForm);
             const caModalSaveFormBtn = document.getElementById("caModalSaveForm");
             if (caModalSaveFormBtn) caModalSaveFormBtn.addEventListener("click", caModalSaveForm);
+            const caModalResponsibleTrigger = document.getElementById("caModalResponsibleTrigger");
+            const caModalResponsibleOptions = document.getElementById("caModalResponsibleOptions");
+            const caModalBody = document.querySelector("#caTableModal .ca-modal-body");
+            if (caModalResponsibleTrigger) {
+              caModalResponsibleTrigger.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleCaResponsibleDropdown();
+              });
+            }
+            if (caModalResponsibleOptions) {
+              caModalResponsibleOptions.addEventListener("click", (event) => {
+                const optionButton = event.target.closest(".ca-responsible-option");
+                if (!optionButton) return;
+                applyCaResponsibleDropdownValue(optionButton.dataset.value || "");
+              });
+            }
+            if (caModalBody) {
+              caModalBody.addEventListener("scroll", () => {
+                const { menu } = getCaResponsibleDropdownElements();
+                if (menu && !menu.hidden) {
+                  positionCaResponsibleDropdown();
+                }
+              });
+            }
+            window.addEventListener("resize", () => {
+              const { menu } = getCaResponsibleDropdownElements();
+              if (menu && !menu.hidden) {
+                positionCaResponsibleDropdown();
+              }
+            });
+            document.addEventListener("click", (event) => {
+              const { shell, menu } = getCaResponsibleDropdownElements();
+              if (!shell || !menu || menu.hidden) return;
+              if (shell.contains(event.target) || menu.contains(event.target)) return;
+              closeCaResponsibleDropdown();
+            });
+            syncCaResponsibleDropdown();
 
             // Escape key
             document.addEventListener("keydown", e => {
               if (e.key === "Escape") {
+                const { menu } = getCaResponsibleDropdownElements();
+                if (menu && !menu.hidden) { closeCaResponsibleDropdown({ restoreFocus: true }); return; }
                 if (document.getElementById("closeActionConfirmModal").classList.contains("active")) { settleCloseActionConfirm(false); return; }
                 if (document.getElementById("caTableModal").classList.contains("active")) { closeCaTableModal(); return; }
                 if (document.getElementById("chartModal").classList.contains("active")) { closeChartModal(); return; }
@@ -29505,7 +29903,6 @@ const generateVerticalBarChart = (chartData) => {
               ${preChartLimitsHtml}
               <table border="0" cellpadding="0" cellspacing="0" width="100%">
                 <tr>
-  
                   <td valign="top" style="padding-left:5px;">
                     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="text-align:center;">
                       <tr>
@@ -29514,11 +29911,11 @@ const generateVerticalBarChart = (chartData) => {
                                width="500"
                                height="${chartHeightPx}"
                                alt="KPI Trend Chart"
-                               style="max-width:100%;
-                                      border-radius:8px;
-                                      border:1px solid #f0f0f0;
-                                      display:block;
-                                      margin:auto;" />
+                             style="max-width:100%;
+                             border-radius:8px;
+                             border:1px solid #f0f0f0;
+                             display:block;
+                             margin:auto;" />
                         </td>
                       </tr>
                     </table>
