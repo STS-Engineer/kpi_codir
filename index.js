@@ -25792,6 +25792,7 @@ app.get("/form", async (req, res) => {
             <div class="info-section">
               <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
               <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
+              <div class="info-row"><div class="info-label">Role</div><div class="info-value">${responsible.role_name || responsible.role || "—"}</div></div>
               <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
             </div>
 
@@ -27381,12 +27382,11 @@ async function sendAssistantPrompt(message) {
                 layout:{ padding:{ right:12 } },
                 plugins:{
                   legend:{ display:false },
-                  kpiThresholdLines:{ lines: getThresholdLines(lowLimit,target,highLimit) },
-                  kpiBarFlowLine:{ datasetIndex:0, offset:12, lineWidth:3, pointRadius:3.5 }
+                  kpiThresholdLines:{ lines: getThresholdLines(lowLimit,target,highLimit) }
                 },
                 scales:{ x:{ grid:{ display:false } }, y:{ min:bounds.min, max:bounds.max } }
               },
-              plugins:[kpiThresholdLinesPlugin, kpiBarFlowLinePlugin]
+              plugins:[kpiThresholdLinesPlugin]
             });
           }
 
@@ -27504,7 +27504,6 @@ function getFallbackCurrentMonthLabel(card, labels) {
             expandedChart.options.scales.y.min = src.options.scales.y.min;
             expandedChart.options.scales.y.max = src.options.scales.y.max;
             expandedChart.options.plugins.kpiThresholdLines.lines = (src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()}));
-            expandedChart.options.plugins.kpiBarFlowLine = Object.assign({}, src.options.plugins.kpiBarFlowLine || { datasetIndex:0, offset:14, lineWidth:3, pointRadius:4 });
             expandedChart.update();
           }
 
@@ -27549,12 +27548,11 @@ function getFallbackCurrentMonthLabel(card, labels) {
                   interaction:{ mode:"index", intersect:false }, layout:{ padding:{right:12} },
                   plugins:{
                     legend:{display:false},
-                    kpiThresholdLines:{ lines:(src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()})) },
-                    kpiBarFlowLine: Object.assign({}, src.options.plugins.kpiBarFlowLine || { datasetIndex:0, offset:14, lineWidth:3, pointRadius:4 })
+                    kpiThresholdLines:{ lines:(src.options.plugins.kpiThresholdLines.lines||[]).map(l=>({...l,borderDash:(l.borderDash||[]).slice()})) }
                   },
                   scales:{ x:{grid:{display:false},ticks:{color:"#475569",font:{size:14,weight:"600"}}}, y:{min:src.options.scales.y.min,max:src.options.scales.y.max,ticks:{color:"#64748b",font:{size:13}},grid:{color:"#e2e8f0"}} }
                 },
-                plugins:[expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin, kpiBarFlowLinePlugin]
+                plugins:[expandedChartValueLabelsPlugin, kpiThresholdLinesPlugin]
               });
             });
           }
