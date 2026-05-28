@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const { Pool } = require("pg");
-const bodyParser = require("body-parser");
+const bodyParser = require("body-parser"); 
 const cors = require("cors");
 const nodemailer = require("nodemailer");
 const cron = require("node-cron");
@@ -2338,6 +2338,74 @@ const loadKpiTargetAllocationLookups = async () => {
   };
 };
 
+const loadFormResponsibleContext = async (responsibleId) => {
+  const normalizedResponsibleId =
+    normalizeOptionalIntegerInput(responsibleId);
+
+  if (!normalizedResponsibleId) return null;
+
+  const result = await pool.query(
+    `
+    SELECT
+      p.people_id,
+      p.name,
+      p.first_name,
+      p.email,
+      COALESCE(home_unit.unit_name, allocation_scope.group_name) AS plant_name,
+      COALESCE(primary_role.role_name, allocation_scope.role_name) AS role_name
+    FROM public.people p
+    LEFT JOIN public.unit home_unit
+      ON home_unit.unit_id = p.work_at_unit_id
+    LEFT JOIN LATERAL (
+      SELECT r.role_name
+      FROM public.people_role_assignment pra
+      LEFT JOIN public.role r
+        ON r.role_id = pra.role_id
+      WHERE pra.people_id = p.people_id
+        AND pra.assignment_status = 'ACTIVE'
+      ORDER BY COALESCE(pra.is_primary, false) DESC, pra.assignment_id DESC
+      LIMIT 1
+    ) primary_role ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        COALESCE(plant.unit_name, zone.zone_name, unit_scope.unit_name) AS group_name,
+        role.role_name
+      FROM public.kpi_target_allocation kta
+      LEFT JOIN public.unit plant
+        ON plant.unit_id = kta.plant_id
+      LEFT JOIN public.zone zone
+        ON zone.zone_id = kta.zone_id
+      LEFT JOIN public.unit unit_scope
+        ON unit_scope.unit_id = kta.unit_id
+      LEFT JOIN public.role role
+        ON role.role_id = kta.role_id
+      WHERE COALESCE(kta.created_by_people_id, kta.set_by_people_id) = p.people_id
+      ORDER BY kta.kpi_target_allocation_id ASC
+      LIMIT 1
+    ) allocation_scope ON TRUE
+    WHERE p.people_id = $1
+    LIMIT 1
+    `,
+    [normalizedResponsibleId]
+  );
+
+  if (!result.rows.length) {
+    return null;
+  }
+
+  return {
+    people_id: result.rows[0].people_id,
+    name: getPeopleDisplayName(result.rows[0]),
+    email: result.rows[0].email,
+    plant_name: normalizeOptionalTextInput(result.rows[0].plant_name) || "Allocated scope",
+    group_name: normalizeOptionalTextInput(result.rows[0].plant_name) || "Allocated scope",
+    role_name: normalizeOptionalTextInput(result.rows[0].role_name) || "",
+    role: normalizeOptionalTextInput(result.rows[0].role_name) || "",
+    department_name: ""
+  };
+};
+
+
 const getDashboardOwnerDisplayName = async (responsibleId) => {
   return (await loadFormResponsibleContext(responsibleId))?.name || "KPI Workspace";
 };
@@ -2521,7 +2589,7 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
     WHERE
       ($3::integer IS NULL OR k.kpi_id = $3)
       ${normalizedResponsibleId === null ? "" : `
-      AND k.created_by_people_id = $4
+      AND assignment.set_by_people_id = $4
       `}
       AND (
         $1 = ''
@@ -20311,85 +20379,6 @@ const getKpiResultDisplayPeriod = (row = {}) =>
   normalizeOptionalDateInput(row.result_date) ||
   "";
 
-const loadFormResponsibleContext = async (responsibleId) => {
-  const normalizedResponsibleId = normalizeOptionalIntegerInput(responsibleId);
-  const fallbackName = normalizedResponsibleId
-    ? `Responsible #${normalizedResponsibleId}`
-    : "KPI Owner";
-
-  if (!normalizedResponsibleId) {
-    return {
-      responsible_id: null,
-      people_id: null,
-      name: fallbackName,
-      email: null,
-      plant_name: "Allocated scope",
-      department_name: ""
-    };
-  }
-
-  try {
-    const legacyResponsible = await loadLegacyResponsibleIdentity(normalizedResponsibleId);
-    const matchedPeopleFromLegacy = legacyResponsible
-      ? await findPeopleContextForLegacyResponsible(legacyResponsible)
-      : null;
-    const directPeopleContext = await loadPeopleContextByPeopleId(normalizedResponsibleId);
-    const resolvedPeopleContext = matchedPeopleFromLegacy || directPeopleContext;
-    let roleName = "";
-
-if (resolvedPeopleContext?.people_id) {
-  const roleRes = await pool.query(
-    `
-    SELECT r.role_name
-    FROM public.people_role_assignment pra
-    JOIN public.role r
-      ON r.role_id = pra.role_id
-    WHERE pra.people_id = $1
-      AND pra.assignment_status = 'ACTIVE'
-    ORDER BY pra.is_primary DESC, pra.assignment_id DESC
-    LIMIT 1
-    `,
-    [resolvedPeopleContext.people_id]
-  );
-
-  roleName = roleRes.rows[0]?.role_name || "";
-}
-
-
-return {
-  responsible_id: normalizedResponsibleId,
-  people_id: resolvedPeopleContext?.people_id ?? directPeopleContext?.people_id ?? null,
-  name:
-    resolvedPeopleContext?.name ||
-    legacyResponsible?.name ||
-    directPeopleContext?.name ||
-    fallbackName,
-  email:
-    resolvedPeopleContext?.email ||
-    legacyResponsible?.email ||
-    directPeopleContext?.email ||
-    null,
-  plant_name:
-    resolvedPeopleContext?.plant_name ||
-    directPeopleContext?.plant_name ||
-    "Allocated scope",
-  department_name:
-    resolvedPeopleContext?.department_name ||
-    directPeopleContext?.department_name ||
-    "",
-  role_name: roleName
-};
-  } catch (error) {
-    return {
-      responsible_id: normalizedResponsibleId,
-      people_id: normalizedResponsibleId,
-      name: fallbackName,
-      email: null,
-      plant_name: "Allocated scope",
-      department_name: ""
-    };
-  }
-};
 
 const resolveRecordedByPeopleId = async (candidateId) => {
   const peopleId = normalizeOptionalIntegerInput(candidateId);
@@ -21291,6 +21280,10 @@ const getResponsibleWithKPIs = async (responsibleId, week) => {
 };
 
 const generateEmailHtml = ({ responsible, week }) => {
+  const responsibleLinkId = encodeURIComponent(
+    responsible?.people_id ?? responsible?.responsible_id ?? ""
+  );
+
   // Convert week format (e.g., "2026-Week12") to month and year
   const getMonthYearFromWeek = (weekStr) => {
     const match = weekStr.match(/(\d{4})-Week(\d+)/);
@@ -21328,7 +21321,7 @@ const generateEmailHtml = ({ responsible, week }) => {
       
       <h3 style="color:#333;font-size:18px;margin:0 0 25px 0;font-weight:500;">${responsible.plant_name}</h3>
       
-      <a href="https://kpi-codir.azurewebsites.net/form?responsible_id=${responsible.responsible_id}&week=${week}"
+      <a href="https://kpi-form.azurewebsites.net/form?responsible_id=${responsibleLinkId}&week=${week}"
          style="display:inline-block;padding:14px 35px;background:#0078D7;color:white;
                 border-radius:50px;text-decoration:none;font-weight:600;font-size:16px;
                 margin-bottom:20px;border:none;cursor:pointer;">
@@ -23537,20 +23530,35 @@ app.get("/api/kpi-chart-data", async (req, res) => {
 app.get("/form", async (req, res) => {
   try {
     const { responsible_id, week } = req.query;
-    const correctiveActionResponsibleOptions = [
-      "Olivier SPICKER",
-      "Roberto GONZALEZ",
-      "Olivier GRIMAUD",
-      "Eric SUSZYLO",
-      "Manoj SUDHAKARAN",
-      "Matthieu SIMONNET"
-    ];
+  const peopleRes = await pool.query(
+  `SELECT people_id,
+          TRIM(first_name || ' ' || name) AS display_name
+   FROM public.people
+   WHERE status = 'Active'
+   ORDER BY first_name ASC, name ASC`
+  );
+
+const correctiveActionResponsibleOptions = peopleRes.rows.map(r => r.display_name);
     const {
       responsible,
       kpis,
       correctiveActionsEnabled,
       correctiveActionHistoryByAllocation
     } = await getResponsibleWithKPIs(responsible_id, week);
+
+    const responsibleContext = await loadFormResponsibleContext(responsible_id);
+    const responsibleGroupLabel =
+      normalizeOptionalTextInput(responsible?.group_name) ||
+      normalizeOptionalTextInput(responsible?.plant_name) ||
+      normalizeOptionalTextInput(responsibleContext?.group_name) ||
+      normalizeOptionalTextInput(responsibleContext?.plant_name) ||
+      "Allocated scope";
+    const responsibleRoleLabel =
+      normalizeOptionalTextInput(responsible?.role_name) ||
+      normalizeOptionalTextInput(responsible?.role) ||
+      normalizeOptionalTextInput(responsibleContext?.role_name) ||
+      normalizeOptionalTextInput(responsibleContext?.role) ||
+      "Not assigned";
 
     if (!kpis.length) {
       return res.send(`
@@ -23570,8 +23578,8 @@ app.get("/form", async (req, res) => {
         <body>
           <div class="empty-state">
             <h1>No KPI values to enter yet</h1>
-            <p>The <code>/form</code> page now shows only KPI target allocations where <code>set_by_people_id</code> matches the current <code>responsible_id</code>.</p>
-            <p>No target allocations are currently assigned to this responsible. Set the responsible in <code>kpi_target_allocation.set_by_people_id</code>, then this page will display only that person’s related KPIs and save submitted values into <code>kpi_result</code>.</p>
+            <p>The <code>/form</code> page now shows only KPI target allocations where the allocation owner matches the current <code>responsible_id</code>.</p>
+            <p>No target allocations are currently assigned to this responsible. Set the owner in <code>kpi_target_allocation.created_by_people_id</code> (or keep <code>set_by_people_id</code> for older rows), then this page will display that person’s related KPIs and save submitted values into <code>kpi_result</code>.</p>
           </div>
         </body>
         </html>
@@ -23989,11 +23997,14 @@ app.get("/form", async (req, res) => {
       `;
     });
 
-    const defaultCorrectiveActionResponsible = correctiveActionResponsibleOptions.includes(
-      String(responsible?.name || "").trim()
-    )
-      ? String(responsible.name).trim()
-      : "";
+ const responsibleFullName = [
+  String(responsibleContext?.name || "").trim(),
+  String(responsibleContext?.first_name || "").trim()
+].filter(Boolean).join(" ");
+
+const defaultCorrectiveActionResponsible = correctiveActionResponsibleOptions.find(
+  opt => opt.toLowerCase() === responsibleFullName.toLowerCase()
+) || correctiveActionResponsibleOptions[0] || "";
     const correctiveActionResponsibleOptionsHtml = correctiveActionResponsibleOptions
       .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
       .join("");
@@ -25201,6 +25212,36 @@ app.get("/form", async (req, res) => {
             display: none !important;
           }
 
+          .ca-responsible-search {
+            padding: 2px 2px 10px;
+            border-bottom: 1px solid rgba(191,219,254,0.55);
+            margin-bottom: 8px;
+          }
+
+ 
+.ca-responsible-search input {
+  width: 100% !important;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: #f8fafc;
+  transition: all 0.2s ease;
+}
+
+.ca-responsible-search input:focus {
+  border-color: #3b82f6;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+  outline: none;
+}
+
+.ca-responsible-search input::placeholder {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
           .ca-responsible-options {
             display: flex;
             flex-direction: column;
@@ -25236,6 +25277,15 @@ app.get("/form", async (req, res) => {
 
           .ca-responsible-option.is-placeholder {
             color: #64748b;
+          }
+
+          .ca-responsible-empty {
+            padding: 14px 12px;
+            border-radius: 12px;
+            color: #64748b;
+            font-size: 13px;
+            text-align: center;
+            background: linear-gradient(180deg, #f8fbff 0%, #f1f5f9 100%);
           }
 
           .ca-modal-select-native {
@@ -25954,6 +26004,14 @@ app.get("/form", async (req, res) => {
                                 <span class="ca-responsible-trigger-chevron" aria-hidden="true">▾</span>
                               </button>
                               <div class="ca-responsible-menu" id="caModalResponsibleMenu" hidden>
+                                <div class="ca-responsible-search">
+                                  <input
+                                    id="caModalResponsibleSearch"
+                                    type="text"
+                                    placeholder="Type to filter responsibles..."
+                                    autocomplete="off"
+                                  />
+                                </div>
                                 <div class="ca-responsible-options" id="caModalResponsibleOptions" role="listbox" aria-label="Responsible options"></div>
                               </div>
                               <select id="caModalResponsible" class="ca-modal-select ca-modal-select-native" tabindex="-1" aria-hidden="true">
@@ -26003,8 +26061,8 @@ app.get("/form", async (req, res) => {
           <div class="form-section">
             <div class="info-section">
               <div class="info-row"><div class="info-label">Name</div><div class="info-value">${responsible.name}</div></div>
-              <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsible.plant_name}</div></div>
-              <div class="info-row"><div class="info-label">Role</div><div class="info-value">${responsible.role_name || responsible.role || "—"}</div></div>
+              <div class="info-row"><div class="info-label">Group</div><div class="info-value">${responsibleGroupLabel}</div></div>
+              <div class="info-row"><div class="info-label">Role</div><div class="info-value">${responsibleRoleLabel}</div></div>
               <div class="info-row"><div class="info-label">Week</div><div class="info-value">${week}</div></div>
             </div>
 
@@ -27247,6 +27305,8 @@ async function sendAssistantPrompt(message) {
           let expandedChartKpiValuesId = null;
           const CA_RESPONSIBLE_OPTIONS = ${JSON.stringify(correctiveActionResponsibleOptions)};
           const DEFAULT_CA_RESPONSIBLE = ${JSON.stringify(defaultCorrectiveActionResponsible)};
+          const CA_RESPONSIBLE_DROPDOWN_WIDTH_REDUCTION = 18;
+          const CA_RESPONSIBLE_DROPDOWN_MIN_WIDTH = 156;
 
           function getCaResponsibleDropdownElements() {
             return {
@@ -27254,18 +27314,23 @@ async function sendAssistantPrompt(message) {
               trigger: document.getElementById("caModalResponsibleTrigger"),
               triggerLabel: document.getElementById("caModalResponsibleTriggerLabel"),
               menu: document.getElementById("caModalResponsibleMenu"),
+              search: document.getElementById("caModalResponsibleSearch"),
               options: document.getElementById("caModalResponsibleOptions"),
               select: document.getElementById("caModalResponsible")
             };
           }
 
           function closeCaResponsibleDropdown({ restoreFocus = false } = {}) {
-            const { shell, trigger, menu } = getCaResponsibleDropdownElements();
+            const { shell, trigger, menu, search } = getCaResponsibleDropdownElements();
             if (!shell || !trigger || !menu) return;
 
             shell.classList.remove("is-open");
             menu.hidden = true;
             trigger.setAttribute("aria-expanded", "false");
+
+            if (search) {
+              search.value = "";
+            }
 
             if (restoreFocus) {
               trigger.focus();
@@ -27281,13 +27346,27 @@ async function sendAssistantPrompt(message) {
             }
           }
 
-          function renderCaResponsibleDropdownOptions() {
+          function renderCaResponsibleDropdownOptions(filterText = "") {
             const { options, select } = getCaResponsibleDropdownElements();
             if (!options || !select) return;
 
             const nativeOptions = Array.from(select.options || []);
             const selectedValue = String(select.value || "");
-            const visibleOptions = nativeOptions.filter((option) => String(option.value || "") !== "");
+            const normalizedFilter = String(filterText || "").trim().toLowerCase();
+            const visibleOptions = nativeOptions.filter((option, index) => {
+              const value = String(option.value || "");
+              const label = String(option.text || option.label || value || "Select responsible");
+
+              if (!normalizedFilter) return value !== "";
+              if (index === 0 && value === "") return false;
+
+              return label.toLowerCase().includes(normalizedFilter);
+            });
+
+            if (!visibleOptions.length) {
+              options.innerHTML = '<div class="ca-responsible-empty">No responsibles match your search</div>';
+              return;
+            }
 
             options.innerHTML = visibleOptions.map((option) => {
               const value = String(option.value || "");
@@ -27309,9 +27388,19 @@ async function sendAssistantPrompt(message) {
 
             const triggerRect = trigger.getBoundingClientRect();
             const availableBelow = Math.max(window.innerHeight - triggerRect.bottom - 18, 180);
+            const dropdownWidth = Math.max(
+              CA_RESPONSIBLE_DROPDOWN_MIN_WIDTH,
+              Math.round(triggerRect.width - CA_RESPONSIBLE_DROPDOWN_WIDTH_REDUCTION)
+            );
+            const centeredLeft = Math.round(triggerRect.left + ((triggerRect.width - dropdownWidth) / 2));
+            const safeLeft = Math.max(
+              12,
+              Math.min(centeredLeft, Math.round(window.innerWidth - dropdownWidth - 12))
+            );
+
             menu.style.top = Math.round(triggerRect.bottom + 8) + "px";
-            menu.style.left = Math.round(triggerRect.left) + "px";
-            menu.style.width = Math.round(triggerRect.width) + "px";
+            menu.style.left = safeLeft + "px";
+            menu.style.width = dropdownWidth + "px";
             menu.style.maxHeight = Math.round(Math.min(availableBelow, 360)) + "px";
             options.style.maxHeight = Math.round(Math.min(Math.max(availableBelow - 16, 164), 340)) + "px";
           }
@@ -27331,7 +27420,7 @@ async function sendAssistantPrompt(message) {
           }
 
           function syncCaResponsibleDropdown() {
-            const { trigger, triggerLabel, options, select } = getCaResponsibleDropdownElements();
+            const { trigger, triggerLabel, search, options, select } = getCaResponsibleDropdownElements();
             if (!trigger || !triggerLabel || !options || !select) return;
 
             const nativeOptions = Array.from(select.options || []);
@@ -27343,7 +27432,18 @@ async function sendAssistantPrompt(message) {
 
             triggerLabel.textContent = selectedOption?.text || placeholderText;
             trigger.classList.toggle("is-placeholder", !selectedValue);
-            renderCaResponsibleDropdownOptions();
+            trigger.disabled = Boolean(select.disabled);
+            if (search) {
+              search.disabled = Boolean(select.disabled);
+            }
+
+            if (!nativeOptions.length || (nativeOptions.length === 1 && String(nativeOptions[0].value || "") === "")) {
+              options.innerHTML = '<div class="ca-responsible-empty">No responsibles available</div>';
+              closeCaResponsibleDropdown();
+              return;
+            }
+
+            renderCaResponsibleDropdownOptions("");
             closeCaResponsibleDropdown();
           }
 
@@ -27356,7 +27456,7 @@ async function sendAssistantPrompt(message) {
           }
 
           function toggleCaResponsibleDropdown(forceOpen) {
-            const { shell, trigger, menu, select } = getCaResponsibleDropdownElements();
+            const { shell, trigger, menu, search, select } = getCaResponsibleDropdownElements();
             if (!shell || !trigger || !menu || !select) return;
 
             const shouldOpen = typeof forceOpen === "boolean"
@@ -27368,7 +27468,7 @@ async function sendAssistantPrompt(message) {
               return;
             }
 
-            renderCaResponsibleDropdownOptions();
+            renderCaResponsibleDropdownOptions(search ? search.value : "");
             ensureCaResponsibleDropdownPortal();
             shell.classList.add("is-open");
             menu.hidden = false;
@@ -27376,6 +27476,9 @@ async function sendAssistantPrompt(message) {
             ensureCaResponsibleDropdownSpace();
             positionCaResponsibleDropdown();
             requestAnimationFrame(positionCaResponsibleDropdown);
+            if (search) {
+              requestAnimationFrame(() => search.focus());
+            }
           }
 
           function setCaModalResponsibleValue(value) {
@@ -28479,6 +28582,7 @@ function getFallbackCurrentMonthLabel(card, labels) {
             const caModalSaveFormBtn = document.getElementById("caModalSaveForm");
             if (caModalSaveFormBtn) caModalSaveFormBtn.addEventListener("click", caModalSaveForm);
             const caModalResponsibleTrigger = document.getElementById("caModalResponsibleTrigger");
+            const caModalResponsibleSearch = document.getElementById("caModalResponsibleSearch");
             const caModalResponsibleOptions = document.getElementById("caModalResponsibleOptions");
             const caModalBody = document.querySelector("#caTableModal .ca-modal-body");
             if (caModalResponsibleTrigger) {
@@ -28486,6 +28590,12 @@ function getFallbackCurrentMonthLabel(card, labels) {
                 event.preventDefault();
                 event.stopPropagation();
                 toggleCaResponsibleDropdown();
+              });
+            }
+            if (caModalResponsibleSearch) {
+              caModalResponsibleSearch.addEventListener("input", (event) => {
+                renderCaResponsibleDropdownOptions(event.target.value || "");
+                positionCaResponsibleDropdown();
               });
             }
             if (caModalResponsibleOptions) {
@@ -28605,29 +28715,31 @@ app.get("/dashboard", async (req, res) => {
 
     const kpiRes = await pool.query(
       `
-      WITH ranked_results AS (
-        SELECT
-          kr.kpi_result_id,
-          kr.kpi_target_allocation_id AS kpi_values_id,
-          kr.kpi_target_allocation_id,
-          kr.kpi_id,
-          kr.result_date,
-          kr.week,
-          kr.period_label,
-          kr.raw_value AS value,
-          kr.lower_limit AS result_low_limit,
-          kr.upper_limit AS result_high_limit,
-          kr.target_value AS result_target_value,
-          kr.unit AS result_unit,
-          kr.recorded_at AS updated_at,
-          DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_bucket,
-          ROW_NUMBER() OVER (
-            PARTITION BY DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)), kr.kpi_target_allocation_id
-            ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC, kr.kpi_result_id DESC
-          ) AS rn
-        FROM public.kpi_result kr
-        WHERE kr.recorded_by_people_id = $1
-      )
+ WITH ranked_results AS (
+  SELECT
+    kr.kpi_result_id,
+    kr.kpi_target_allocation_id AS kpi_values_id,
+    kr.kpi_target_allocation_id,
+    kr.kpi_id,
+    kr.result_date,
+    kr.week,
+    kr.period_label,
+    kr.raw_value AS value,
+    kr.lower_limit AS result_low_limit,
+    kr.upper_limit AS result_high_limit,
+    kr.target_value AS result_target_value,
+    kr.unit AS result_unit,
+    kr.recorded_at AS updated_at,
+    DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)) AS month_bucket,
+    ROW_NUMBER() OVER (
+      PARTITION BY DATE_TRUNC('month', COALESCE(kr.result_date::timestamp, kr.recorded_at)), kr.kpi_target_allocation_id
+      ORDER BY COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC, kr.kpi_result_id DESC
+    ) AS rn
+  FROM public.kpi_result kr
+  JOIN public.kpi_target_allocation kta
+    ON kta.kpi_target_allocation_id = kr.kpi_target_allocation_id
+  WHERE kta.set_by_people_id = $1
+)
       SELECT
         rr.kpi_result_id AS hist_id,
         rr.kpi_values_id,
@@ -29472,7 +29584,18 @@ app.get("/dashboard-history", async (req, res) => {
 // ---------- Send KPI email ----------
 const sendKPIEmail = async (responsibleId, week) => {
   try {
-    const { responsible } = await getResponsibleWithKPIs(responsibleId, week);
+    const { responsible, kpis } = await getResponsibleWithKPIs(responsibleId, week);
+    if (!responsible) {
+      throw new Error(`Responsible ${responsibleId} not found`);
+    }
+    if (!normalizeOptionalTextInput(responsible.email)) {
+      console.warn(`[KPI Reminder] Skipping ${responsible.name || responsibleId} because no email is defined.`);
+      return;
+    }
+    if (!Array.isArray(kpis) || !kpis.length) {
+      console.warn(`[KPI Reminder] Skipping ${responsible.name || responsibleId} because no KPI allocations were found.`);
+      return;
+    }
     const html = generateEmailHtml({ responsible, week });
     const transporter = createTransporter();
     await transporter.sendMail({
@@ -29485,6 +29608,49 @@ const sendKPIEmail = async (responsibleId, week) => {
   } catch (err) {
     console.error(`âŒ Failed to send email to responsible ID ${responsibleId}:`, err.message);
   }
+};
+
+const loadKpiSubmissionEmailRecipients = async () => {
+  const result = await pool.query(
+    `
+    SELECT DISTINCT
+      owner.people_id,
+      NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS name,
+      owner.email
+    FROM public.kpi_target_allocation kta
+    JOIN public.people owner
+      ON owner.people_id = kta.set_by_people_id
+    WHERE owner.people_id IS NOT NULL
+      AND COALESCE(TRIM(owner.email), '') <> ''
+    ORDER BY owner.people_id ASC
+    `
+  );
+
+  return result.rows;
+};
+const loadWeeklyReportRecipientsForWeek = async (reportWeek) => {
+  const result = await pool.query(
+    `
+    SELECT DISTINCT
+      owner.people_id,
+      NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS name,
+      owner.email
+    FROM public.kpi_target_allocation kta
+    JOIN public.people owner
+      ON owner.people_id = kta.set_by_people_id
+    JOIN public.kpi_result kr
+      ON kr.kpi_target_allocation_id = kta.kpi_target_allocation_id
+    WHERE kta.set_by_people_id IS NOT NULL
+      AND COALESCE(TRIM(owner.email), '') <> ''
+      AND ($1::text IS NULL OR kr.period_label = $1 OR kr.week = $1)
+      AND kr.raw_value IS NOT NULL
+      AND TRIM(CAST(kr.raw_value AS TEXT)) <> ''
+    ORDER BY owner.people_id ASC
+    `,
+    [normalizeOptionalTextInput(reportWeek)]
+  );
+
+  return result.rows;
 };
 
 const formatNumber = (num) => {
@@ -29606,9 +29772,7 @@ const generateVerticalBarChart = (chartData) => {
             <span style="color:${directionMeta.accent};margin-right:6px;">${directionMeta.icon}</span>
             ${directionMeta.label} = ${directionMeta.summary}
           </div>
-          <div style="font-size:12px;color:#475569;line-height:1.5;">
-            Examples: ${directionMeta.examples}. This direction is used for colors, alerts, and target management.
-          </div>
+     
         </td>
       </tr>
     </table>
@@ -29774,25 +29938,51 @@ const generateVerticalBarChart = (chartData) => {
       `).join('')}
     </div>` : '';
 
+  const formatCorrectiveActionDate = (value) => {
+    if (!value) return '';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime())
+      ? String(value)
+      : parsed.toLocaleDateString('en-GB');
+  };
+
   const correctiveActionsHtml = correctiveActions.length > 0 ? `
     <div style="margin-bottom:20px;">
       <h4 style="margin:0 0 15px;color:#333;font-size:16px;">Corrective Actions</h4>
       ${correctiveActions.map(ca => `
-        <div style="margin-bottom:15px;padding:15px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;">
+       <div style="margin-bottom:18px;padding:18px 20px;background:#fff3f3;border-radius:8px;border-left:4px solid #dc3545;line-height:1.55;">
        <div style="font-size:12px;font-weight:600;color:#495057;margin-bottom:8px;">
          ${ca.week ? weekToMonthLabel(ca.week) : 'N/A'}
          ${ca.status ? `<span style="margin-left:10px;font-size:11px;color:#dc3545;">${ca.status}</span>` : ''}
           </div>
           ${ca.root_cause ? `
-            <div style="margin-bottom:8px;">
+            <div style="margin-bottom:14px;">
               <div style="font-size:11px;font-weight:700;color:#dc3545;">Root Cause</div>
-              <div style="font-size:12px;color:#374151;">${ca.root_cause}</div>
+              <div style="font-size:13px;color:#374151;margin-top:4px;line-height:1.5;">${ca.root_cause}</div>
             </div>
           ` : ''}
           ${ca.implemented_solution ? `
-            <div style="margin-bottom:8px;">
+            <div style="margin-bottom:14px;">
               <div style="font-size:11px;font-weight:700;color:#d97706;">Implemented Solution</div>
               <div style="font-size:12px;color:#374151;">${ca.implemented_solution}</div>
+            </div>
+          ` : ''}
+          ${ca.due_date ? `
+            <div style="margin-bottom:14px;">
+              <div style="font-size:11px;font-weight:700;color:#2563eb;">Due Date</div>
+              <div style="font-size:12px;color:#374151;">${formatCorrectiveActionDate(ca.due_date)}</div>
+            </div>
+          ` : ''}
+          ${ca.responsible ? `
+            <div style="margin-bottom:14px;">
+              <div style="font-size:11px;font-weight:700;color:#475569;">Responsible</div>
+              <div style="font-size:12px;color:#374151;">${ca.responsible}</div>
+            </div>
+          ` : ''}
+          ${ca.evidence ? `
+            <div style="margin-bottom:14px;">
+              <div style="font-size:11px;font-weight:700;color:#059669;">Evidence</div>
+              <div style="font-size:12px;color:#374151;">${ca.evidence}</div>
             </div>
           ` : ''}
         </div>
@@ -29893,7 +30083,7 @@ const generateVerticalBarChart = (chartData) => {
           ${unit ? `<p style="margin:5px 0 0;color:#888;font-size:12px;">Unit: ${unit} | Frequency: ${frequency || 'Monthly'}</p>` : ''}
         </div>
 
-        ${directionGuideHtml}
+      
         ${statsBox}
         ${thresholdFocusHtml}
 
@@ -29950,181 +30140,278 @@ const generateVerticalBarChart = (chartData) => {
 // ============================================================
 const generateWeeklyReportData = async (responsibleId, reportWeek) => {
   try {
-    const histRes = await pool.query(
-      `WITH KpiHistory AS (
-        SELECT h.kpi_id, h.week, h.new_value, h.updated_at, h.comment,
-               k.subject, k.indicator_sub_title, k.unit, k.target, k.target_direction, k.min, k.max,
-               k.tolerance_type, k.up_tolerance, k.low_tolerance, k.frequency, k.definition,
-               k.low_limit, k.high_limit,
-               ca.corrective_action_id,
-               ca.root_cause,
-               ca.implemented_solution,
-               ca.evidence,
-               ca.status as ca_status,
-               ca.created_date as ca_created_date,
-               ca.updated_date as ca_updated_date,
-               ROW_NUMBER() OVER (PARTITION BY h.kpi_id, h.week ORDER BY h.updated_at DESC) as rn
-        FROM public.kpi_values_hist26 h
-        JOIN public."Kpi" k ON h.kpi_id = k.kpi_id
-        LEFT JOIN LATERAL (
-          SELECT corrective_action_id, root_cause, implemented_solution,
-                 evidence, status, created_date, updated_date
-          FROM public.corrective_actions
-          WHERE kpi_id = h.kpi_id
-            AND responsible_id = h.responsible_id
-            AND week = h.week
-          ORDER BY COALESCE(updated_date, created_date) DESC, corrective_action_id DESC
-          LIMIT 1
-        ) ca ON TRUE
-        WHERE h.responsible_id = $1
-          AND h.new_value IS NOT NULL AND h.new_value != '' AND h.new_value != '0'
-      )
-      SELECT * FROM KpiHistory WHERE rn = 1
-      ORDER BY kpi_id, week ASC`,
-      [responsibleId]
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
     );
 
-    if (!histRes.rows.length) return null;
+    if (!responsiblePeopleId) {
+      return null;
+    }
 
-    const kpisData = {};
+    const currentPeriodRes = await pool.query(
+      `
+      WITH responsible_allocations AS (
+        SELECT
+          kta.kpi_target_allocation_id,
+          kta.kpi_id
+        FROM public.kpi_target_allocation kta
+        WHERE kta.set_by_people_id = $1
+      ),
+      latest_period_values AS (
+        SELECT
+          ra.kpi_target_allocation_id,
+          ra.kpi_id,
+          COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')) AS week,
+          kr.raw_value AS new_value,
+          kr.recorded_at AS updated_at,
+          kr.comments AS comment,
+          kr.unit AS result_unit,
+          kr.target_value AS result_target_value,
+          kr.upper_limit AS result_high_limit,
+          kr.lower_limit AS result_low_limit,
+          ROW_NUMBER() OVER (
+            PARTITION BY ra.kpi_target_allocation_id
+            ORDER BY kr.recorded_at DESC, kr.kpi_result_id DESC
+          ) AS rn
+        FROM responsible_allocations ra
+        JOIN public.kpi_result kr
+          ON kr.kpi_target_allocation_id = ra.kpi_target_allocation_id
+        WHERE ($2::text IS NULL OR kr.period_label = $2 OR kr.week = $2)
+          AND kr.raw_value IS NOT NULL
+          AND TRIM(CAST(kr.raw_value AS TEXT)) <> ''
+      )
+      SELECT
+        lpv.kpi_target_allocation_id,
+        lpv.kpi_id,
+        lpv.week,
+        lpv.new_value,
+        lpv.updated_at,
+        lpv.comment,
+        COALESCE(subject_link.subject_name, k.kpi_sub_title, k.kpi_name, 'KPI') AS subject,
+        COALESCE(k.kpi_sub_title, subject_link.subject_name, k.kpi_name, 'KPI') AS indicator_title,
+        COALESCE(k.kpi_name, k.kpi_sub_title, 'Untitled KPI') AS indicator_sub_title,
+        COALESCE(lpv.result_unit, kta.target_unit, k.unit) AS unit,
+        COALESCE(lpv.result_target_value, kta.target_value, k.target_value) AS target,
+        k.min_value AS min,
+        k.max_value AS max,
+        COALESCE(lpv.result_high_limit, k.high_limit) AS high_limit,
+        COALESCE(lpv.result_low_limit, k.low_limit) AS low_limit,
+        k.tolerance_type,
+        k.up_tolerance,
+        k.low_tolerance,
+        k.frequency,
+        k.kpi_explanation AS definition,
+        k.target_direction
+      FROM latest_period_values lpv
+      JOIN public.kpi_target_allocation kta
+        ON kta.kpi_target_allocation_id = lpv.kpi_target_allocation_id
+      JOIN public.kpi k
+        ON k.kpi_id = lpv.kpi_id
+      LEFT JOIN LATERAL (
+        SELECT s.subject_name
+        FROM public.subject_kpi sk
+        JOIN public.subject s
+          ON s.subject_id = sk.subject_id
+        WHERE sk.kpi_id = lpv.kpi_id
+        ORDER BY COALESCE(sk.is_primary, false) DESC, sk.subject_kpi_id ASC
+        LIMIT 1
+      ) subject_link ON TRUE
+      WHERE lpv.rn = 1
+      ORDER BY indicator_title ASC, indicator_sub_title ASC, lpv.kpi_target_allocation_id ASC
+      `,
+      [responsiblePeopleId, normalizeOptionalTextInput(reportWeek)]
+    );
 
-    // â”€â”€ Pass 1: build kpisData entries and accumulate into monthly maps â”€â”€â”€â”€â”€â”€
-    histRes.rows.forEach(row => {
-      const kpiId = row.kpi_id;
-      if (!kpisData[kpiId]) {
-        kpisData[kpiId] = {
-          title: row.subject,
-          subtitle: row.indicator_sub_title || '',
-          unit: row.unit || '',
-          target: row.target,
-          target_direction: row.target_direction,
-          direction: inferKpiDirection(row),
-          min: row.min,
-          max: row.max,
-          low_limit: row.low_limit,
-          high_limit: row.high_limit,
-          tolerance_type: row.tolerance_type,
-          up_tolerance: row.up_tolerance,
-          low_tolerance: row.low_tolerance,
-          frequency: row.frequency,
-          definition: row.definition,
-          _monthlyMap: {},   // { "Feb 2026": { sum, count } }
-          comments: [],
-          correctiveActions: []
-        };
+    if (!currentPeriodRes.rows.length) {
+      return null;
+    }
+
+    const {
+      currentByAllocationId,
+      historyByAllocationId
+    } = await loadActionPlanCorrectiveActionMaps(currentPeriodRes.rows, reportWeek);
+
+    const historyRes = await pool.query(
+      `
+      WITH responsible_allocations AS (
+        SELECT
+          kta.kpi_target_allocation_id,
+          kta.kpi_id
+        FROM public.kpi_target_allocation kta
+        WHERE kta.set_by_people_id = $1
+      )
+      SELECT DISTINCT ON (
+        ra.kpi_target_allocation_id,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD'))
+      )
+        ra.kpi_target_allocation_id,
+        ra.kpi_id,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')) AS week,
+        kr.raw_value AS new_value,
+        kr.recorded_at AS updated_at,
+        kr.comments AS comment
+      FROM responsible_allocations ra
+      JOIN public.kpi_result kr
+        ON kr.kpi_target_allocation_id = ra.kpi_target_allocation_id
+      WHERE kr.raw_value IS NOT NULL
+        AND TRIM(CAST(kr.raw_value AS TEXT)) <> ''
+      ORDER BY
+        ra.kpi_target_allocation_id,
+        COALESCE(kr.week, kr.period_label, TO_CHAR(kr.result_date, 'YYYY-MM-DD')),
+        kr.recorded_at DESC,
+        kr.kpi_result_id DESC
+      `,
+      [responsiblePeopleId]
+    );
+
+    const historyByAllocation = {};
+    historyRes.rows.forEach((row) => {
+      const allocationKey = String(row.kpi_target_allocation_id || row.kpi_id || "").trim();
+      if (!allocationKey) return;
+      if (!historyByAllocation[allocationKey]) {
+        historyByAllocation[allocationKey] = [];
       }
+      historyByAllocation[allocationKey].push(row);
+    });
 
-      const value = parseFloat(row.new_value);
-      if (!isNaN(value) && value > 0) {
-        const month = weekToMonthLabel(row.week); // e.g. "Feb 2026"
-        const mm = kpisData[kpiId]._monthlyMap;
-        if (!mm[month]) mm[month] = { sum: 0, count: 0 };
-        mm[month].sum += value;
-        mm[month].count += 1;
-      }
+    const charts = [];
 
-      if (row.comment && row.comment.trim())
-        kpisData[kpiId].comments.push({ week: row.week, text: row.comment, date: row.updated_at });
+    currentPeriodRes.rows.forEach((row) => {
+      const allocationKey = String(row.kpi_target_allocation_id || row.kpi_id || "").trim();
+      const historyRows = historyByAllocation[allocationKey] || [];
+      const monthMap = {};
+      const comments = [];
 
-      if (row.root_cause || row.implemented_solution || row.evidence) {
-        const existingCA = kpisData[kpiId].correctiveActions.find(ca => ca.week === row.week);
-        if (!existingCA) {
-          kpisData[kpiId].correctiveActions.push({
-            week: row.week,
-            root_cause: row.root_cause,
-            implemented_solution: row.implemented_solution,
-            evidence: row.evidence,
-            status: row.ca_status || 'Open',
-            created_date: row.ca_created_date,
-            updated_date: row.ca_updated_date
+      historyRows.forEach((historyRow) => {
+        const numericValue = Number(historyRow.new_value);
+        if (Number.isFinite(numericValue) && numericValue > 0) {
+          const monthLabel = weekToMonthLabel(historyRow.week);
+          if (!monthMap[monthLabel]) {
+            monthMap[monthLabel] = { sum: 0, count: 0 };
+          }
+          monthMap[monthLabel].sum += numericValue;
+          monthMap[monthLabel].count += 1;
+        }
+
+        const commentText = normalizeOptionalTextInput(historyRow.comment);
+        if (commentText) {
+          comments.push({
+            week: historyRow.week,
+            text: commentText,
+            date: historyRow.updated_at
           });
         }
-      }
-    });
-
-    // â”€â”€ Pass 2: convert monthly maps â†’ sorted month labels + averaged values â”€
-    const monthLabelsSet = new Set();
-    Object.values(kpisData).forEach(kpi => {
-      const mm = kpi._monthlyMap;
-      const sortedMonths = Object.keys(mm).sort((a, b) => new Date(a) - new Date(b));
-      kpi.weeklyData = new Map();
-      sortedMonths.forEach(m => {
-        kpi.weeklyData.set(m, mm[m].sum / mm[m].count);
-        monthLabelsSet.add(m);
       });
-      delete kpi._monthlyMap;
-    });
 
-    // â”€â”€ Sorted month labels for all KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const weekLabels = Array.from(monthLabelsSet).sort((a, b) => new Date(a) - new Date(b));
-    if (weekLabels.length === 0) return null;
+      const weekLabels = Object.keys(monthMap).sort((left, right) => new Date(left) - new Date(right));
+      const dataPoints = weekLabels.map((label) => monthMap[label].sum / monthMap[label].count);
+      if (!dataPoints.some((value) => value > 0)) {
+        return;
+      }
 
-    // â”€â”€ Build chart objects â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const charts = [];
-    for (const [kpiId, kpiData] of Object.entries(kpisData)) {
-      const dataPoints = weekLabels.map(w => kpiData.weeklyData.get(w) || 0);
-      if (!dataPoints.some(v => v > 0)) continue;
-
-      let currentWeek = null, currentValue = 0, previousValue = 0;
-      for (let i = weekLabels.length - 1; i >= 0; i--) {
-        if (dataPoints[i] > 0) {
-          currentWeek = weekLabels[i]; currentValue = dataPoints[i];
-          for (let j = i - 1; j >= 0; j--) { if (dataPoints[j] > 0) { previousValue = dataPoints[j]; break; } }
+      let currentWeek = null;
+      let currentValue = 0;
+      let previousValue = 0;
+      for (let index = weekLabels.length - 1; index >= 0; index -= 1) {
+        if (dataPoints[index] > 0) {
+          currentWeek = weekLabels[index];
+          currentValue = dataPoints[index];
+          for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+            if (dataPoints[previousIndex] > 0) {
+              previousValue = dataPoints[previousIndex];
+              break;
+            }
+          }
           break;
         }
       }
-      if (!currentWeek) continue;
 
-      const nonZero = dataPoints.filter(v => v > 0);
-      const avg = nonZero.reduce((s, v) => s + v, 0) / nonZero.length;
-      let trend = '0.0%';
-      if (previousValue > 0 && currentValue > 0) {
-        const tv = ((currentValue - previousValue) / previousValue) * 100;
-        trend = (tv >= 0 ? '+' : '') + tv.toFixed(1) + '%';
+      if (!currentWeek) {
+        return;
       }
 
-      // Labels are already "Jan 2026", "Feb 2026" etc â€” pass through as-is
-      const displayWeekLabels = weekLabels;
+      const nonZeroDataPoints = dataPoints.filter((value) => value > 0);
+      const averageValue = nonZeroDataPoints.reduce((sum, value) => sum + value, 0) / nonZeroDataPoints.length;
+      let trend = "0.0%";
+      if (previousValue > 0 && currentValue > 0) {
+        const trendValue = ((currentValue - previousValue) / previousValue) * 100;
+        trend = `${trendValue >= 0 ? "+" : ""}${trendValue.toFixed(1)}%`;
+      }
+
+      const currentActions = currentByAllocationId[allocationKey] || [];
+      const historyActions = historyByAllocationId[allocationKey] || [];
+      const meaningfulCorrectiveActions = [];
+      const seenCorrectiveActions = new Set();
+
+      [
+        ...sortCorrectiveActions(
+          (Array.isArray(currentActions) ? currentActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+        ),
+        ...sortCorrectiveActions(
+          (Array.isArray(historyActions) ? historyActions : []).filter(hasMeaningfulManagerReportCorrectiveAction)
+        )
+      ].forEach((action) => {
+        const actionKey = [
+          normalizeOptionalIntegerInput(action.corrective_action_id ?? action.id) || "na",
+          normalizeOptionalTextInput(action.period_label || action.week) || "na"
+        ].join("|");
+
+        if (seenCorrectiveActions.has(actionKey)) {
+          return;
+        }
+
+        seenCorrectiveActions.add(actionKey);
+        meaningfulCorrectiveActions.push({
+          week: action.week || action.period_label || null,
+          root_cause: normalizeOptionalTextInput(action.root_cause) || "",
+          implemented_solution: normalizeOptionalTextInput(action.implemented_solution) || "",
+          evidence: normalizeOptionalTextInput(action.evidence) || "",
+          status: normalizeOptionalTextInput(action.status) || "Open",
+          due_date: action.due_date || null,
+          responsible: normalizeOptionalTextInput(action.responsible) || "",
+          created_date: action.created_date,
+          updated_date: action.updated_date
+        });
+      });
 
       charts.push({
-        kpiId,
-        title: kpiData.title,
-        subtitle: kpiData.subtitle,
-        unit: kpiData.unit,
-        target: kpiData.target,
-        direction: kpiData.direction,
-        min: kpiData.min,
-        max: kpiData.max,
-        low_limit: kpiData.low_limit,
-        high_limit: kpiData.high_limit,
-        tolerance_type: kpiData.tolerance_type,
-        up_tolerance: kpiData.up_tolerance,
-        low_tolerance: kpiData.low_tolerance,
-        frequency: kpiData.frequency,
-        definition: kpiData.definition,
+        kpiId: row.kpi_id,
+        title: row.subject,
+        subtitle: row.indicator_sub_title,
+        unit: row.unit || "",
+        target: row.target,
+        direction: inferKpiDirection(row),
+        min: row.min,
+        max: row.max,
+        low_limit: row.low_limit,
+        high_limit: row.high_limit,
+        tolerance_type: row.tolerance_type,
+        up_tolerance: row.up_tolerance,
+        low_tolerance: row.low_tolerance,
+        frequency: row.frequency,
+        definition: row.definition,
         data: dataPoints,
-        weekLabels: displayWeekLabels,
+        weekLabels,
         fullWeeks: weekLabels,
         currentWeek,
-        comments: kpiData.comments.sort((a, b) => new Date(b.date) - new Date(a.date)),
-        correctiveActions: kpiData.correctiveActions.sort((a, b) =>
-          new Date(b.updated_date || b.created_date) - new Date(a.updated_date || a.created_date)
-        ),
+        comments: comments.sort((left, right) => new Date(right.date) - new Date(left.date)),
+        correctiveActions: meaningfulCorrectiveActions,
         stats: {
-          current: currentValue.toFixed(kpiData.unit === '%' ? 1 : 2),
-          previous: previousValue > 0 ? previousValue.toFixed(kpiData.unit === '%' ? 1 : 2) : 'N/A',
-          average: avg.toFixed(kpiData.unit === '%' ? 1 : 2),
+          current: currentValue.toFixed(row.unit === "%" ? 1 : 2),
+          previous: previousValue > 0 ? previousValue.toFixed(row.unit === "%" ? 1 : 2) : "N/A",
+          average: averageValue.toFixed(row.unit === "%" ? 1 : 2),
           trend,
-          dataPoints: nonZero.length,
+          dataPoints: nonZeroDataPoints.length,
           totalWeeks: weekLabels.length
         }
       });
-    }
+    });
 
-    console.log(`Generated ${charts.length} KPI charts for responsible ${responsibleId}`);
+    console.log(`Generated ${charts.length} KPI charts for responsible ${responsiblePeopleId}`);
     return charts;
   } catch (error) {
-    console.error('Error generating weekly report data:', error);
+    console.error("Error generating weekly report data:", error);
     return null;
   }
 };
@@ -30140,19 +30427,31 @@ function getCurrentWeek() {
 
 const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
   try {
-    const resResp = await pool.query(
-      `SELECT r.responsible_id, r.name, r.email, r.plant_id, r.department_id,
-              p.name AS plant_name, d.name AS department_name
-       FROM public."Responsible" r
-       JOIN public."Plant" p ON r.plant_id = p.plant_id
-       JOIN public."Department" d ON r.department_id = d.department_id
-       WHERE r.responsible_id = $1`, [responsibleId]
+    const responsibleContext = await loadFormResponsibleContext(responsibleId);
+    const responsiblePeopleId = normalizeOptionalIntegerInput(
+      responsibleContext?.people_id ?? responsibleId
     );
-    const responsible = resResp.rows[0];
-    if (!responsible) throw new Error(`Responsible ${responsibleId} not found`);
 
-    // â”€â”€ Build charts using CURRENT (old) target from Kpi table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const chartsData = await generateWeeklyReportData(responsibleId, reportWeek);
+    if (!responsiblePeopleId) {
+      throw new Error(`Responsible ${responsibleId} not found`);
+    }
+
+    const responsible = {
+      people_id: responsiblePeopleId,
+      responsible_id: responsiblePeopleId,
+      name: normalizeOptionalTextInput(responsibleContext?.name) || `People #${responsiblePeopleId}`,
+      email: normalizeOptionalTextInput(responsibleContext?.email),
+      plant_name: normalizeOptionalTextInput(responsibleContext?.plant_name) || "Allocated scope",
+      department_name: normalizeOptionalTextInput(responsibleContext?.department_name) || "",
+      role_name: normalizeOptionalTextInput(responsibleContext?.role_name) || ""
+    };
+
+    if (!responsible.email) {
+      throw new Error(`No email defined for responsible ${responsible.name}`);
+    }
+
+    const responsibleLinkId = encodeURIComponent(responsible.people_id);
+    const chartsData = await generateWeeklyReportData(responsible.people_id, reportWeek);
     let chartsHtml = '';
 
     if (chartsData && chartsData.length > 0) {
@@ -30175,14 +30474,9 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
                 ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}
               </p>
               <table border="0" cellpadding="0" cellspacing="0" align="center"><tr>
+      
                 <td style="padding:0 8px;">
-                  <a href="https://kpi-codir.azurewebsites.net/kpi-trends?responsible_id=${responsible.responsible_id}"
-                     style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
-                            text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    View KPI Graphics</a>
-                </td>
-                <td style="padding:0 8px;">
-                  <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsible.responsible_id}"
+                  <a href="https://kpi-form.azurewebsites.net/dashboard?responsible_id=${responsibleLinkId}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
                     View Dashboard</a>
@@ -30199,18 +30493,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               </div>
             </td></tr>
 
-            <tr><td style="padding:16px 30px 0;">
-              <div style="background:#f8fbff;border:1px solid #dbeafe;border-radius:10px;padding:16px 18px;">
-                <div style="font-size:12px;font-weight:700;color:#0f6cbd;text-transform:uppercase;
-                            letter-spacing:0.08em;margin-bottom:8px;">Good Direction Guide</div>
-                <div style="font-size:14px;color:#1f2937;line-height:1.6;">
-                  <strong>Up</strong> = higher is better, for example Sales and OTD.<br />
-                  <strong>Down</strong> = lower is better, for example Scrap, accidents, and customer claims.<br />
-                  This direction is used for colors, alerts, and target management across the report.
-                </div>
-              </div>
-            </td></tr>
-
+        
             <tr><td style="padding:30px;">${chartsHtml}</td></tr>
 
             <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
@@ -30226,7 +30509,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     let pdfAttachment = null;
     try {
       console.log(`ðŸ“„ Generating recommendations PDF for ${responsible.name}â€¦`);
-      const pdfBuffer = await generateKPIRecommendationsPDFBuffer(pool, responsibleId, reportWeek);
+      const pdfBuffer = await generateKPIRecommendationsPDFBuffer(pool, responsible.people_id, reportWeek);
       if (pdfBuffer) {
         const weekLabel = reportWeek.replace('2026-Week', 'Week_');
         pdfAttachment = {
@@ -30260,7 +30543,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
          FROM public.pending_target_updates p
          JOIN public."Kpi" k ON k.kpi_id = p.kpi_id
          WHERE p.responsible_id = $1 AND p.applied = false`,
-        [responsibleId]
+        [responsible.people_id]
       );
 
       console.log(`ðŸ“‹ ${pending.rows.length} pending target update(s) to apply for ${responsible.name}`);
@@ -30286,7 +30569,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
           `UPDATE public.kpi_values_hist26
            SET target = $1
            WHERE responsible_id = $2 AND kpi_id = $3 AND week = $4`,
-          [newVal, responsibleId, row.kpi_id, row.week]
+          [newVal, responsible.people_id, row.kpi_id, row.week]
         );
         console.log(`ðŸ“ kpi_values_hist26.target updated: KPI ${row.kpi_id} week ${row.week} â†’ ${newVal}`);
 
@@ -30310,25 +30593,30 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 };
 // ---------- Cron: weekly KPI submission email ----------
 // let cronRunning = false;
-// cron.schedule("17 11 * * *", async () => {
+
+// cron.schedule("02 10 * * *", async () => {
 //   const lockId = "send_kpi_weekly_email_job";
 //   const lock = await acquireJobLock(lockId);
 //   if (!lock.acquired) return;
+
 //   try {
 //     if (cronRunning) return;
 //     cronRunning = true;
-//     const now = new Date();
-//     const startOfYear = new Date(now.getFullYear(), 0, 1);
-//     const dayOfYear = Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000));
-//     const currentWeek = Math.ceil((dayOfYear + startOfYear.getDay() + 1) / 7);
-//     const forcedWeek = `${now.getFullYear()}-Week${currentWeek}`;
-//     const resps = await pool.query(
-//       `SELECT DISTINCT r.responsible_id FROM public."Responsible" r
-//        JOIN public.kpi_values kv ON kv.responsible_id = r.responsible_id WHERE kv.week = $1`,
-//       [forcedWeek]
-//     );
-//     for (let r of resps.rows) await sendKPIEmail(r.responsible_id, forcedWeek);
-//     console.log(`KPI emails sent to ${resps.rows.length} responsibles`);
+
+//     const currentWeek = getPreviousWeek(getCurrentWeek());
+
+//     const recipients = await loadKpiSubmissionEmailRecipients();
+
+//     for (const recipient of recipients) {
+//       try {
+//         await sendKPIEmail(recipient.people_id, currentWeek);
+//         await new Promise((resolve) => setTimeout(resolve, 750));
+//       } catch (error) {
+//         console.error(`[KPI Reminder] Failed for ${recipient.name || recipient.people_id}:`, error.message);
+//       }
+//     }
+
+//     console.log(`[KPI Reminder] Emails processed for ${recipients.length} people for ${currentWeek}`);
 //   } catch (err) {
 //     console.error("Scheduled email error:", err.message);
 //   } finally {
@@ -30337,41 +30625,28 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 //   }
 // }, { scheduled: true, timezone: "Africa/Tunis" });
 
-
 // ---------- Cron: weekly reports ----------
 // let reportCronRunning = false;
-// cron.schedule("21 17 * * *", async () => {
+// cron.schedule("55 12 * * *", async () => {
 //   const lockId = "weekly_kpi_report_job";
 //   const lock = await acquireJobLock(lockId);
 //   if (!lock.acquired) return;
 //   try {
 //     if (reportCronRunning) return;
 //     reportCronRunning = true;
-//     const now = new Date();
-//     const year = now.getFullYear();
-//     const getWeekNumber = (date) => {
-//       const d = new Date(date); d.setHours(0, 0, 0, 0);
-//       d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-//       const yearStart = new Date(d.getFullYear(), 0, 1);
-//       return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-//     };
-//     const weekNumber = getWeekNumber(now);
-//     const previousWeek = `${year}-Week${weekNumber - 1}`;
-//     const resps = await pool.query(
-//       `SELECT DISTINCT r.responsible_id, r.email, r.name
-//        FROM public."Responsible" r JOIN public.kpi_values_hist26 h ON r.responsible_id = h.responsible_id
-//        WHERE r.email IS NOT NULL AND r.email != ''
-//        GROUP BY r.responsible_id, r.email, r.name HAVING COUNT(h.hist_id) > 0`
-//     );
-//     for (const [index, resp] of resps.rows.entries()) {
+//     const reportWeek = getPreviousWeek(getCurrentWeek());
+//     const recipients = await loadWeeklyReportRecipientsForWeek(reportWeek);
+
+//     for (const recipient of recipients) {
 //       try {
-//         await generateWeeklyReportEmail(resp.responsible_id, previousWeek);
-//         await new Promise(resolve => setTimeout(resolve, 1500));
+//         await generateWeeklyReportEmail(recipient.people_id, reportWeek);
+//         await new Promise((resolve) => setTimeout(resolve, 1500));
 //       } catch (err) {
-//         console.error(`Failed for ${resp.name}:`, err.message);
+//         console.error(`[Weekly Report] Failed for ${recipient.name || recipient.people_id}:`, err.message);
 //       }
 //     }
-//     console.log(`Weekly reports sent`);
+
+//     console.log(`[Weekly Report] Emails processed for ${recipients.length} people for ${reportWeek}`);
 //   } catch (error) {
 //     console.error("Report cron error:", error.message);
 //   } finally {
@@ -31294,7 +31569,7 @@ const resolveManagerReportActionPlanContext = async (rows = [], currentPeriodLab
     `
     SELECT
       kta.kpi_target_allocation_id,
-      kta.set_by_people_id,
+      COALESCE(kta.created_by_people_id, kta.set_by_people_id) AS responsible_people_id,
       kta.kpi_id,
       COALESCE(k.kpi_name, '') AS kpi_name,
       COALESCE(k.kpi_sub_title, '') AS kpi_group,
@@ -31303,7 +31578,7 @@ const resolveManagerReportActionPlanContext = async (rows = [], currentPeriodLab
     FROM public.kpi_target_allocation kta
     JOIN public.kpi k
       ON k.kpi_id = kta.kpi_id
-    WHERE kta.set_by_people_id = ANY($1::int[])
+    WHERE COALESCE(kta.created_by_people_id, kta.set_by_people_id) = ANY($1::int[])
     ORDER BY
       COALESCE(kta.updated_at, kta.created_at) DESC,
       kta.kpi_target_allocation_id DESC
@@ -31313,7 +31588,7 @@ const resolveManagerReportActionPlanContext = async (rows = [], currentPeriodLab
 
   const allocationsByPeopleId = new Map();
   allocationRes.rows.forEach((row) => {
-    const peopleId = normalizeOptionalIntegerInput(row.set_by_people_id);
+    const peopleId = normalizeOptionalIntegerInput(row.responsible_people_id);
     if (!peopleId) return;
 
     const peopleKey = String(peopleId);
@@ -31449,7 +31724,7 @@ const getDepartmentKPIReport = async (plantId, week) => {
           NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS responsible_name
         FROM public.kpi_target_allocation kta
         LEFT JOIN public.people owner
-          ON owner.people_id = kta.set_by_people_id
+          ON owner.people_id = COALESCE(kta.created_by_people_id, kta.set_by_people_id)
         WHERE COALESCE(kta.plant_id, owner.work_at_unit_id) = $1
       ),
       latest_kpi_values AS (
@@ -31535,7 +31810,7 @@ const getDepartmentKPIReport = async (plantId, week) => {
           NULLIF(TRIM(CONCAT_WS(' ', COALESCE(owner.first_name, ''), COALESCE(owner.name, ''))), '') AS responsible_name
         FROM public.kpi_target_allocation kta
         LEFT JOIN public.people owner
-          ON owner.people_id = kta.set_by_people_id
+          ON owner.people_id = COALESCE(kta.created_by_people_id, kta.set_by_people_id)
         WHERE COALESCE(kta.plant_id, owner.work_at_unit_id) = $1
       )
       SELECT
@@ -31689,8 +31964,10 @@ const getDepartmentKPIReport = async (plantId, week) => {
   }
 };
 
-const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
+async function sendDepartmentKPIReportEmail(responsiblePeopleId, currentWeek, recipientOverride = null) {
   try {
+    const recipientEmail = recipientOverride?.recipientEmail;
+    const recipientName = recipientOverride?.recipientName;
     const reportWeek = currentWeek;
     const reportData = await getDepartmentKPIReport(plantId, reportWeek);
     if (!reportData || reportData.stats.totalKPIs === 0) return null;
@@ -31726,7 +32003,7 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     const transporter = createTransporter();
     await transporter.sendMail({
       from: '"AVOCarbon Plant Analytics" <administration.STS@avocarbon.com>',
-      to: deliveryRecipient,
+      to: recipientEmail,
       subject: `Weekly KPI Dashboard - ${reportData.plant.plant_name} - Week ${reportWeek.replace('2026-Week', '')}`,
       html: emailHtml,
       attachments: pdfAttachment ? [pdfAttachment] : [],
@@ -31743,6 +32020,39 @@ const sendDepartmentKPIReportEmail = async (plantId, currentWeek) => {
     throw error;
   }
 };
+
+async function runHierarchyKpiReports(frequency) {
+  const now = new Date();
+  const year = now.getFullYear();
+
+  const getWeekNumber = (date) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const yearStart = new Date(d.getFullYear(), 0, 1);
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  };
+
+  const weekNumber = getWeekNumber(now);
+  const currentWeek = `${year}-Week${weekNumber}`;
+
+  const responsiblesRes = await pool.query(
+    `
+    SELECT DISTINCT
+      COALESCE(kta.created_by_people_id, kta.set_by_people_id) AS responsible_people_id
+    FROM public.kpi_target_allocation kta
+    JOIN public.kpi k
+      ON k.kpi_id = kta.kpi_id
+    WHERE COALESCE(kta.created_by_people_id, kta.set_by_people_id) IS NOT NULL
+      AND LOWER(k.frequency) = LOWER($1)
+    `,
+    [frequency]
+  );
+
+  for (const row of responsiblesRes.rows) {
+    await sendKPIReportToHierarchy(row.responsible_people_id, currentWeek);
+  }
+}
 
 app.get("/ceo-report/plants/:plantId", async (req, res) => {
   try {
@@ -31800,77 +32110,120 @@ app.post("/api/ceo-report/plants/:plantId/send", async (req, res) => {
 });
 
 // ---------- Cron: corrective action escalation reminders ----------
-let correctiveActionEscalationCronRunning = false;
-cron.schedule("35 9 * * *", async () => {
-  const lockId = "corrective_action_escalation_job";
-  const lock = await acquireJobLock(lockId);
-  if (!lock.acquired) return;
-  try {
-    if (correctiveActionEscalationCronRunning) return;
-    correctiveActionEscalationCronRunning = true;
-    const result = await runCorrectiveActionEscalationJob();
-    console.log(
-      `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
-    );
-  } catch (error) {
-    console.error("[Corrective Action Escalation] Cron error:", error.message);
-  } finally {
-    correctiveActionEscalationCronRunning = false;
-    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-  }
-}, { scheduled: true, timezone: "Africa/Tunis" });
+// let correctiveActionEscalationCronRunning = false;
+// cron.schedule("35 9 * * *", async () => {
+//   const lockId = "corrective_action_escalation_job";
+//   const lock = await acquireJobLock(lockId);
+//   if (!lock.acquired) return;
+//   try {
+//     if (correctiveActionEscalationCronRunning) return;
+//     correctiveActionEscalationCronRunning = true;
+//     const result = await runCorrectiveActionEscalationJob();
+//     console.log(
+//       `[Corrective Action Escalation] Processed ${result.pending} pending escalation(s); sent ${result.sent} email(s).`
+//     );
+//   } catch (error) {
+//     console.error("[Corrective Action Escalation] Cron error:", error.message);
+//   } finally {
+//     correctiveActionEscalationCronRunning = false;
+//     await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
 
-// ---------- Cron: weekly manager/plant report ----------
-let managerCronRunning = false;
-cron.schedule("07 11 * * *", async () => {
-  const lockId = "department_report_job";
-  const lock = await acquireJobLock(lockId);
-  if (!lock.acquired) return;
-  try {
-    if (managerCronRunning) return;
-    managerCronRunning = true;
-    const now = new Date();
-    const year = now.getFullYear();
-    const getWeekNumber = (date) => {
-      const d = new Date(date); d.setHours(0, 0, 0, 0);
-      d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-      const yearStart = new Date(d.getFullYear(), 0, 1);
-      return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-    };
-    const weekNumber = getWeekNumber(now);
-    const currentWeek = `${year}-Week${weekNumber}`;
-    console.log(`[Manager Report] Sending reports for week ${currentWeek}...`);
-    const plantsRes = await pool.query(
-      `
-      SELECT DISTINCT
-        u.unit_id AS plant_id,
-        u.unit_name AS name
-      FROM public.kpi_target_allocation kta
-      LEFT JOIN public.people owner
-        ON owner.people_id = kta.set_by_people_id
-      JOIN public.unit u
-        ON u.unit_id = COALESCE(kta.plant_id, owner.work_at_unit_id)
-      ORDER BY u.unit_name ASC, u.unit_id ASC
-      `
-    );
-    console.log(`ðŸ“‹ Found ${plantsRes.rows.length} units with KPI allocations`);
-    for (const plant of plantsRes.rows) {
-      try {
-        await sendDepartmentKPIReportEmail(plant.plant_id, currentWeek);
-        console.log(`Report sent for plant: ${plant.name}`);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      } catch (err) {
-        console.error(`  âŒ Failed for plant ${plant.name}:`, err.message);
+
+
+async function getPeopleHierarchy(peopleId) {
+  const result = await pool.query(
+    `
+    WITH RECURSIVE hierarchy AS (
+      SELECT
+        p.people_id,
+        p.first_name,
+        p.name,
+        p.email,
+        p.direct_boss_people_id,
+        0 AS level
+      FROM public.people p
+      WHERE p.people_id = $1
+
+      UNION ALL
+
+      SELECT
+        boss.people_id,
+        boss.first_name,
+        boss.name,
+        boss.email,
+        boss.direct_boss_people_id,
+        h.level + 1
+      FROM public.people boss
+      JOIN hierarchy h
+        ON boss.people_id = h.direct_boss_people_id
+      WHERE h.level < 20
+    )
+    SELECT *
+    FROM hierarchy
+    ORDER BY level ASC
+    `,
+    [peopleId]
+  );
+
+  return result.rows;
+}
+async function sendKPIReportToHierarchy(responsiblePeopleId, currentWeek) {
+  const hierarchy = await getPeopleHierarchy(responsiblePeopleId);
+
+  if (!hierarchy.length) return;
+
+  const responsible = hierarchy[0];
+  const managers = hierarchy.slice(1).filter(manager => manager.email);
+
+  for (const manager of managers) {
+    await sendDepartmentKPIReportEmail(
+      responsiblePeopleId,
+      currentWeek,
+      {
+        recipientEmail: manager.email,
+        recipientPeopleId: manager.people_id,
+        recipientName: `${manager.first_name || ""} ${manager.name || ""}`.trim()
       }
-    }
-    console.log(`[Manager Report] All plant reports sent`);
-  } catch (error) {
-    console.error("âŒ [Manager Report] Cron error:", error.message);
-  } finally {
-    managerCronRunning = false;
-    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
+    );
+
+    console.log(
+      `Report for ${responsible.first_name || ""} ${responsible.name || ""} sent to ${manager.email}`
+    );
+
+    await new Promise(resolve => setTimeout(resolve, 1500));
   }
-}, { scheduled: true, timezone: "Africa/Tunis" });
+}
+// ---------- Cron: weekly manager/plant report ----------
+// let managerCronRunning = false;
+
+// cron.schedule("07 11 * * 1", async () => {
+//   if (managerCronRunning) return;
+//   managerCronRunning = true;
+
+//   try {
+//     await runHierarchyKpiReports("Weekly");
+//   } catch (error) {
+//     console.error("[Weekly Hierarchy Report] Error:", error.message);
+//   } finally {
+//     managerCronRunning = false;
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
+
+
+// cron.schedule("07 11 1 * *", async () => {
+//   if (managerCronRunning) return;
+//   managerCronRunning = true;
+
+//   try {
+//     await runHierarchyKpiReports("Monthly");
+//   } catch (error) {
+//     console.error("[Monthly Hierarchy Report] Error:", error.message);
+//   } finally {
+//     managerCronRunning = false;
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
 
 
 registerRecommendationRoutes(app, pool, createTransporter);
