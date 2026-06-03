@@ -31955,17 +31955,71 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     }
 
     const responsibleLinkId = encodeURIComponent(responsible.people_id);
-    const chartsData = await generateWeeklyReportData(responsible.people_id, reportWeek);
-    let chartsHtml = '';
+ const chartsData = await generateWeeklyReportData(responsible.people_id, reportWeek);
 
-    if (chartsData && chartsData.length > 0) {
-      chartsData.forEach(chart => { chartsHtml += generateVerticalBarChart(chart); });
-    } else {
-      chartsHtml = `
-        <div style="text-align:center;padding:60px;background:#f8f9fa;border-radius:12px;">
-          <p style="color:#495057;margin:0;font-size:18px;">No KPI Data Available</p>
-        </div>`;
+let chartsHtml = "";
+
+if (chartsData && chartsData.length > 0) {
+  chartsHtml = chartsData.map((chart) => {
+    const current = chart.stats?.current ?? "-";
+    const average = chart.stats?.average ?? "-";
+    const trend = chart.stats?.trend ?? "0.0%";
+    const unit = chart.unit || "";
+
+    const numericCurrent = Number(current);
+    const numericAverage = Number(average);
+
+    let barWidth = 50;
+    if (Number.isFinite(numericCurrent) && Number.isFinite(numericAverage) && numericAverage > 0) {
+      barWidth = Math.min(Math.max((numericCurrent / numericAverage) * 50, 5), 100);
     }
+
+    return `
+      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:16px;background:#ffffff;">
+        <h3 style="margin:0 0 4px;color:#111827;font-size:16px;">
+          ${chart.title || "KPI"}
+        </h3>
+
+        <p style="margin:0 0 12px;color:#6b7280;font-size:13px;">
+          ${chart.subtitle || ""} ${unit ? `| Unit: ${unit}` : ""}
+        </p>
+
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;">
+          <tr>
+            <td style="font-size:12px;color:#6b7280;">Current</td>
+            <td style="font-size:12px;color:#6b7280;">Average</td>
+            <td style="font-size:12px;color:#6b7280;">Trend</td>
+          </tr>
+          <tr>
+            <td style="font-size:22px;font-weight:bold;color:#16a34a;">
+              ${current}${unit}
+            </td>
+            <td style="font-size:22px;font-weight:bold;color:#0078D7;">
+              ${average}${unit}
+            </td>
+            <td style="font-size:18px;font-weight:bold;color:#111827;">
+              ${trend}
+            </td>
+          </tr>
+        </table>
+
+        <div style="background:#e5e7eb;border-radius:999px;height:16px;overflow:hidden;">
+          <div style="background:#0078D7;height:16px;width:${barWidth}%;"></div>
+        </div>
+
+        <p style="margin:8px 0 0;color:#6b7280;font-size:12px;">
+          Period: ${chart.currentWeek || reportWeek}
+        </p>
+      </div>
+    `;
+  }).join("");
+} else {
+  chartsHtml = `
+    <div style="text-align:center;padding:40px;background:#f8f9fa;border-radius:12px;">
+      <p style="color:#495057;margin:0;font-size:16px;">No KPI Data Available</p>
+    </div>
+  `;
+}
 
 const emailHtml = `
 <!DOCTYPE html>
@@ -32144,7 +32198,7 @@ console.log("[Weekly Report] Mail result:", {
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
 
-cron.schedule("35 00 * * *", async () => {
+cron.schedule("47 00 * * *", async () => {
   await runWithJobLock("weekly_kpi_report_job", async () => {
     if (reportCronRunning) {
       console.log("[Weekly Report] already running");
