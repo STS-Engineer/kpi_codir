@@ -32074,7 +32074,7 @@ console.log("[Weekly Report] Mail result:", {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("01 22 * * *", async () => {
+cron.schedule("08 22 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
