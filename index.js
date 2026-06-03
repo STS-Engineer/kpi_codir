@@ -44,8 +44,6 @@ const openai = new OpenAI({
 
 const NUMERIC_TEXT_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
 const KPI_KNOWLEDGE_BASE_MAX_DEPTH = 5;
-const KPI_KNOWLEDGE_REFRESH_BATCH_SIZE = 10;
-const KPI_KNOWLEDGE_REFRESH_INTERVAL_MS = 5000;
 const KPI_KNOWLEDGE_BASE_STOP_WORDS = new Set([
   "a",
   "an",
@@ -81,9 +79,6 @@ const KPI_KNOWLEDGE_BASE_STOP_WORDS = new Set([
   "une",
   "un"
 ]);
-
-let kpiKnowledgeRefreshWorkerTimer = null;
-let kpiKnowledgeRefreshWorkerRunning = false;
 
 const createHttpError = (statusCode, message) => {
   const error = new Error(message);
@@ -831,465 +826,8 @@ const ensureKpiRatioSchema = async () => {
       `);
 
       await pool.query(`
-        ALTER TABLE public.kpi
-        ADD COLUMN IF NOT EXISTS kpi_knowledge_updated_date TIMESTAMPTZ
-      `);
-
-      await pool.query(`
         ALTER TABLE public.kpi_target_allocation
         ADD COLUMN IF NOT EXISTS created_by_people_id INTEGER
-      `);
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS public.kpi_knowledge_refresh_queue (
-          kpi_id INTEGER PRIMARY KEY
-            REFERENCES public.kpi (kpi_id)
-            ON DELETE CASCADE,
-          reason TEXT,
-          requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
-
-      await pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_kpi_knowledge_refresh_queue_requested_at
-        ON public.kpi_knowledge_refresh_queue (requested_at ASC, kpi_id ASC)
-      `);
-
-      await pool.query(`
-        CREATE OR REPLACE FUNCTION public.enqueue_kpi_knowledge_refresh_target(
-          p_kpi_id INTEGER,
-          p_reason TEXT DEFAULT NULL
-        )
-        RETURNS VOID
-        LANGUAGE plpgsql
-        AS $$
-        BEGIN
-          IF p_kpi_id IS NULL THEN
-            RETURN;
-          END IF;
-
-          INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-          VALUES (
-            p_kpi_id,
-            COALESCE(NULLIF(BTRIM(COALESCE(p_reason, '')), ''), 'source_change'),
-            NOW()
-          )
-          ON CONFLICT (kpi_id) DO UPDATE
-          SET
-            reason = EXCLUDED.reason,
-            requested_at = EXCLUDED.requested_at;
-        END;
-        $$;
-      `);
-
-      await pool.query(`
-        CREATE OR REPLACE FUNCTION public.enqueue_all_kpi_knowledge_refresh(
-          p_reason TEXT DEFAULT NULL
-        )
-        RETURNS VOID
-        LANGUAGE plpgsql
-        AS $$
-        BEGIN
-          INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-          SELECT
-            k.kpi_id,
-            COALESCE(NULLIF(BTRIM(COALESCE(p_reason, '')), ''), 'source_change'),
-            NOW()
-          FROM public.kpi k
-          ON CONFLICT (kpi_id) DO UPDATE
-          SET
-            reason = EXCLUDED.reason,
-            requested_at = EXCLUDED.requested_at;
-        END;
-        $$;
-      `);
-
-      await pool.query(`
-        CREATE OR REPLACE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change()
-        RETURNS TRIGGER
-        LANGUAGE plpgsql
-        AS $$
-        DECLARE
-          v_reason TEXT := LOWER(TG_TABLE_NAME) || '_' || LOWER(TG_OP);
-          v_role_id INTEGER;
-          v_people_id INTEGER;
-          v_unit_id INTEGER;
-          v_zone_id INTEGER;
-          v_unit_type_id INTEGER;
-          v_product_id INTEGER;
-          v_product_line_id INTEGER;
-          v_market_id INTEGER;
-          v_customer_id INTEGER;
-        BEGIN
-          IF TG_TABLE_NAME = 'kpi' THEN
-            IF TG_OP = 'INSERT' THEN
-              PERFORM public.enqueue_kpi_knowledge_refresh_target(NEW.kpi_id, v_reason);
-              RETURN NEW;
-            END IF;
-
-            IF TG_OP = 'UPDATE' THEN
-              IF
-                (to_jsonb(NEW) - 'kpi_knowledge_base' - 'kpi_knowledge_updated_date')
-                IS DISTINCT FROM
-                (to_jsonb(OLD) - 'kpi_knowledge_base' - 'kpi_knowledge_updated_date')
-              THEN
-                PERFORM public.enqueue_kpi_knowledge_refresh_target(NEW.kpi_id, v_reason);
-
-                INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-                SELECT DISTINCT
-                  ref.kpi_id,
-                  'reference_kpi_updated',
-                  NOW()
-                FROM public.kpi ref
-                WHERE ref.reference_kpi_id = NEW.kpi_id
-                  AND ref.kpi_id <> NEW.kpi_id
-                ON CONFLICT (kpi_id) DO UPDATE
-                SET
-                  reason = EXCLUDED.reason,
-                  requested_at = EXCLUDED.requested_at;
-              END IF;
-
-              RETURN NEW;
-            END IF;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'subject_kpi' THEN
-            PERFORM public.enqueue_kpi_knowledge_refresh_target(COALESCE(NEW.kpi_id, OLD.kpi_id), v_reason);
-
-            IF TG_OP = 'UPDATE' AND NEW.kpi_id IS DISTINCT FROM OLD.kpi_id THEN
-              PERFORM public.enqueue_kpi_knowledge_refresh_target(OLD.kpi_id, 'subject_kpi_relinked');
-            END IF;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'subject' THEN
-            PERFORM public.enqueue_all_kpi_knowledge_refresh(v_reason);
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'kpi_target_allocation' THEN
-            PERFORM public.enqueue_kpi_knowledge_refresh_target(COALESCE(NEW.kpi_id, OLD.kpi_id), v_reason);
-
-            IF TG_OP = 'UPDATE' AND NEW.kpi_id IS DISTINCT FROM OLD.kpi_id THEN
-              PERFORM public.enqueue_kpi_knowledge_refresh_target(OLD.kpi_id, 'kpi_target_allocation_relinked');
-            END IF;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'kpi_result' THEN
-            PERFORM public.enqueue_kpi_knowledge_refresh_target(COALESCE(NEW.kpi_id, OLD.kpi_id), v_reason);
-
-            IF TG_OP = 'UPDATE' AND NEW.kpi_id IS DISTINCT FROM OLD.kpi_id THEN
-              PERFORM public.enqueue_kpi_knowledge_refresh_target(OLD.kpi_id, 'kpi_result_relinked');
-            END IF;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'role' THEN
-            v_role_id := COALESCE(NEW.role_id, OLD.role_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              affected.kpi_id,
-              v_reason,
-              NOW()
-            FROM (
-              SELECT k.kpi_id
-              FROM public.kpi k
-              WHERE k.owner_role_id = v_role_id
-              UNION
-              SELECT a.kpi_id
-              FROM public.kpi_target_allocation a
-              WHERE a.role_id = v_role_id
-            ) affected
-            WHERE affected.kpi_id IS NOT NULL
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'people' THEN
-            v_people_id := COALESCE(NEW.people_id, OLD.people_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              affected.kpi_id,
-              v_reason,
-              NOW()
-            FROM (
-              SELECT k.kpi_id
-              FROM public.kpi k
-              WHERE k.created_by_people_id = v_people_id
-              UNION
-              SELECT a.kpi_id
-              FROM public.kpi_target_allocation a
-              WHERE a.set_by_people_id = v_people_id
-                 OR a.created_by_people_id = v_people_id
-                 OR a.approved_by_people_id = v_people_id
-              UNION
-              SELECT r.kpi_id
-              FROM public.kpi_result r
-              WHERE r.recorded_by_people_id = v_people_id
-            ) affected
-            WHERE affected.kpi_id IS NOT NULL
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'unit' THEN
-            v_unit_id := COALESCE(NEW.unit_id, OLD.unit_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.plant_id = v_unit_id
-               OR a.unit_id = v_unit_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'zone' THEN
-            v_zone_id := COALESCE(NEW.zone_id, OLD.zone_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.zone_id = v_zone_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'unit_type' THEN
-            v_unit_type_id := COALESCE(NEW.unit_type_id, OLD.unit_type_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.unit_type_id = v_unit_type_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'product' THEN
-            v_product_id := COALESCE(NEW.product_id, OLD.product_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.product_id = v_product_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'product_line' THEN
-            v_product_line_id := COALESCE(NEW.product_line_id, OLD.product_line_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.product_line_id = v_product_line_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'market' THEN
-            v_market_id := COALESCE(NEW.market_id, OLD.market_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.market_id = v_market_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          IF TG_TABLE_NAME = 'customer' THEN
-            v_customer_id := COALESCE(NEW.customer_id, OLD.customer_id);
-
-            INSERT INTO public.kpi_knowledge_refresh_queue (kpi_id, reason, requested_at)
-            SELECT DISTINCT
-              a.kpi_id,
-              v_reason,
-              NOW()
-            FROM public.kpi_target_allocation a
-            WHERE a.customer_id = v_customer_id
-            ON CONFLICT (kpi_id) DO UPDATE
-            SET
-              reason = EXCLUDED.reason,
-              requested_at = EXCLUDED.requested_at;
-
-            RETURN COALESCE(NEW, OLD);
-          END IF;
-
-          RETURN COALESCE(NEW, OLD);
-        END;
-        $$;
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi ON public.kpi;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi
-        AFTER INSERT OR UPDATE ON public.kpi
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_subject_kpi ON public.subject_kpi;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_subject_kpi
-        AFTER INSERT OR UPDATE OR DELETE ON public.subject_kpi
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_subject ON public.subject;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_subject
-        AFTER INSERT OR UPDATE OR DELETE ON public.subject
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi_target_allocation ON public.kpi_target_allocation;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi_target_allocation
-        AFTER INSERT OR UPDATE OR DELETE ON public.kpi_target_allocation
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_kpi_result ON public.kpi_result;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_kpi_result
-        AFTER INSERT OR UPDATE OR DELETE ON public.kpi_result
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_role ON public.role;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_role
-        AFTER INSERT OR UPDATE OR DELETE ON public.role
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_people ON public.people;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_people
-        AFTER INSERT OR UPDATE OR DELETE ON public.people
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_unit ON public.unit;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_unit
-        AFTER INSERT OR UPDATE OR DELETE ON public.unit
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_zone ON public.zone;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_zone
-        AFTER INSERT OR UPDATE OR DELETE ON public.zone
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_unit_type ON public.unit_type;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_unit_type
-        AFTER INSERT OR UPDATE OR DELETE ON public.unit_type
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_product ON public.product;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_product
-        AFTER INSERT OR UPDATE OR DELETE ON public.product
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_product_line ON public.product_line;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_product_line
-        AFTER INSERT OR UPDATE OR DELETE ON public.product_line
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_market ON public.market;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_market
-        AFTER INSERT OR UPDATE OR DELETE ON public.market
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
-      `);
-
-      await pool.query(`
-        DROP TRIGGER IF EXISTS trg_kpi_knowledge_refresh_on_customer ON public.customer;
-        CREATE TRIGGER trg_kpi_knowledge_refresh_on_customer
-        AFTER INSERT OR UPDATE OR DELETE ON public.customer
-        FOR EACH ROW
-        EXECUTE FUNCTION public.enqueue_kpi_knowledge_refresh_for_change();
       `);
 
       await pool.query(`
@@ -1334,8 +872,6 @@ const ensureKpiRatioSchema = async () => {
         WHERE k.kpi_id = ownership.kpi_id
           AND k.created_by_people_id IS NULL
       `);
-
-      startKpiKnowledgeRefreshWorker();
     })().catch((error) => {
       kpiRatioSchemaPromise = null;
       throw error;
@@ -2101,64 +1637,6 @@ const buildKpiKnowledgeBaseAllocationEntry = (row = {}) => {
   };
 };
 
-const buildKpiKnowledgeBaseResultEntry = (row = {}, allocationScopeById = new Map()) => {
-  const allocationId = normalizeOptionalIntegerInput(row.kpi_target_allocation_id);
-  const allocationScope = allocationId ? allocationScopeById.get(allocationId) || null : null;
-  const recordedByName = row.recorded_by_people_id
-    ? getPeopleDisplayName({
-        name: row.recorded_by_people_name,
-        first_name: row.recorded_by_people_first_name
-      }) || ""
-    : "";
-
-  return {
-    result_id: row.kpi_result_id,
-    allocation_id: allocationId,
-    scope_label: allocationScope?.scope_label || (allocationId ? `Allocation ${allocationId}` : null),
-    period: {
-      result_date: row.result_date ? formatDateOnlyValue(row.result_date) : null,
-      week: row.week || null,
-      type: row.period_type || null,
-      label: row.period_label || null
-    },
-    value: {
-      raw_value: row.raw_value ?? null,
-      unit: row.unit || null,
-      status: row.result_status || null
-    },
-    targets: {
-      target_value: row.target_value ?? null,
-      best_new_target: row.best_new_target ?? null
-    },
-    thresholds: {
-      lower_limit: row.lower_limit ?? null,
-      upper_limit: row.upper_limit ?? null
-    },
-    source: {
-      data_source: row.data_source || null,
-      recorded_at: formatKnowledgeBaseTimestamp(row.recorded_at),
-      recorded_by: row.recorded_by_people_id
-        ? {
-            id: row.recorded_by_people_id,
-            name: recordedByName
-          }
-        : null
-    },
-    comments: normalizeOptionalTextInput(row.comments) || "",
-    keywords: buildKnowledgeBaseKeywordList([
-      allocationScope?.scope_label,
-      row.period_type,
-      row.period_label,
-      row.week,
-      row.result_status,
-      row.data_source,
-      row.comments,
-      recordedByName,
-      row.unit
-    ], 16)
-  };
-};
-
 const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
   const normalizedKpiId = normalizeOptionalIntegerInput(kpiId);
   if (!normalizedKpiId) return null;
@@ -2167,7 +1645,6 @@ const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
     kpiResult,
     subjectLinksResult,
     targetAllocationsResult,
-    recentResultsResult,
     subjectHierarchy
   ] = await Promise.all([
     db.query(
@@ -2319,41 +1796,6 @@ const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
       `,
       [normalizedKpiId]
     ),
-    db.query(
-      `
-      SELECT
-        kr.kpi_result_id,
-        kr.kpi_target_allocation_id,
-        kr.kpi_id,
-        kr.result_date,
-        kr.week,
-        kr.period_type,
-        kr.period_label,
-        kr.raw_value,
-        kr.lower_limit,
-        kr.upper_limit,
-        kr.target_value,
-        kr.best_new_target,
-        kr.unit,
-        kr.kpi_type,
-        kr.result_status,
-        kr.data_source,
-        kr.recorded_by_people_id,
-        kr.recorded_at,
-        kr.comments,
-        recorded_by_people.name AS recorded_by_people_name,
-        recorded_by_people.first_name AS recorded_by_people_first_name
-      FROM public.kpi_result kr
-      LEFT JOIN public.people recorded_by_people
-        ON recorded_by_people.people_id = kr.recorded_by_people_id
-      WHERE kr.kpi_id = $1
-      ORDER BY
-        COALESCE(kr.recorded_at, kr.result_date::timestamp) DESC,
-        kr.kpi_result_id DESC
-      LIMIT 12
-      `,
-      [normalizedKpiId]
-    ),
     loadSubjectHierarchyData(db)
   ]);
 
@@ -2379,27 +1821,16 @@ const loadKpiKnowledgeBaseSourceData = async (db, kpiId) => {
         first_name: row.approved_by_people_first_name
       }
     })),
-    recent_results: recentResultsResult.rows,
     subject_hierarchy: subjectHierarchy
   };
 };
 
-const buildKpiKnowledgeBaseDocument = (
-  sourceData,
-  { reason = "manual_sync", generatedAt = null } = {}
-) => {
+const buildKpiKnowledgeBaseDocument = (sourceData, { reason = "manual_sync" } = {}) => {
   if (!sourceData?.kpi) return null;
 
-  const {
-    kpi,
-    subject_links: subjectLinks,
-    target_allocations: targetAllocations,
-    recent_results: recentResults,
-    subject_hierarchy: subjectHierarchy
-  } = sourceData;
+  const { kpi, subject_links: subjectLinks, target_allocations: targetAllocations, subject_hierarchy: subjectHierarchy } = sourceData;
   const flatKnowledgeNodes = new Map();
   const causeEffectLinks = new Map();
-  const generatedAtIso = formatKnowledgeBaseTimestamp(generatedAt) || new Date().toISOString();
 
   const buildSubjectTree = (subjectNode, rootSubjectId, depthFromRoot = 0) => {
     if (!subjectNode || depthFromRoot > KPI_KNOWLEDGE_BASE_MAX_DEPTH) {
@@ -2517,14 +1948,6 @@ const buildKpiKnowledgeBaseDocument = (
 
   const primarySubject = linkedSubjects.find((entry) => entry.is_primary) || linkedSubjects[0] || null;
   const allocationEntries = targetAllocations.map((row) => buildKpiKnowledgeBaseAllocationEntry(row));
-  const allocationEntryById = new Map(
-    allocationEntries
-      .map((entry) => [normalizeOptionalIntegerInput(entry.allocation_id), entry])
-      .filter(([allocationId]) => Number.isInteger(allocationId) && allocationId > 0)
-  );
-  const recentResultEntries = (Array.isArray(recentResults) ? recentResults : [])
-    .map((row) => buildKpiKnowledgeBaseResultEntry(row, allocationEntryById));
-  const latestResultEntry = recentResultEntries[0] || null;
   const scopeSummary = {
     plants: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.plant?.name), 12),
     zones: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope?.zone?.name), 12),
@@ -2539,12 +1962,12 @@ const buildKpiKnowledgeBaseDocument = (
   };
 
   return {
-    schema_version: "1.1.0",
-    generated_at: generatedAtIso,
+    schema_version: "1.0.0",
+    generated_at: new Date().toISOString(),
     generation_context: {
       reason,
       max_subject_depth: KPI_KNOWLEDGE_BASE_MAX_DEPTH,
-      source_tables: ["kpi", "subject_kpi", "subject", "kpi_target_allocation", "kpi_result"],
+      source_tables: ["kpi", "subject_kpi", "subject", "kpi_target_allocation"],
       purpose: ["solution_search", "training", "rag", "diagnosis"]
     },
     kpi: {
@@ -2613,11 +2036,6 @@ const buildKpiKnowledgeBaseDocument = (
       }),
       cause_effect_links: Array.from(causeEffectLinks.values())
     },
-    performance: {
-      latest_result: latestResultEntry,
-      recent_results: recentResultEntries,
-      result_count: recentResultEntries.length
-    },
     target_allocations: allocationEntries,
     scope_summary: scopeSummary,
     search_index: {
@@ -2631,22 +2049,16 @@ const buildKpiKnowledgeBaseDocument = (
         linkedSubjects.map((entry) => entry.subject_name),
         linkedSubjects.map((entry) => entry.subject_description),
         linkedSubjects.map((entry) => entry.subject_knowledge),
-        latestResultEntry?.period?.label,
-        latestResultEntry?.value?.status,
-        latestResultEntry?.comments,
-        recentResultEntries.map((entry) => entry.scope_label),
-        recentResultEntries.map((entry) => entry.comments),
         allocationEntries.map((entry) => entry.scope_label),
         allocationEntries.map((entry) => entry.comments),
         Object.values(scopeSummary)
       ], 80),
       subject_paths: uniqueKnowledgeBaseTexts(linkedSubjects.map((entry) => entry.path), 20),
-      allocation_scopes: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope_label), 20),
-      result_periods: uniqueKnowledgeBaseTexts(recentResultEntries.map((entry) => entry.period?.label), 20)
+      allocation_scopes: uniqueKnowledgeBaseTexts(allocationEntries.map((entry) => entry.scope_label), 20)
     },
     ai_usage: {
-      instructions: "Use KPI definition first, then recent KPI results, then the subject tree and cause-effect links, then target allocation scope and comments.",
-      preferred_order: ["kpi", "performance", "subject_context", "target_allocations", "scope_summary"]
+      instructions: "Use KPI definition first, then the subject tree and cause-effect links, then target allocation scope and comments.",
+      preferred_order: ["kpi", "subject_context", "target_allocations", "scope_summary"]
     }
   };
 };
@@ -2656,53 +2068,19 @@ const refreshKpiKnowledgeBaseForKpiId = async (db, kpiId, options = {}) => {
   if (!normalizedKpiId) return null;
 
   const sourceData = await loadKpiKnowledgeBaseSourceData(db, normalizedKpiId);
-  if (!sourceData) {
-    await db.query(
-      `
-      DELETE FROM public.kpi_knowledge_refresh_queue
-      WHERE kpi_id = $1
-      `,
-      [normalizedKpiId]
-    ).catch(() => {});
-    return null;
-  }
+  if (!sourceData) return null;
 
-  const refreshedAt = options.generatedAt instanceof Date
-    ? options.generatedAt
-    : new Date();
-  const knowledgeBase = buildKpiKnowledgeBaseDocument(sourceData, {
-    ...options,
-    generatedAt: refreshedAt
-  });
-  if (!knowledgeBase) {
-    await db.query(
-      `
-      DELETE FROM public.kpi_knowledge_refresh_queue
-      WHERE kpi_id = $1
-      `,
-      [normalizedKpiId]
-    ).catch(() => {});
-    return null;
-  }
+  const knowledgeBase = buildKpiKnowledgeBaseDocument(sourceData, options);
+  if (!knowledgeBase) return null;
 
   await db.query(
     `
     UPDATE public.kpi
-    SET
-      kpi_knowledge_base = $2::jsonb,
-      kpi_knowledge_updated_date = $3::timestamptz
+    SET kpi_knowledge_base = $2::jsonb
     WHERE kpi_id = $1
     `,
-    [normalizedKpiId, JSON.stringify(knowledgeBase), refreshedAt.toISOString()]
+    [normalizedKpiId, JSON.stringify(knowledgeBase)]
   );
-
-  await db.query(
-    `
-    DELETE FROM public.kpi_knowledge_refresh_queue
-    WHERE kpi_id = $1
-    `,
-    [normalizedKpiId]
-  ).catch(() => {});
 
   return knowledgeBase;
 };
@@ -2718,93 +2096,6 @@ const refreshKpiKnowledgeBases = async (db, kpiIds = [], options = {}) => {
     await refreshKpiKnowledgeBaseForKpiId(db, kpiId, options);
   }
 };
-
-async function processPendingKpiKnowledgeRefreshQueue() {
-  if (kpiKnowledgeRefreshWorkerRunning) {
-    return;
-  }
-
-  kpiKnowledgeRefreshWorkerRunning = true;
-  let client = null;
-  let lockAcquired = false;
-  const lockKey = Math.abs(
-    "kpi_knowledge_refresh_worker"
-      .split("")
-      .reduce((accumulator, character) => ((accumulator << 5) - accumulator) + character.charCodeAt(0), 0)
-  );
-
-  try {
-    client = await pool.connect();
-    const lockResult = await client.query(
-      `SELECT pg_try_advisory_lock($1) AS acquired`,
-      [lockKey]
-    );
-    lockAcquired = lockResult.rows[0]?.acquired === true;
-
-    if (!lockAcquired) {
-      return;
-    }
-
-    await client.query("BEGIN");
-
-    const queuedRowsResult = await client.query(
-      `
-      SELECT
-        q.kpi_id,
-        q.reason
-      FROM public.kpi_knowledge_refresh_queue q
-      ORDER BY q.requested_at ASC, q.kpi_id ASC
-      FOR UPDATE SKIP LOCKED
-      LIMIT $1
-      `,
-      [KPI_KNOWLEDGE_REFRESH_BATCH_SIZE]
-    );
-
-    if (!queuedRowsResult.rows.length) {
-      await client.query("COMMIT");
-      return;
-    }
-
-    for (const row of queuedRowsResult.rows) {
-      await refreshKpiKnowledgeBaseForKpiId(client, row.kpi_id, {
-        reason: normalizeOptionalTextInput(row.reason) || "queued_refresh"
-      });
-    }
-
-    await client.query("COMMIT");
-  } catch (error) {
-    if (client) {
-      await client.query("ROLLBACK").catch(() => {});
-    }
-    console.error("[KPI Knowledge Base] Refresh queue processing failed:", error.message);
-  } finally {
-    if (client && lockAcquired) {
-      await client.query(`SELECT pg_advisory_unlock($1)`, [lockKey]).catch(() => {});
-    }
-    if (client) {
-      client.release();
-    }
-    kpiKnowledgeRefreshWorkerRunning = false;
-  }
-}
-
-function startKpiKnowledgeRefreshWorker() {
-  if (kpiKnowledgeRefreshWorkerTimer) {
-    return;
-  }
-
-  const tick = () => {
-    processPendingKpiKnowledgeRefreshQueue().catch((error) => {
-      console.error("[KPI Knowledge Base] Refresh queue tick failed:", error.message);
-    });
-  };
-
-  tick();
-  kpiKnowledgeRefreshWorkerTimer = setInterval(tick, KPI_KNOWLEDGE_REFRESH_INTERVAL_MS);
-  if (typeof kpiKnowledgeRefreshWorkerTimer.unref === "function") {
-    kpiKnowledgeRefreshWorkerTimer.unref();
-  }
-}
 
 const buildKpiAssistantMessagesForOpenAI = ({
   kpiRow,
@@ -3173,7 +2464,6 @@ const mapKpiRowToClient = (row, subjectPathById = new Map()) => {
     comments: row.comments || "",
     created_at: row.created_at,
     updated_at: row.updated_at,
-    kpi_knowledge_updated_date: row.kpi_knowledge_updated_date ?? null,
     created_by_people_id: row.created_by_people_id ?? null,
     kpi_knowledge_base: row.kpi_knowledge_base ?? null,
     full_subject_path: subjectPath,
@@ -3245,7 +2535,6 @@ const loadKpiRowsForUi = async ({ search = "", kpiId = null, responsibleId = nul
       k.comments,
       k.created_at,
       k.updated_at,
-      k.kpi_knowledge_updated_date,
       k.created_by_people_id,
       k.kpi_knowledge_base,
       primary_subject.subject_id,
@@ -5324,9 +4613,6 @@ app.get("/kpi-admin", async (req, res) => {
 
     <script>
       let currentRows = [];
-      let kpiSourceRows = [];
-      let selectedKpiNameFilter = "";
-      let selectedKpiSubjectFilter = "";
       let selectedKpiId = null;
 
       function showToast(message) {
@@ -6190,9 +5476,6 @@ app.put("/api/responsibles/:responsibleId/kpis/:kpiId", async (req, res) => {
     }
 
     await upsertPrimarySubjectKpiLink(client, Number(kpiId), resolvedSubjectId);
-    await refreshKpiKnowledgeBaseForKpiId(client, Number(kpiId), {
-      reason: "responsible_kpi_updated"
-    });
     await client.query("COMMIT");
 
     const rows = await loadKpiRowsForUi({
@@ -6541,10 +5824,7 @@ app.get("/api/responsibles/:responsibleId/kpi-objects", async (req, res) => {
   const { responsibleId } = req.params;
   try {
     await ensureKpiObjectSchema();
-    const loadAllScope = String(req.query?.scope || "").trim().toLowerCase() === "all";
-    const rows = await loadKpiTargetAllocationRowsForUi({
-      responsibleId: loadAllScope ? null : responsibleId
-    });
+    const rows = await loadKpiTargetAllocationRowsForUi({ responsibleId });
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.set("Pragma", "no-cache");
     res.set("Expires", "0");
@@ -6560,10 +5840,9 @@ app.get("/api/responsibles/:responsibleId/kpi-objects/:kpiObjectId", async (req,
 
   try {
     await ensureKpiObjectSchema();
-    const loadAllScope = String(req.query?.scope || "").trim().toLowerCase() === "all";
     const anchorRows = await loadKpiTargetAllocationRowsForUi({
       allocationId: Number(kpiObjectId),
-      responsibleId: loadAllScope ? null : responsibleId
+      responsibleId
     });
 
     if (!anchorRows.length) {
@@ -8220,162 +7499,26 @@ textarea {
         justify-content: center;
       }
 
-.kpi-matrix-toolbar {
-  display: grid;
-  grid-template-columns: minmax(360px, 1fr) 240px 240px auto;
-  align-items: end;
-  gap: 14px;
-  padding: 0 10px 15px;
-}
+      .kpi-matrix-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        padding: 0 14px 18px;
+      }
 
-.kpi-filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  min-width: 0;
-}
+      .kpi-matrix-search {
+        flex: 1;
+        min-width: 280px;
+        max-width: 440px;
+      }
 
-.kpi-filter-field label {
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: #64748b;
-  padding-left: 4px;
-}
-
-.kpi-search-field {
-  min-width: 320px;
-}
-
-.kpi-search-field .search,
-.kpi-filter-trigger {
-  width: 100%;
-  min-height: 46px;
-  border: 1px solid rgba(148,163,184,0.28);
-  border-radius: 16px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  color: #0f172a;
-  padding: 0 15px;
-  font-size: 13px;
-  font-family: inherit;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.95),
-    0 10px 24px rgba(15,23,42,0.05);
-}
-
-.kpi-filter-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  text-align: left;
-  cursor: pointer;
-  color: #334155;
-}
-
-.kpi-filter-trigger::after {
-  content: "▾";
-  font-size: 11px;
-  color: #64748b;
-  margin-left: 12px;
-}
-
-.kpi-search-field .search:focus,
-.kpi-filter-select.is-open .kpi-filter-trigger {
-  outline: none;
-  border-color: rgba(37,99,235,0.55);
-  box-shadow:
-    0 0 0 4px rgba(37,99,235,0.10),
-    0 14px 30px rgba(15,23,42,0.08);
-}
-
-.kpi-filter-select {
-  position: relative;
-  width: 100%;
-}
-
-.kpi-filter-menu {
-  position: absolute;
-  top: calc(100% + 10px);
-  left: 0;
-  right: 0;
-  z-index: 200;
-  display: none;
-  padding: 10px;
-  border-radius: 20px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  border: 1px solid rgba(148,163,184,0.22);
-  box-shadow: 0 24px 54px rgba(15,23,42,0.16);
-}
-
-.kpi-filter-select.is-open .kpi-filter-menu {
-  display: block;
-}
-
-.kpi-filter-search {
-  width: 100%;
-  min-height: 40px;
-  border: 1px solid rgba(37,99,235,0.30);
-  border-radius: 13px;
-  padding: 8px 11px;
-  outline: none;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.kpi-filter-options {
-  max-height: 250px;
-  overflow-y: auto;
-  padding-right: 3px;
-}
-
-.kpi-filter-option {
-  width: 100%;
-  border: none;
-  background: transparent;
-  padding: 10px 12px;
-  border-radius: 12px;
-  text-align: left;
-  cursor: pointer;
-  font-size: 13px;
-  color: #0f172a;
-}
-
-
-
-.kpi-results-meta {
-  align-self: center;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 900;
-  color: #64748b;
-  padding-bottom: 13px;
-}
-
-@media (max-width: 1100px) {
-  .kpi-matrix-toolbar {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .kpi-results-meta {
-    padding-bottom: 0;
-  }
-}
-
-@media (max-width: 760px) {
-  .kpi-matrix-toolbar {
-    grid-template-columns: 1fr;
-  }
-}
-
- 
-
-.kpi-filter-option:hover,
-.kpi-filter-option.is-selected {
-  background: rgba(37,99,235,0.08);
-  color: #1d4ed8;
-  font-weight: 800;
-}
+      .kpi-results-meta {
+        font-size: 13px;
+        font-weight: 800;
+        color: #64748b;
+      }
 
       .kpi-matrix-table-shell {
         background: rgba(255,255,255,0.96);
@@ -9928,12 +9071,6 @@ textarea {
         cursor: not-allowed;
       }
 
-      .parameter-kpi-definition {
-        min-height: 84px;
-        resize: none;
-        line-height: 1.5;
-      }
-
       .modal-footer {
         flex-shrink: 0;
         display: flex;
@@ -10753,39 +9890,6 @@ textarea {
   box-shadow: 0 16px 32px rgba(37,99,235,0.28) !important;
 }
 
-.kpi-attributes-modal #kpiSaveBtn {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 10px !important;
-  min-width: 160px;
-}
-
-.kpi-attributes-modal #kpiSaveBtn.is-loading {
-  cursor: wait !important;
-}
-
-.kpi-attributes-modal .kpi-save-spinner {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid rgba(255,255,255,0.38);
-  border-top-color: #ffffff;
-  display: none;
-  animation: kpiButtonSpin 0.75s linear infinite;
-  flex-shrink: 0;
-}
-
-.kpi-attributes-modal #kpiSaveBtn.is-loading .kpi-save-spinner {
-  display: inline-block;
-}
-
-@keyframes kpiButtonSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @keyframes modalSlideUp {
   from {
     opacity: 0;
@@ -10823,8 +9927,8 @@ textarea {
 /* Keep the subject dropdown usable without taking over the whole modal */
 .kpi-attributes-modal .tree-list {
   height: auto !important;
-  min-height: 380px !important;
-  max-height: min(52vh, 520px) !important;
+  min-height: 320px !important;
+  max-height: min(42vh, 420px) !important;
   overflow: auto !important;
 }
 
@@ -10856,7 +9960,7 @@ textarea {
 }
 
 .kpi-attributes-modal .tree-select-panel {
-  max-height: min(60vh, 620px) !important;
+  max-height: min(52vh, 520px) !important;
   overflow: hidden !important;
 }
 
@@ -11051,27 +10155,16 @@ textarea {
 }
 
 .parameter-modal .form-grid {
-  display: grid !important;
-  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
-  gap: 16px !important;
-  align-items: end !important;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 24px;
+  column-gap: 36px; /* more horizontal space */
+  row-gap: 20px;
+  align-items: end;
 }
 
-.parameter-modal .field.col-6 { grid-column: span 6 !important; }
-.parameter-modal .field.col-2 { grid-column: span 2 !important; }
-.parameter-modal .field.col-3 { grid-column: span 3 !important; }
-.parameter-modal .field.col-4 { grid-column: span 4 !important; }
-.parameter-modal .field.col-12 { grid-column: 1 / -1 !important; }
-
-.parameter-modal #parameterAllocationFieldsSection.is-individual-layout .form-grid,
-.parameter-modal #parameterAllocationFieldsSection .form-grid {
-  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
-  column-gap: 20px !important;
-  row-gap: 18px !important;
-}
-
-.parameter-modal #parameterAllocationFieldsSection .field.col-3 {
-  grid-column: span 3 !important;
+.parameter-modal #parameterAllocationFieldsSection.is-individual-layout .form-grid {
+  grid-template-columns: repeat(21, minmax(0, 1fr)) !important;
 }
 
 .parameter-modal .field label {
@@ -12202,7 +11295,7 @@ textarea {
         <div class="topbar">
           <div class="topbar-left">
               <h1>Responsible KPI Dashboard</h1>
-            <p>Modern KPI workspace for ${escapeHtml(responsibleName)}. KPI creation stays linked to this responsible, while target allocation consulting can review and manage all allocations.</p>
+            <p>Modern KPI workspace for ${escapeHtml(responsibleName)}. KPI creation and target allocation are locked to this responsible.</p>
           </div>
 
         </div>
@@ -12214,32 +11307,21 @@ textarea {
             <div class="kpi-matrix-hero">
               <div class="kpi-matrix-title">
                 <h2>KPI Matrix</h2>
-                <p>View and manage all KPI definitions with direct visibility on KPI name, KPI subject, KPI code, unit, direction, and actions.</p>
+                <p>View and manage all KPI definitions with direct visibility on KPI subject, KPI name, KPI code, unit, direction, and actions.</p>
               </div>
               <button class="btn btn-primary kpi-matrix-add-btn" type="button" onclick="openCreateModal()">+ Add KPI</button>
             </div>
 
-<div class="kpi-matrix-toolbar">
+            <div class="kpi-matrix-toolbar">
+              <div class="search-wrap kpi-matrix-search">
+                <input id="search" class="search" placeholder="Search KPI by subject, name, code, unit or direction..." />
+              </div>
+              <div class="kpi-results-meta" id="kpiResultsMeta">0 KPIs</div>
+            </div>
 
-  <div class="kpi-filter-field kpi-search-field">
-    <label>Search KPI</label>
-    <input id="search" class="search" placeholder="Search by subject, name, code, unit or direction..." />
-  </div>
-
-  <div class="kpi-filter-field">
-    <label>KPI name</label>
-    <div id="kpiNameFilter" class="kpi-filter-select"></div>
-  </div>
-
-  <div class="kpi-filter-field">
-    <label>Subject</label>
-    <div id="kpiSubjectFilter" class="kpi-filter-select"></div>
-  </div>
-
-    </div>
-    <div id="grid"></div>
-     </div>
-    </section>
+            <div id="grid"></div>
+          </div>
+        </section>
 
         <section id="myKpisSection" style="display:none;">
           <div class="section-head">
@@ -12256,15 +11338,15 @@ textarea {
           <div class="parameter-section-shell">
             <div class="parameter-matrix-hero">
               <div class="parameter-matrix-title">
-                <h2>Target Allocation Matrix</h2>
-                <p>View and manage every KPI target allocation with direct visibility on KPI name, type, role, frequency, and target value.</p>
+                <h2>KPI Matrix</h2>
+                <p>View and manage all KPI target allocations with direct visibility on KPI name, KPI type, role, KPI frequency, responsible, target status, and target value.</p>
               </div>
               <button class="btn btn-primary parameter-matrix-add-btn" type="button" onclick="openCreateParameterModal()">+ Add Target Allocation</button>
             </div>
 
             <div class="parameter-matrix-toolbar">
               <div class="search-wrap parameter-matrix-search">
-                <input id="parameterSearch" class="search" placeholder="Filter by KPI name, role, type, or frequency..." />
+                <input id="parameterSearch" class="search" placeholder="Search KPI name, KPI type, role, frequency, responsible, target status or target value..." />
               </div>
               <div class="parameter-results-meta" id="parameterResultsMeta">0 allocations</div>
             </div>
@@ -12285,7 +11367,7 @@ textarea {
             </div>
           </div>
 
-        <button id="kpiCloseBtn" class="btn btn-soft" onclick="dismissKpiModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;">&times;</button>
+        <button class="btn btn-soft" onclick="dismissKpiModal()" style="width:40px;height:40px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;font-size:20px;line-height:1;color:#64748b;">&times;</button>
         </div>
 
       <div class="modal-body">
@@ -12577,17 +11659,8 @@ textarea {
        <div class="modal-footer">
       <div class="footer-actions">
       <button id="deleteBtn" class="btn btn-danger" onclick="deleteCurrentKpi()">Delete KPI</button>
-     <button
-       id="kpiSaveBtn"
-       class="btn btn-primary"
-       type="button"
-       data-default-label="Save KPI"
-       onclick="saveKpi()"
-     >
-       <span class="kpi-save-spinner" aria-hidden="true"></span>
-       <span class="kpi-save-label">Save KPI</span>
-     </button>
-     <button id="kpiCancelBtn" class="btn btn-soft" type="button" onclick="dismissKpiModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="saveKpi()">Save KPI</button>
+     <button class="btn btn-soft" onclick="dismissKpiModal()">Cancel</button>
       </div>
       </div>
         </div>
@@ -12683,15 +11756,6 @@ textarea {
                   <select id="parameter_role_id" class="parameter-role-native" tabindex="-1" aria-hidden="true"></select>
                 </div>
               </div>
-              <div class="field col-12">
-                <label><span>KPI Definition</span><span class="hint">Read only</span></label>
-                <textarea
-                  id="parameter_kpi_definition_display"
-                  class="readonly-input parameter-kpi-definition"
-                  readonly
-                  placeholder="Select a KPI name to display the KPI definition."
-                ></textarea>
-              </div>
 
               <div class="field col-3 is-hidden" id="parameter_zone_unit_field">
                 <label><span>Unit</span><span class="hint">Select unit first</span></label>
@@ -12753,6 +11817,10 @@ textarea {
                 <label><span>KPI Unit</span></label>
                 <input id="parameter_target_unit" class="readonly-input" readonly />
               </div>
+              <div class="field col-3">
+                <label><span>Sell Currency</span></label>
+                <input id="parameter_local_currency" class="readonly-input" readonly />
+              </div>
           
               <div class="field col-3" id="parameter_previous_target_field">
                 <label><span>Previous Target</span></label>
@@ -12762,7 +11830,10 @@ textarea {
                 <label><span id="parameter_set_by_people_label">Responsible</span></label>
                 <select id="parameter_set_by_people_id"></select>
               </div>
-           
+              <div class="field col-3">
+                <label><span>Approved By</span></label>
+                <select id="parameter_approved_by_people_id"></select>
+              </div>
               <div class="field col-3" id="parameter_target_start_date_field">
                 <label><span>Target Start Date</span><span class="hint">Optional start</span></label>
                 <input id="parameter_target_start_date" type="date" />
@@ -12816,9 +11887,6 @@ textarea {
       const roleOptions = ${JSON.stringify(roleOptions)};
       const allocationLookups = ${JSON.stringify(allocationLookups)};
       let currentRows = [];
-      let kpiSourceRows = [];
-      let selectedKpiNameFilter = "";
-      let selectedKpiSubjectFilter = ""; 
       let referenceKpiRows = [];
       let currentParameterRows = [];
       let parameterSourceRows = [];
@@ -12829,7 +11897,6 @@ textarea {
       let parameterLockedZoneIds = [];
       let parameterResolvedZoneId = "";
       let parameterZoneLookupPending = false;
-      let kpiSavePending = false;
       let parameterSavePending = false;
       let parameterEditMode = false;
       let kpiCreateDraft = null;
@@ -12843,7 +11910,6 @@ textarea {
         "parameter_kpi_type",
         "parameter_unit_type_id",
         "parameter_role_id",
-        "parameter_kpi_definition_display",
         "parameter_target_status",
         "parameter_plant_id",
         "parameter_zone_unit_id",
@@ -13159,19 +12225,9 @@ function populateParameterRoleScopeOptions(selectedValue = "") {
       function updateParameterKpiSummary() {
         const selectedKpi = getParameterKpiById(getParameterFieldValue("parameter_kpi_id"));
         const targetUnitInput = document.getElementById("parameter_target_unit");
-        const definitionDisplay = document.getElementById("parameter_kpi_definition_display");
         if (selectedKpi && targetUnitInput) {
           ensureParameterTargetUnitOption(selectedKpi.unit || "");
           targetUnitInput.value = selectedKpi.unit || "";
-        } else if (targetUnitInput) {
-          targetUnitInput.value = "";
-        }
-        if (definitionDisplay) {
-          const definitionText = selectedKpi?.definition || "";
-          definitionDisplay.value = definitionText;
-          definitionDisplay.placeholder = selectedKpi
-            ? "No KPI definition available for this KPI."
-            : "Select a KPI name to display the KPI definition.";
         }
         if (isIndividualParameterScope()) {
           syncIndividualParameterFields();
@@ -14001,7 +13057,7 @@ function getParameterUnitMetaText(unitEntry) {
 
 function getParameterUnitAllocationRows() {
   const kpiUnit             = getParameterSelectedKpiUnit();
-  const sharedSetByPeopleId = getParameterFieldValue("parameter_set_by_people_id") || "";
+  const sharedSetByPeopleId = getParameterFieldValue("parameter_set_by_people_id") || responsibleId || "";
   const sharedRoleId        = getParameterFieldValue("parameter_role_id");
   const sharedUnitTypeId    = getParameterFieldValue("parameter_unit_type_id");
   const fallbackSetupDate   =
@@ -14279,105 +13335,6 @@ function getParameterResponsibleCellNote(scopeEntry, responsibleEntry) {
   return "";
 }
 
-function getParameterRoleResponsibleCandidates(roleId = getNormalizedParameterRoleId(), { unitId = "" } = {}) {
-  const normalizedRoleId = String(roleId || "").trim();
-  if (!normalizedRoleId) return [];
-
-  const normalizedUnitId = String(unitId || "").trim();
-  const candidateMap = new Map();
-
-  getParameterAllocationUnits().forEach((unitEntry) => {
-    if (!unitEntry || !Array.isArray(unitEntry.responsibles)) return;
-    if (normalizedUnitId && String(unitEntry.value || "").trim() !== normalizedUnitId) return;
-
-    unitEntry.responsibles.forEach((entry) => {
-      const entryPeopleId = String(entry?.people_id || "").trim();
-      if (!entryPeopleId) return;
-      if (String(entry?.role_id || "").trim() !== normalizedRoleId) return;
-
-      const existingEntry = candidateMap.get(entryPeopleId);
-      if (!existingEntry || (Boolean(entry?.is_primary) && !Boolean(existingEntry?.is_primary))) {
-        candidateMap.set(entryPeopleId, {
-          ...entry,
-          people_id: entryPeopleId,
-          label:
-            entry.label ||
-            getParameterPeopleLabel(entryPeopleId) ||
-            ("Person " + entryPeopleId)
-        });
-      }
-    });
-  });
-
-  return Array.from(candidateMap.values()).sort((left, right) => {
-    const primaryDiff = Number(Boolean(right?.is_primary)) - Number(Boolean(left?.is_primary));
-    if (primaryDiff !== 0) return primaryDiff;
-    return String(left?.label || "").localeCompare(String(right?.label || ""));
-  });
-}
-
-function getAutoResolvedIndividualResponsibleEntry() {
-  const normalizedRoleId = getNormalizedParameterRoleId();
-  if (!normalizedRoleId) return null;
-
-  const currentResponsibleId = String(getParameterFieldValue("parameter_set_by_people_id") || "").trim();
-  const selectedUnitId = String(
-    getParameterFieldValue("parameter_plant_id") ||
-    parameterLockedUnitId ||
-    ""
-  ).trim();
-
-  if (selectedUnitId) {
-    const unitEntry = getParameterUnitById(selectedUnitId);
-    const unitMatch = getParameterMatchedResponsible(unitEntry, normalizedRoleId);
-    if (unitMatch?.people_id) {
-      return {
-        ...unitMatch,
-        people_id: String(unitMatch.people_id),
-        label:
-          unitMatch.label ||
-          getParameterPeopleLabel(unitMatch.people_id) ||
-          ("Person " + unitMatch.people_id),
-        source: "unit-role"
-      };
-    }
-  }
-
-  const fallbackCandidates = getParameterRoleResponsibleCandidates(normalizedRoleId);
-  if (!fallbackCandidates.length) {
-    return null;
-  }
-
-  if (currentResponsibleId) {
-    const currentCandidate = fallbackCandidates.find(
-      (entry) => String(entry?.people_id || "").trim() === currentResponsibleId
-    );
-    if (currentCandidate) {
-      return {
-        ...currentCandidate,
-        source: "role"
-      };
-    }
-  }
-
-  if (fallbackCandidates.length === 1) {
-    return {
-      ...fallbackCandidates[0],
-      source: "role"
-    };
-  }
-
-  const primaryCandidates = fallbackCandidates.filter((entry) => Boolean(entry?.is_primary));
-  if (primaryCandidates.length === 1) {
-    return {
-      ...primaryCandidates[0],
-      source: "role"
-    };
-  }
-
-  return null;
-}
-
 function syncIndividualParameterFields() {
   const setBySelect = document.getElementById("parameter_set_by_people_id");
   const setByHint = document.getElementById("parameter_set_by_people_hint");
@@ -14403,35 +13360,14 @@ function syncIndividualParameterFields() {
     setupDateInput.value = getLocalDateInputValue();
   }
 
-  const normalizedRoleId = getNormalizedParameterRoleId();
-  const autoResolvedResponsible = getAutoResolvedIndividualResponsibleEntry();
-  const currentResponsibleId = String(getParameterFieldValue("parameter_set_by_people_id") || "").trim();
-
   if (setBySelect) {
     setBySelect.disabled = false;
     setBySelect.classList.remove("readonly-input");
-    if (autoResolvedResponsible?.people_id) {
-      setBySelect.value = String(autoResolvedResponsible.people_id);
-      setBySelect.dataset.autoResolved = "true";
-    } else {
-      setBySelect.dataset.autoResolved = "false";
-      if (normalizedRoleId) {
-        setBySelect.value = "";
-      } else if (!currentResponsibleId) {
-        setBySelect.value = "";
-      }
-    }
+    setBySelect.dataset.autoResolved = "false";
   }
 
   if (setByHint) {
-    const roleLabel = getParameterRoleLabel(getParameterFieldValue("parameter_role_id"));
-    if (!roleLabel) {
-      setByHint.textContent = "Select the role to fetch the related responsible automatically.";
-    } else if (autoResolvedResponsible?.label) {
-      setByHint.textContent = roleLabel + " matched automatically to " + autoResolvedResponsible.label + ".";
-    } else {
-      setByHint.textContent = "No related responsible was found for the selected role.";
-    }
+    setByHint.textContent = "Select the responsible person for this individual target.";
   }
 }
 
@@ -14510,8 +13446,10 @@ function getParameterUnitAllocationRows() {
       const state = getParameterUnitState(scopeKind, scopeId);
       const resolvedResponsible = resolveParameterResponsibleEntry(scopeEntry, state);
       const rowResponsibleId = String(
-        resolvedResponsible?.people_id || ""
-        ).trim();
+        scopeKind === "zone"
+          ? (resolvedResponsible?.people_id || "")
+          : (resolvedResponsible?.people_id || sharedSetByPeopleId || "")
+      ).trim();
       const targetValue = String(state.target_value ?? "").trim();
       const targetSetupDate = normalizeParameterDateValue(state.target_setup_date) || fallbackSetupDate;
       if (!targetValue) return null;
@@ -14529,7 +13467,7 @@ function getParameterUnitAllocationRows() {
         target_setup_date: targetSetupDate,
         target_unit: kpiUnit,
         local_currency: scopeKind === "unit" ? (scopeEntry.local_currency || "") : "",
-        set_by_people_id: rowResponsibleId || null,
+        set_by_people_id: rowResponsibleId,
         last_best_target: String(state.last_best_target ?? "").trim(),
         approved_by_people_id: String(state.approved_by_id ?? "").trim() || null
       };
@@ -14590,7 +13528,7 @@ function syncPrimaryParameterFieldsFromTable() {
   }
 
   if (setByInput) {
-    setByInput.value = primaryRow?.set_by_people_id || "";
+    setByInput.value = primaryRow?.set_by_people_id || setByInput.value || "";
   }
 
   if (approvedByInput) {
@@ -15446,23 +14384,6 @@ function handleCalculationModeChange() {
   syncKpiRequiredState();
 }
 
-      const RESPONSIBLE_DASHBOARD_DEFAULT_VIEW = "dashboard";
-      const RESPONSIBLE_DASHBOARD_VIEW_STORAGE_KEY =
-        "responsible-dashboard-view:" + String(responsibleId || "");
-      const RESPONSIBLE_DASHBOARD_HASH_TO_VIEW = Object.freeze({
-        "#dashboard": "dashboard",
-        "#consult-kpi": "dashboard",
-        "#my-kpis": "my-kpis",
-        "#analytics": "my-kpis",
-        "#consult-target-allocation": "consult-target-allocation",
-        "#allocations": "consult-target-allocation"
-      });
-      const RESPONSIBLE_DASHBOARD_VIEW_TO_HASH = Object.freeze({
-        dashboard: "#dashboard",
-        "my-kpis": "#my-kpis",
-        "consult-target-allocation": "#consult-target-allocation"
-      });
-
      function setActiveNav(target) {
         ["navDashboard", "navMyKpis", "navConsultAllocations"].forEach(id => {
           const el = document.getElementById(id);
@@ -15472,71 +14393,18 @@ function handleCalculationModeChange() {
         if (activeEl) activeEl.classList.add("active");
       }
 
-      function persistResponsibleDashboardView(viewName) {
-        const normalizedView = String(viewName || "").trim().toLowerCase();
-        const targetHash =
-          RESPONSIBLE_DASHBOARD_VIEW_TO_HASH[normalizedView] ||
-          RESPONSIBLE_DASHBOARD_VIEW_TO_HASH[RESPONSIBLE_DASHBOARD_DEFAULT_VIEW];
-
-        try {
-          window.localStorage.setItem(
-            RESPONSIBLE_DASHBOARD_VIEW_STORAGE_KEY,
-            normalizedView || RESPONSIBLE_DASHBOARD_DEFAULT_VIEW
-          );
-        } catch (error) {
-          console.warn("Unable to persist dashboard view:", error);
-        }
-
-        const nextUrl = new URL(window.location.href);
-        if (nextUrl.hash !== targetHash) {
-          nextUrl.hash = targetHash;
-          window.history.replaceState({}, "", nextUrl.pathname + nextUrl.search + nextUrl.hash);
-        }
-      }
-
-      function getStoredResponsibleDashboardView() {
-        const normalizedHash = String(window.location.hash || "").trim().toLowerCase();
-        if (RESPONSIBLE_DASHBOARD_HASH_TO_VIEW[normalizedHash]) {
-          return RESPONSIBLE_DASHBOARD_HASH_TO_VIEW[normalizedHash];
-        }
-
-        try {
-          const storedView = String(
-            window.localStorage.getItem(RESPONSIBLE_DASHBOARD_VIEW_STORAGE_KEY) || ""
-          )
-            .trim()
-            .toLowerCase();
-
-          if (RESPONSIBLE_DASHBOARD_VIEW_TO_HASH[storedView]) {
-            return storedView;
-          }
-        } catch (error) {
-          console.warn("Unable to read persisted dashboard view:", error);
-        }
-
-        return RESPONSIBLE_DASHBOARD_DEFAULT_VIEW;
-      }
-
-      function showDashboard(options = {}) {
-        const shouldPersist = options.persist !== false;
+      function showDashboard() {
         document.getElementById("dashboardSection").style.display = "block";
         document.getElementById("myKpisSection").style.display = "none";
         document.getElementById("consultTargetAllocationsSection").style.display = "none";
         setActiveNav("navDashboard");
-        if (shouldPersist) {
-          persistResponsibleDashboardView("dashboard");
-        }
       }
 
-      async function showMyKpis(options = {}) {
-        const shouldPersist = options.persist !== false;
+      async function showMyKpis() {
         document.getElementById("dashboardSection").style.display = "none";
         document.getElementById("myKpisSection").style.display = "block";
         document.getElementById("consultTargetAllocationsSection").style.display = "none";
         setActiveNav("navMyKpis");
-        if (shouldPersist) {
-          persistResponsibleDashboardView("my-kpis");
-        }
 
         if (!chartsLoaded) {
           await loadKpiCharts();
@@ -15544,38 +14412,17 @@ function handleCalculationModeChange() {
         }
       }
 
-      async function showConsultTargetAllocations(options = {}) {
-        const shouldPersist = options.persist !== false;
+      async function showConsultTargetAllocations() {
         document.getElementById("dashboardSection").style.display = "none";
         document.getElementById("myKpisSection").style.display = "none";
         document.getElementById("consultTargetAllocationsSection").style.display = "block";
         setActiveNav("navConsultAllocations");
-        bindParameterSearchInput();
-        if (shouldPersist) {
-          persistResponsibleDashboardView("consult-target-allocation");
-        }
 
         if (!parameterSourceRows.length) {
           await loadParameterKpis();
         } else {
           applyParameterSearch();
         }
-      }
-
-      async function restoreResponsibleDashboardView() {
-        const currentView = getStoredResponsibleDashboardView();
-
-        if (currentView === "consult-target-allocation") {
-          await showConsultTargetAllocations({ persist: true });
-          return;
-        }
-
-        if (currentView === "my-kpis") {
-          await showMyKpis({ persist: true });
-          return;
-        }
-
-        showDashboard({ persist: true });
       }
 
       function updateStats(rows) {
@@ -15864,8 +14711,8 @@ function getCurrentKpiRowById(kpiId) {
         <table class="kpi-matrix-table">
           <thead>
             <tr>
-              <th>KPI Name</th>
               <th>KPI Subject</th>
+              <th>KPI Name</th>
               <th>Unit</th>
               <th>Direction</th>
               <th class="parameter-table-actions">Actions</th>
@@ -15907,6 +14754,10 @@ function getCurrentKpiRowById(kpiId) {
               return \`
               <tr>
                 <td>
+                  <div class="kpi-matrix-kpi-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "No subject")}</div>
+                  <div class="kpi-matrix-kpi-path">\${escapeHtml(row.full_subject_path || row.subject || "No KPI hierarchy attached")}</div>
+                </td>
+                <td>
                   <div class="kpi-matrix-kpi-title">\${escapeHtml(row.indicator_sub_title || "Untitled KPI")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml([
                     row.status ? "Status: " + row.status : "",
@@ -15915,10 +14766,7 @@ function getCurrentKpiRowById(kpiId) {
                     !isOwnedByResponsible ? "Visible in consult mode" : ""
                   ].filter(Boolean).join(" • ") || "No KPI details")}</div>
                 </td>
-                <td>
-                  <div class="kpi-matrix-kpi-title">\${escapeHtml(getLastPathSegment(row.full_subject_path || row.subject || row.indicator_title) || "No subject")}</div>
-                  <div class="kpi-matrix-kpi-path">\${escapeHtml(row.full_subject_path || row.subject || "No KPI hierarchy attached")}</div>
-                </td>
+           
                 <td>
                   <div class="kpi-matrix-cell-main">\${escapeHtml(row.unit || "-")}</div>
                   <div class="kpi-matrix-cell-sub">\${escapeHtml(row.target !== null && row.target !== undefined && String(row.target).trim() !== "" ? "Target: " + formatParameterDisplayValue(row.target) : "No unit target")}</div>
@@ -15961,18 +14809,6 @@ function getCurrentKpiRowById(kpiId) {
       function getParameterSearchValue() {
         const searchEl = document.getElementById("parameterSearch");
         return searchEl ? String(searchEl.value || "") : "";
-      }
-
-      function bindParameterSearchInput() {
-        const parameterSearchInput = document.getElementById("parameterSearch");
-        if (!parameterSearchInput || parameterSearchInput.dataset.bound === "true") {
-          return;
-        }
-
-        parameterSearchInput.addEventListener("input", (event) => {
-          applyParameterSearch(event.target.value);
-        });
-        parameterSearchInput.dataset.bound = "true";
       }
 
       function buildParameterAllocationGroupKey(row) {
@@ -16102,45 +14938,45 @@ function getCurrentKpiRowById(kpiId) {
           });
       }
 
-      function buildParameterSearchFields(row) {
-        const primaryFields = [
+      function buildParameterSearchIndex(row) {
+        return [
           row.kpi_name,
+          row.kpi_subject,
           row.kpi_group,
-          row.role_name,
           row.kpi_type,
-          row.frequency
-        ];
-
-        const relatedFields = Array.isArray(row.related_allocations)
-          ? row.related_allocations.flatMap((allocationRow) => [
-              allocationRow?.kpi_name,
-              allocationRow?.kpi_group,
-              allocationRow?.role_name,
-              allocationRow?.kpi_type,
-              allocationRow?.frequency
-            ])
-          : [];
-
-        return [...primaryFields, ...relatedFields]
-          .map((value) => String(value || "").trim().toLowerCase())
-          .filter(Boolean);
+          row.unit_type_name,
+          row.role_name,
+          row.frequency,
+          row.target_status,
+          row.plant_name,
+          row.zone_name,
+          row.unit_name,
+          row.function,
+          row.product_line_name,
+          row.product_name,
+          row.market_name,
+          row.customer_name,
+          Array.isArray(row.group_scope_names) ? row.group_scope_names.join(" ") : "",
+          Array.isArray(row.group_responsible_names) ? row.group_responsible_names.join(" ") : "",
+          Array.isArray(row.group_target_values)
+            ? row.group_target_values.map((value) => formatParameterDisplayValue(value)).join(" ")
+            : "",
+          row.target_unit,
+          row.local_currency,
+          formatParameterDisplayValue(row.target_value),
+          formatParameterDisplayDate(row.target_setup_date)
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
       }
 
       function filterParameterRows(rows, search = "") {
         const sourceRows = Array.isArray(rows) ? rows : [];
-        const tokens = String(search || "")
-          .trim()
-          .toLowerCase()
-          .split(/\s+/)
-          .filter(Boolean);
-        if (!tokens.length) return sourceRows;
+        const query = String(search || "").trim().toLowerCase();
+        if (!query) return sourceRows;
 
-        return sourceRows.filter((row) => {
-          const searchFields = buildParameterSearchFields(row);
-          return tokens.every((token) =>
-            searchFields.some((fieldValue) => fieldValue.includes(token))
-          );
-        });
+        return sourceRows.filter((row) => buildParameterSearchIndex(row).includes(query));
       }
 
       function formatParameterDisplayValue(value) {
@@ -16497,7 +15333,7 @@ function getCurrentKpiRowById(kpiId) {
 
         try {
           const res = await fetch(
-            '/api/responsibles/' + responsibleId + '/kpi-objects?scope=all&_ts=' + Date.now(),
+            '/api/responsibles/' + responsibleId + '/kpi-objects?_ts=' + Date.now(),
             { cache: "no-store" }
           );
           const data = await res.json();
@@ -16685,163 +15521,17 @@ function getCurrentKpiRowById(kpiId) {
         }
       };
 
-
-      function getUniqueKpiFilterOptions(rows, getter) {
-  return Array.from(
-    new Set(
-      (Array.isArray(rows) ? rows : [])
-        .map(getter)
-        .map(value => String(value || "").trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-}
-
-function createKpiFilterDropdown(containerId, placeholder, options, selectedValue, onChange) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-
-  container.innerHTML =
-    '<button type="button" class="kpi-filter-trigger">' +
-      escapeHtml(selectedValue || placeholder) +
-    '</button>' +
-    '<div class="kpi-filter-menu">' +
-      '<input class="kpi-filter-search" placeholder="Type to filter..." />' +
-      '<div class="kpi-filter-options"></div>' +
-    '</div>';
-
-  const trigger = container.querySelector(".kpi-filter-trigger");
-  const search = container.querySelector(".kpi-filter-search");
-  const optionsBox = container.querySelector(".kpi-filter-options");
-
-  function render(filterText) {
-    const normalizedFilter = String(filterText || "").toLowerCase();
-
-    const visibleOptions = options.filter(option =>
-      option.toLowerCase().includes(normalizedFilter)
-    );
-
-    optionsBox.innerHTML =
-      '<button type="button" class="kpi-filter-option' +
-        (!selectedValue ? ' is-selected' : '') +
-        '" data-value="">All</button>' +
-      visibleOptions.map(option =>
-        '<button type="button" class="kpi-filter-option' +
-          (option === selectedValue ? ' is-selected' : '') +
-          '" data-value="' + escapeHtml(option) + '">' +
-          escapeHtml(option) +
-        '</button>'
-      ).join("");
-  }
-
-  trigger.addEventListener("click", () => {
-    container.classList.toggle("is-open");
-    render(search.value);
-    setTimeout(() => search.focus(), 0);
-  });
-
-  search.addEventListener("input", () => render(search.value));
-
-  optionsBox.addEventListener("click", event => {
-    const optionBtn = event.target.closest(".kpi-filter-option");
-    if (!optionBtn) return;
-
-    const value = optionBtn.dataset.value || "";
-    container.classList.remove("is-open");
-    onChange(value);
-  });
-
-  render("");
-}
-
-function getLastSubjectName(subjectPath) {
-  const parts = String(subjectPath || "")
-    .split("/")
-    .map(part => part.trim())
-    .filter(Boolean);
-
-  return parts.length ? parts[parts.length - 1] : "";
-}
-
-function initializeKpiConsultFilters(rows) {
-  const nameOptions = getUniqueKpiFilterOptions(
-    rows,
-    row => row.indicator_sub_title
-  );
-
-const subjectOptions = getUniqueKpiFilterOptions(
-  rows,
-  row => getLastSubjectName(row.full_subject_path || row.subject)
-);
-
-  if (selectedKpiNameFilter && !nameOptions.includes(selectedKpiNameFilter)) {
-    selectedKpiNameFilter = "";
-  }
-
-  if (selectedKpiSubjectFilter && !subjectOptions.includes(selectedKpiSubjectFilter)) {
-    selectedKpiSubjectFilter = "";
-  }
-
-  createKpiFilterDropdown(
-    "kpiNameFilter",
-    "Select KPI name",
-    nameOptions,
-    selectedKpiNameFilter,
-    value => {
-      selectedKpiNameFilter = value;
-      initializeKpiConsultFilters(kpiSourceRows);
-      applyKpiConsultFilters();
-    }
-  );
-
-  createKpiFilterDropdown(
-    "kpiSubjectFilter",
-    "Select KPI subject",
-    subjectOptions,
-    selectedKpiSubjectFilter,
-    value => {
-      selectedKpiSubjectFilter = value;
-      initializeKpiConsultFilters(kpiSourceRows);
-      applyKpiConsultFilters();
-    }
-  );
-}
-
-function applyKpiConsultFilters() {
-  let rows = Array.isArray(kpiSourceRows) ? kpiSourceRows.slice() : [];
-
-  if (selectedKpiNameFilter) {
-    rows = rows.filter(row =>
-      String(row.indicator_sub_title || "").trim() === selectedKpiNameFilter
-    );
-  }
-
-  if (selectedKpiSubjectFilter) {
-rows = rows.filter(row =>
-  getLastSubjectName(row.full_subject_path || row.subject) === selectedKpiSubjectFilter
-);
-  }
-
-  renderKpis(rows);
-}
-
-async function loadKpis(search = "") {
-  try {
-    const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?include_all=1&search=' + encodeURIComponent(search));
-    const data = await res.json();
-
-    kpiSourceRows = Array.isArray(data) ? data : [];
-
-    initializeKpiConsultFilters(kpiSourceRows);
-    applyKpiConsultFilters();
-
-  } catch (error) {
-    kpiSourceRows = [];
-    updateKpiResultsMeta(0);
-    document.getElementById("grid").innerHTML =
-      '<div class="empty">Failed to load KPIs.</div>';
-  }
-}
+      async function loadKpis(search = "") {
+        try {
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpis?include_all=1&search=' + encodeURIComponent(search));
+          const data = await res.json();
+          renderKpis(data);
+        } catch (error) {
+          updateKpiResultsMeta(0);
+          document.getElementById("grid").innerHTML =
+            '<div class="empty">Failed to load KPIs.</div>';
+        }
+      }
 
       async function loadReferenceKpis() {
         try {
@@ -17087,15 +15777,13 @@ async function loadKpis(search = "") {
       }
 
       function openModal() {
-        setKpiSaveLoading(kpiSavePending);
         document.getElementById("modalBackdrop").classList.add("open");
         requestAnimationFrame(() => {
           syncDefinitionTextareaHeight();
         });
       }
 
-      function closeModal(force = false) {
-        if (kpiSavePending && !force) return;
+      function closeModal() {
         document.getElementById("modalBackdrop").classList.remove("open");
       }
 
@@ -17109,31 +15797,6 @@ async function loadKpis(search = "") {
 
       function dismissKpiDetailsModal() {
         closeKpiDetailsModal();
-      }
-
-      function setKpiSaveLoading(isLoading) {
-        const saveBtn = document.getElementById("kpiSaveBtn");
-        const closeBtn = document.getElementById("kpiCloseBtn");
-        const cancelBtn = document.getElementById("kpiCancelBtn");
-        const deleteBtn = document.getElementById("deleteBtn");
-        const labelEl = saveBtn ? saveBtn.querySelector(".kpi-save-label") : null;
-        const defaultLabel = saveBtn?.dataset?.defaultLabel || "Save KPI";
-
-        if (saveBtn) {
-          saveBtn.disabled = Boolean(isLoading);
-          saveBtn.classList.toggle("is-loading", Boolean(isLoading));
-          saveBtn.setAttribute("aria-busy", isLoading ? "true" : "false");
-        }
-
-        [closeBtn, cancelBtn, deleteBtn].forEach((btn) => {
-          if (btn) {
-            btn.disabled = Boolean(isLoading);
-          }
-        });
-
-        if (labelEl) {
-          labelEl.textContent = isLoading ? "Saving..." : defaultLabel;
-        }
       }
 
       function openParameterModal() {
@@ -17243,7 +15906,6 @@ async function loadKpis(search = "") {
       }
 
       function dismissKpiModal() {
-        if (kpiSavePending) return;
         const isCreateMode = !getFieldValue("kpi_id");
         if (isCreateMode) {
           kpiCreateDraft = captureKpiCreateDraft();
@@ -18179,10 +16841,6 @@ function fillForm(data) {
       }
 
       async function saveKpi() {
-        if (kpiSavePending) {
-          return;
-        }
-
         if (!validateKpiForm()) {
           return;
         }
@@ -18195,9 +16853,6 @@ function fillForm(data) {
         : '/api/responsibles/' + responsibleId + '/kpis';
 
         try {
-          kpiSavePending = true;
-          setKpiSaveLoading(true);
-
           const res = await fetch(url, {
             method,
             headers: { "Content-Type": "application/json" },
@@ -18214,7 +16869,7 @@ function fillForm(data) {
        if (isCreateMode) {
          kpiCreateDraft = null;
        }
-       closeModal(true);
+       closeModal();
        if (isCreateMode) {
          resetForm();
        }
@@ -18228,9 +16883,6 @@ function fillForm(data) {
         } catch (error) {
           console.error("SAVE KPI ERROR:", error);
           showToast("Save failed: " + error.message);
-        } finally {
-          kpiSavePending = false;
-          setKpiSaveLoading(false);
         }
       }
 
@@ -18470,9 +17122,7 @@ updateParameterKpiSummary();
           const groupedAllocations = Array.isArray(groupedAllocationRow?.related_allocations)
             ? groupedAllocationRow.related_allocations
             : [];
-          const res = await fetch(
-            '/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId + '?scope=all'
-          );
+          const res = await fetch('/api/responsibles/' + responsibleId + '/kpi-objects/' + parameterObjectId);
           const data = await res.json();
 
           if (!res.ok) {
@@ -18511,7 +17161,6 @@ updateParameterKpiSummary();
 
 function buildParameterPayload() {
   const scopeKind = getParameterScopeKind();
-  const isIndividualScope = isIndividualParameterScope();
   const unitAllocations = getParameterUnitAllocationRows();
   const primaryAllocation = unitAllocations[0] || null;
   const existingAllocationIds = getParameterAllocationIdsForDelete(
@@ -18549,9 +17198,7 @@ function buildParameterPayload() {
     target_setup_date: normalizeParameterDateValue(primaryAllocation?.target_setup_date || getParameterFieldValue("parameter_target_setup_date")),
     target_start_date: normalizeParameterDateValue(getParameterFieldValue("parameter_target_start_date")),
     target_end_date: normalizeParameterDateValue(getParameterFieldValue("parameter_target_end_date")),
-    set_by_people_id: isIndividualScope
-      ? (getParameterFieldValue("parameter_set_by_people_id") || null)
-      : (primaryAllocation?.set_by_people_id || null),
+    set_by_people_id: getParameterFieldValue("parameter_set_by_people_id"),
     approved_by_people_id: getParameterFieldValue("parameter_approved_by_people_id"),
     comments: getParameterFieldValue("parameter_comments"),
     existing_allocation_ids: existingAllocationIds,
@@ -18748,8 +17395,6 @@ if (missingRow) {
         loadKpis(e.target.value);
       });
 
-      bindParameterSearchInput();
-
       document.getElementById("modalBackdrop").addEventListener("click", (e) => {
         if (e.target.id === "modalBackdrop") {
           e.preventDefault();
@@ -18926,7 +17571,10 @@ document.addEventListener("keydown", (event) => {
     const parameterSetBySelect = document.getElementById("parameter_set_by_people_id");
     if (parameterSetBySelect) {
       parameterSetBySelect.addEventListener("change", () => {
-        if (isIndividualParameterScope()) return;
+        if (isIndividualParameterScope()) {
+          syncIndividualParameterFields();
+          return;
+        }
         renderMultisiteUnitMatrix();
       });
     }
@@ -18948,7 +17596,6 @@ document.addEventListener("keydown", (event) => {
      (async () => {
        await loadKpis();
        await loadParameterKpis();
-       await restoreResponsibleDashboardView();
 
        const currentUrl = new URL(window.location.href);
        const editKpiId = currentUrl.searchParams.get("editKpi");
@@ -22812,9 +21459,9 @@ const generateEmailHtml = ({ responsible, week }) => {
              alt="AVOCarbon Logo" style="width:90px;height:90px;object-fit:contain;">
       </div>
       
-      <!-- KPI group with cadre/border - directly under logo and centered -->
+      <!-- KPI codir with cadre/border - directly under logo and centered -->
       <div style="border:2px solid #0078D7;border-radius:8px;padding:6px 25px;display:inline-block;margin:0 auto 15px auto;">
-        <span style="color:#0078D7;font-size:16px;font-weight:500;display:inline-block;">KPI Group</span>
+        <span style="color:#0078D7;font-size:16px;font-weight:500;display:inline-block;">KPI codir</span>
       </div>
       
       <h2 style="color:#0078D7;font-size:24px;margin:0 0 10px 0;font-weight:600;">KPI Submission - ${monthYear}</h2>
@@ -22831,6 +21478,47 @@ const generateEmailHtml = ({ responsible, week }) => {
       <p style="margin:0;font-size:13px;color:#666;">Click the button above to fill your KPIs for ${monthYear}.</p>
     </div>
   </body></html>`;
+};
+
+
+const checkAndTriggerCorrectiveActions = async (responsibleId, kpiId, week, newValue, histId) => {
+  try {
+    const kpiRes = await pool.query(
+      `SELECT target FROM public."Kpi" WHERE kpi_id = $1`, [kpiId]
+    );
+    if (!kpiRes.rows.length) return { targetUpdated: false };
+
+    const currentTarget = parseFloat(kpiRes.rows[0].target);
+    const numValue = parseFloat(newValue);
+    if (isNaN(numValue) || isNaN(currentTarget)) return { targetUpdated: false };
+
+    // â”€â”€ value exceeds current target â†’ queue it, touch NOTHING else â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if (numValue > currentTarget) {
+      console.log(`ðŸ“Œ KPI ${kpiId}: ${numValue} > target ${currentTarget} â€” queuing pending update`);
+
+      await pool.query(
+        `INSERT INTO public.pending_target_updates
+           (kpi_id, responsible_id, week, new_target, applied)
+         VALUES ($1, $2, $3, $4, false)
+         ON CONFLICT (kpi_id, responsible_id, week)
+         DO UPDATE SET new_target = EXCLUDED.new_target, applied = false`,
+        [kpiId, responsibleId, week, String(numValue)]
+      );
+
+      console.log(`Pending target queued â€” KPI ${kpiId}: ${currentTarget} â†’ ${numValue}`);
+
+      return {
+        targetUpdated: true,
+        updateInfo: { kpiId, oldTarget: currentTarget, newTarget: numValue }
+      };
+    }
+
+    return { targetUpdated: false };
+
+  } catch (error) {
+    console.error('âŒ checkAndTriggerCorrectiveActions error:', error.message);
+    return { targetUpdated: false, error: error.message };
+  }
 };
 
 // ============================================================
@@ -28985,14 +27673,12 @@ async function sendAssistantPrompt(message) {
     : false;
 
   if (input && !preserveDraftValue) {
-   const latestValue = [...data.values].reverse().find(v =>
-    v !== null && v !== undefined && v !== "" && !isNaN(Number(v))
-    );
-
-   const nextValue = latestValue !== undefined ? String(latestValue) : "";
-     input.value = nextValue;
-     setValueInputServerState(input, nextValue);
-   }
+    const nextValue = data.currentValue !== null && data.currentValue !== undefined
+      ? String(data.currentValue)
+      : "";
+    input.value = nextValue;
+    setValueInputServerState(input, nextValue);
+  }
 
   const chart = kpiCharts[kvId];
   if (!chart) {
@@ -29291,22 +27977,8 @@ async function sendAssistantPrompt(message) {
             const highLimit = parseFloat(card.dataset.highLimit);
             const target = parseFloat(card.dataset.target);
             const goodDirection = card.dataset.goodDirection || "up";
-           let labels = [], values = [];
-
-            try {
-           labels = JSON.parse(card.dataset.historyLabels || "[]");
-           values = JSON.parse(card.dataset.historyValues || "[]");
-           } catch(e) {}
-
-           const input = document.getElementById("value_" + kvId);
-           const latestValue = [...values].reverse().find(v =>
-           v !== null && v !== undefined && v !== "" && !isNaN(Number(v))
-           );
-
-          if (input && latestValue !== undefined && !input.value) {
-          input.value = latestValue;
-          setValueInputServerState(input, latestValue);
-           }
+            let labels = [], values = [];
+            try { labels = JSON.parse(card.dataset.historyLabels || "[]"); values = JSON.parse(card.dataset.historyValues || "[]"); } catch(e){}
             const colors = values.map(v => getPointColor(v, lowLimit, highLimit, goodDirection));
             const borderColors = values.map(v => getPointBorderColor(v, lowLimit, highLimit, goodDirection));
             const bounds = computeBounds(values, lowLimit, target, highLimit);
@@ -31998,19 +30670,69 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
       console.error(`âš ï¸ PDF generation failed for ${responsible.name}:`, pdfErr.message);
     }
 
-  const transporter = createTransporter();
     // â”€â”€ SEND EMAIL (with OLD target values in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const info = await transporter.sendMail({
-  from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
-  to: responsible.email,
-  subject: `KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
-  html: emailHtml,
-  attachments: pdfAttachment ? [pdfAttachment] : [],
-});
+    const transporter = createTransporter();
+    await transporter.sendMail({
+      from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
+      to: responsible.email,
+      subject: `KPI Performance Trends - ${reportWeek} | ${responsible.name}`,
+      html: emailHtml,
+      attachments: pdfAttachment ? [pdfAttachment] : [],
+    });
+    console.log(`Email sent to ${responsible.email}`);
 
-console.log(`Email sent to ${responsible.email}`);
-console.log("Message ID:", info.messageId);
-console.log("SMTP Response:", info.response);
+    // â”€â”€ NOW apply all pending target updates for this responsible â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Email is already sent â€” safe to update Kpi.target and hist26.target
+    try {
+      const pending = await pool.query(
+        `SELECT p.id, p.kpi_id, p.week, p.new_target,
+                k.target AS current_kpi_target, k.subject
+         FROM public.pending_target_updates p
+         JOIN public."Kpi" k ON k.kpi_id = p.kpi_id
+         WHERE p.responsible_id = $1 AND p.applied = false`,
+        [responsible.people_id]
+      );
+
+      console.log(`ðŸ“‹ ${pending.rows.length} pending target update(s) to apply for ${responsible.name}`);
+
+      for (const row of pending.rows) {
+        const newVal = parseFloat(row.new_target);
+        const currVal = parseFloat(row.current_kpi_target);
+
+        if (isNaN(newVal)) {
+          console.warn(`âš ï¸ Skipping KPI ${row.kpi_id} â€” new_target "${row.new_target}" is not a number`);
+          continue;
+        }
+
+        // 1. Update Kpi.target
+        await pool.query(
+          `UPDATE public."Kpi" SET target = $1 WHERE kpi_id = $2`,
+          [String(newVal), row.kpi_id]
+        );
+        console.log(`ðŸŽ¯ Kpi.target updated: "${row.subject}" (${row.kpi_id}) ${currVal} â†’ ${newVal}`);
+
+        // 2. Update kpi_values_hist26.target for that week
+        await pool.query(
+          `UPDATE public.kpi_values_hist26
+           SET target = $1
+           WHERE responsible_id = $2 AND kpi_id = $3 AND week = $4`,
+          [newVal, responsible.people_id, row.kpi_id, row.week]
+        );
+        console.log(`ðŸ“ kpi_values_hist26.target updated: KPI ${row.kpi_id} week ${row.week} â†’ ${newVal}`);
+
+        // 3. Mark as applied
+        await pool.query(
+          `UPDATE public.pending_target_updates SET applied = true WHERE id = $1`,
+          [row.id]
+        );
+      }
+
+      console.log(`All pending target updates applied for ${responsible.name}`);
+
+    } catch (applyErr) {
+      console.error(`âŒ Failed to apply pending target updates for ${responsible.name}:`, applyErr.message);
+    }
+
   } catch (error) {
     console.error(`âŒ generateWeeklyReportEmail failed for responsible ${responsibleId}:`, error.message);
     throw error;
@@ -32019,7 +30741,7 @@ console.log("SMTP Response:", info.response);
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
 
-cron.schedule("19 20 * * *", async () => {
+cron.schedule("37 20 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -32052,7 +30774,7 @@ cron.schedule("19 20 * * *", async () => {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("21 20 * * *", async () => {
+cron.schedule("40 20 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
@@ -32457,7 +31179,7 @@ const generateManagerReportHtml = (reportData) => {
 <body>
   <div style="padding:30px 20px;max-width:1400px;margin:0 auto;">
     <div style="background:white;border-radius:12px;padding:30px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:30px;">
-      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">CEO KPI Group DASHBOARD</h1>
+      <h1 style="margin:0 0 8px;font-size:28px;font-weight:800;color:#2c3e50;">CEO KPI CODIR DASHBOARD</h1>
       <div style="font-size:14px;color:#6c757d;">
         <strong>${plant.plant_name}</strong>  Week: <strong>${week.replace('2026-Week', 'W')}</strong>
         Manager: <strong>${plant.manager || 'N/A'}</strong>
@@ -33637,15 +32359,21 @@ async function sendKPIReportToHierarchy(responsiblePeopleId, currentWeek) {
 // }, { scheduled: true, timezone: "Africa/Tunis" });
 
 
+// cron.schedule("07 11 1 * *", async () => {
+//   if (managerCronRunning) return;
+//   managerCronRunning = true;
+
+//   try {
+//     await runHierarchyKpiReports("Monthly");
+//   } catch (error) {
+//     console.error("[Monthly Hierarchy Report] Error:", error.message);
+//   } finally {
+//     managerCronRunning = false;
+//   }
+// }, { scheduled: true, timezone: "Africa/Tunis" });
+
 
 registerRecommendationRoutes(app, pool, createTransporter);
-ensureKpiRatioSchema()
-  .then(() => {
-    console.log("[KPI Knowledge Base] Sync infrastructure is ready.");
-  })
-  .catch((error) => {
-    console.error("[KPI Knowledge Base] Sync infrastructure setup failed:", error.message);
-  });
 ensureCorrectiveActionEscalationSchema()
   .then(() => {
     console.log("[Corrective Action Escalation] Tracking table is ready.");
