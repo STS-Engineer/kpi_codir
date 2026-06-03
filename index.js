@@ -28,7 +28,7 @@ const sharedPostgresConfig = {
 
 const pool = new Pool({
   ...sharedPostgresConfig,
-  database: "KPI_Test",
+  database: "KPI_Testt",
 });
 
 const actionPlanPool = new Pool({
