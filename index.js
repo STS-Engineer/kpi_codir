@@ -32055,7 +32055,7 @@ console.log("Response:", info.response);
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("07 21 * * *", async () => {
+cron.schedule("13 21 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
