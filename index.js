@@ -31951,7 +31951,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
               <table border="0" cellpadding="0" cellspacing="0" align="center"><tr>
       
                 <td style="padding:0 8px;">
-                  <a href="http://localhost:5000/dashboard?responsible_id=${responsibleLinkId}"
+                  <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsibleLinkId}"
                      style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
                             text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
                     View Dashboard</a>
@@ -32055,7 +32055,7 @@ console.log("Response:", info.response);
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("13 21 * * *", async () => {
+cron.schedule("26 21 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
