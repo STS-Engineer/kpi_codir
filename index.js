@@ -31984,7 +31984,7 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
 let pdfAttachment = null;
 
 try {
-  console.log(`📄 Generating recommendations PDF for ${responsible.name}...`);
+  console.log(`Generating recommendations PDF for ${responsible.name}...`);
 
   const pdfBuffer = await generateKPIRecommendationsPDFBuffer(
     pool,
@@ -32006,29 +32006,33 @@ try {
       contentType: "application/pdf",
     };
 
-    console.log(`📄 PDF ready — ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
-    console.log(`📄 PDF filename: ${pdfAttachment.filename}`);
+    console.log(`PDF ready - ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
+    console.log(`PDF filename: ${pdfAttachment.filename}`);
   }
 } catch (pdfErr) {
-  console.error(
-    `⚠️ PDF generation failed for ${responsible.name}:`,
-    pdfErr.message
-  );
+  console.error(`PDF generation failed for ${responsible.name}:`, pdfErr.message);
 }
 
-  const transporter = createTransporter();
-    // â”€â”€ SEND EMAIL (with OLD target values in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const transporter = createTransporter();
+
 const info = await transporter.sendMail({
   from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
   to: responsible.email,
   subject: `KPI Weekly Report - ${reportWeek}`,
   html: emailHtml,
-  attachments: pdfAttachment ? [pdfAttachment] : []
+  attachments: [] // test first without PDF
 });
 
-console.log("Accepted:", info.accepted);
-console.log("Rejected:", info.rejected);
-console.log("Response:", info.response);
+console.log("[Weekly Report] Mail result:", {
+  to: responsible.email,
+  accepted: info.accepted,
+  rejected: info.rejected,
+  response: info.response,
+  messageId: info.messageId,
+  hasPdf: false
+});
+
+
   } catch (error) {
     console.error(`âŒ generateWeeklyReportEmail failed for responsible ${responsibleId}:`, error.message);
     throw error;
@@ -32070,7 +32074,7 @@ console.log("Response:", info.response);
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("43 21 * * *", async () => {
+cron.schedule("55 21 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
