@@ -31981,34 +31981,49 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
     </body></html>`;
 
     // â”€â”€ Generate PDF attachment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    let pdfAttachment = null;
-    try {
-      console.log(`ðŸ“„ Generating recommendations PDF for ${responsible.name}â€¦`);
-      const pdfBuffer = await generateKPIRecommendationsPDFBuffer(pool, responsible.people_id, reportWeek);
-      if (pdfBuffer) {
-        const weekLabel = reportWeek.replace('2026-Week', 'Week_');
-        pdfAttachment = {
-          filename: `KPI_Recommendations_${responsible.name.replace(/ /g, '_')}_${weekLabel}.pdf`,
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        };
-        console.log(`ðŸ“„ PDF ready â€” ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
-      }
-    } catch (pdfErr) {
-      console.error(`âš ï¸ PDF generation failed for ${responsible.name}:`, pdfErr.message);
-    }
+let pdfAttachment = null;
+
+try {
+  console.log(`📄 Generating recommendations PDF for ${responsible.name}...`);
+
+  const pdfBuffer = await generateKPIRecommendationsPDFBuffer(
+    pool,
+    responsible.people_id,
+    reportWeek
+  );
+
+  if (pdfBuffer) {
+    const weekLabel = String(reportWeek).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    const safeName = String(responsible.name || "responsible")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    pdfAttachment = {
+      filename: `KPI_Recommendations_${safeName}_${weekLabel}.pdf`,
+      content: pdfBuffer,
+      contentType: "application/pdf",
+    };
+
+    console.log(`📄 PDF ready — ${(pdfBuffer.length / 1024).toFixed(1)} KB`);
+    console.log(`📄 PDF filename: ${pdfAttachment.filename}`);
+  }
+} catch (pdfErr) {
+  console.error(
+    `⚠️ PDF generation failed for ${responsible.name}:`,
+    pdfErr.message
+  );
+}
 
   const transporter = createTransporter();
     // â”€â”€ SEND EMAIL (with OLD target values in charts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const info = await transporter.sendMail({
   from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
   to: responsible.email,
-  subject: `TEST Weekly Report - ${reportWeek}`,
-  html: `
-    <p>Test weekly report email.</p>
-    <p>No PDF.</p>
-    <p>No localhost link.</p>
-  `
+  subject: `KPI Weekly Report - ${reportWeek}`,
+  html: emailHtml,
+  attachments: pdfAttachment ? [pdfAttachment] : []
 });
 
 console.log("Accepted:", info.accepted);
@@ -32055,7 +32070,7 @@ console.log("Response:", info.response);
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("26 21 * * *", async () => {
+cron.schedule("43 21 * * *", async () => {
   const lockId = "weekly_kpi_report_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
