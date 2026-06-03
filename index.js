@@ -32103,7 +32103,7 @@ console.log("[Weekly Report] Mail result:", {
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
 
-cron.schedule("47 22 * * *", async () => {
+cron.schedule("01 23 * * *", async () => {
   await runWithJobLock("weekly_kpi_report_job", async () => {
     if (reportCronRunning) {
       console.log("[Weekly Report] already running");
