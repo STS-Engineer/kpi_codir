@@ -31967,47 +31967,60 @@ const generateWeeklyReportEmail = async (responsibleId, reportWeek) => {
         </div>`;
     }
 
-    const emailHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f4f6f9;">
-      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#f4f6f9;">
-        <tr><td align="center" style="padding:20px;">
-          <table border="0" cellpadding="0" cellspacing="0" width="100%">
-            <tr><td style="background:#0078D7;padding:30px;text-align:center;border-radius:8px 8px 0 0;">
+ const emailHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f4f6f9;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background:#f4f6f9;">
+    <tr>
+      <td align="center" style="padding:20px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td style="background:#0078D7;padding:30px;text-align:center;border-radius:8px 8px 0 0;">
               <h1 style="margin:0;color:white;font-size:24px;">KPI Performance Report</h1>
-              <p style="margin:10px 0 20px;color:rgba(255,255,255,0.9);">
-                ${reportWeek.replace('2026-Week', 'Week ')} | ${responsible.name} | ${responsible.plant_name}
-              </p>
-              <table border="0" cellpadding="0" cellspacing="0" align="center"><tr>
-      
-                <td style="padding:0 8px;">
-                  <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsibleLinkId}"
-                     style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
-                            text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
-                    View Dashboard</a>
-                </td>
-              </tr></table>
-            </td></tr>
 
-            <tr><td style="padding:20px 30px 0;">
-              <div style="background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:14px 18px;">
-                <span style="font-size:14px;color:#5f4200;">
-                  <strong>AI Recommendations PDF is attached</strong> - open it for root-cause analysis,
-                  action plans and improvement roadmaps for each KPI.
+              <p style="margin:10px 0 20px;color:white;">
+                ${reportWeek.replace("2026-Week", "Week ")} | ${responsible.name} | ${responsible.plant_name}
+              </p>
+
+              <a href="https://kpi-codir.azurewebsites.net/dashboard?responsible_id=${responsibleLinkId}"
+                 style="display:inline-block;padding:12px 24px;background:#38bdf8;color:white;
+                        text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
+                View Dashboard
+              </a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:20px 30px 0;">
+              <div style="background:#e8f4ff;border:1px solid #93c5fd;border-radius:8px;padding:14px 18px;">
+                <span style="font-size:14px;color:#1e3a8a;">
+                  Weekly KPI performance summary is available below.
                 </span>
               </div>
-            </td></tr>
+            </td>
+          </tr>
 
-        
-            <tr><td style="padding:30px;">${chartsHtml}</td></tr>
+          <tr>
+            <td style="padding:30px;">
+              ${chartsHtml}
+            </td>
+          </tr>
 
-            <tr><td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
-                            text-align:center;font-size:12px;color:#666;">
-              AVOCarbon KPI System | Generated ${new Date().toLocaleDateString('en-GB')}
-            </td></tr>
-          </table>
-        </td></tr>
-      </table>
-    </body></html>`;
+          <tr>
+            <td style="padding:20px;background:#f8f9fa;border-top:1px solid #e9ecef;
+                       text-align:center;font-size:12px;color:#666;">
+              AVOCarbon KPI System | Generated ${new Date().toLocaleDateString("en-GB")}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 
     // â”€â”€ Generate PDF attachment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let pdfAttachment = null;
@@ -32048,11 +32061,7 @@ const info = await transporter.sendMail({
   from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
   to: responsible.email,
   subject: `KPI Weekly Report - ${reportWeek}`,
-  html: `
-    <p>Test weekly report email.</p>
-    <p>No PDF.</p>
-    <p>No localhost link.</p>
-  `,
+  html: emailHtml,
   attachments: [] // test first without PDF
 });
 
@@ -32108,7 +32117,7 @@ console.log("[Weekly Report] Mail result:", {
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
 
-cron.schedule("08 00 * * *", async () => {
+cron.schedule("17 00 * * *", async () => {
   await runWithJobLock("weekly_kpi_report_job", async () => {
     if (reportCronRunning) {
       console.log("[Weekly Report] already running");
