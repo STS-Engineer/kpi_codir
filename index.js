@@ -32019,7 +32019,7 @@ console.log("SMTP Response:", info.response);
 // ---------- Cron: weekly KPI submission email ----------
 let cronRunning = false;
 
-cron.schedule("29 15 * * *", async () => {
+cron.schedule("50 15 * * *", async () => {
   const lockId = "send_kpi_weekly_email_job";
   const lock = await acquireJobLock(lockId);
   if (!lock.acquired) return;
