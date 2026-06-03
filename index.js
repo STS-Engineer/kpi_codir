@@ -19361,6 +19361,34 @@ const releaseJobLock = async (lockId, lockHashOrInstanceId, maybeLockHash) => {
   }
 };
 
+async function runWithJobLock(lockId, jobFn) {
+  const lockHash = Math.abs(
+    lockId.split("").reduce((a, b) => ((a << 5) - a) + b.charCodeAt(0), 0)
+  );
+
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query(
+      "SELECT pg_try_advisory_lock($1) AS acquired",
+      [lockHash]
+    );
+
+    if (!result.rows[0].acquired) {
+      console.log(`[${lockId}] lock not acquired, skipping`);
+      return;
+    }
+
+    console.log(`[${lockId}] lock acquired`);
+
+    await jobFn();
+  } finally {
+    await client.query("SELECT pg_advisory_unlock($1)", [lockHash]).catch(() => {});
+    client.release();
+    console.log(`[${lockId}] lock released`);
+  }
+}
+
 // ---------- Nodemailer ----------
 const createTransporter = () =>
   nodemailer.createTransport({
@@ -32074,32 +32102,43 @@ console.log("[Weekly Report] Mail result:", {
 
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
-cron.schedule("08 22 * * *", async () => {
-  const lockId = "weekly_kpi_report_job";
-  const lock = await acquireJobLock(lockId);
-  if (!lock.acquired) return;
-  try {
-    if (reportCronRunning) return;
-    reportCronRunning = true;
-    const reportWeek = getPreviousWeek(getCurrentWeek());
-    const recipients = await loadWeeklyReportRecipientsForWeek(reportWeek);
 
-    for (const recipient of recipients) {
-      try {
-        await generateWeeklyReportEmail(recipient.people_id, reportWeek);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      } catch (err) {
-        console.error(`[Weekly Report] Failed for ${recipient.name || recipient.people_id}:`, err.message);
-      }
+cron.schedule("16 22 * * *", async () => {
+  await runWithJobLock("weekly_kpi_report_job", async () => {
+    if (reportCronRunning) {
+      console.log("[Weekly Report] already running");
+      return;
     }
 
-    console.log(`[Weekly Report] Emails processed for ${recipients.length} people for ${reportWeek}`);
-  } catch (error) {
-    console.error("Report cron error:", error.message);
-  } finally {
-    reportCronRunning = false;
-    await releaseJobLock(lockId, lock.instanceId, lock.lockHash);
-  }
+    reportCronRunning = true;
+
+    try {
+      const reportWeek = getPreviousWeek(getCurrentWeek());
+      console.log("[Weekly Report] week:", reportWeek);
+
+      const recipients = await loadWeeklyReportRecipientsForWeek(reportWeek);
+      console.log("[Weekly Report] recipients:", recipients.length);
+
+      for (const recipient of recipients) {
+        try {
+          console.log("[Weekly Report] sending to:", recipient.email || recipient.people_id);
+
+          await generateWeeklyReportEmail(recipient.people_id, reportWeek);
+
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        } catch (err) {
+          console.error(
+            `[Weekly Report] Failed for ${recipient.name || recipient.people_id}:`,
+            err.message
+          );
+        }
+      }
+
+      console.log(`[Weekly Report] Emails processed for ${recipients.length} people for ${reportWeek}`);
+    } finally {
+      reportCronRunning = false;
+    }
+  });
 }, { scheduled: true, timezone: "Africa/Tunis" });
 
 // ============================================================
