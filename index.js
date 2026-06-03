@@ -32143,7 +32143,7 @@ const info = await transporter.sendMail({
   to: responsible.email,
   subject: `KPI Weekly Report - ${reportWeek}`,
   html: emailHtml,
-  attachments: pdfAttachment ? [pdfAttachment] : []
+  attachments: []
 });
 
 console.log("[Weekly Report] Mail result:", {
@@ -32152,14 +32152,15 @@ console.log("[Weekly Report] Mail result:", {
   rejected: info.rejected,
   response: info.response,
   messageId: info.messageId,
-  hasPdf: false
+  hasPdf: false,
+  emailHtmlLength: emailHtml.length,
+  chartsHtmlLength: chartsHtml.length
 });
 
-
-  } catch (error) {
+} catch (error) {
     console.error(`âŒ generateWeeklyReportEmail failed for responsible ${responsibleId}:`, error.message);
     throw error;
-  }
+}
 };
 // ---------- Cron: weekly KPI submission email ----------
 // let cronRunning = false;
@@ -32198,7 +32199,7 @@ console.log("[Weekly Report] Mail result:", {
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
 
-cron.schedule("47 00 * * *", async () => {
+cron.schedule("56 00 * * *", async () => {
   await runWithJobLock("weekly_kpi_report_job", async () => {
     if (reportCronRunning) {
       console.log("[Weekly Report] already running");
