@@ -32142,7 +32142,7 @@ const info = await transporter.sendMail({
   from: '"AVOCarbon KPI System" <administration.STS@avocarbon.com>',
   to: responsible.email,
   subject: `KPI Weekly Report - ${reportWeek}`,
-  html: emailHtml,
+  html: emailHtml.replace(chartsHtml, ""),
   attachments: []
 });
 
@@ -32199,7 +32199,7 @@ console.log("[Weekly Report] Mail result:", {
 // ---------- Cron: weekly reports ----------
 let reportCronRunning = false;
 
-cron.schedule("56 00 * * *", async () => {
+cron.schedule("03 01 * * *", async () => {
   await runWithJobLock("weekly_kpi_report_job", async () => {
     if (reportCronRunning) {
       console.log("[Weekly Report] already running");
